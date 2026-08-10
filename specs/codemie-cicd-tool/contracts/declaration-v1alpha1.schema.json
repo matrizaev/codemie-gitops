@@ -1,0 +1,803 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codemie.epam.com/schemas/gitops/declaration-v1alpha1.json",
+  "title": "codemie-gitops v1alpha1 declaration",
+  "oneOf": [
+    {"$ref": "#/$defs/assistantDeclaration"},
+    {"$ref": "#/$defs/workflowDeclaration"},
+    {"$ref": "#/$defs/datasourceDeclaration"},
+    {"$ref": "#/$defs/skillDeclaration"}
+  ],
+  "$defs": {
+    "projectProperty": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100,
+      "pattern": "^[^\\u0000-\\u001f\\u007f\\u0080-\\u009f\\u202a-\\u202e\\u2066-\\u2069]+$"
+    },
+    "assistantKey": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["project", "slug"],
+      "properties": {
+        "project": {"$ref": "#/$defs/projectProperty"},
+        "slug": {"type": "string", "minLength": 1}
+      }
+    },
+    "skillKey": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["project", "name"],
+      "properties": {
+        "project": {"$ref": "#/$defs/projectProperty"},
+        "name": {"type": "string", "minLength": 3, "maxLength": 64, "pattern": "^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$"}
+      }
+    },
+    "datasourceKey": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["project", "repo_name"],
+      "properties": {
+        "project": {"$ref": "#/$defs/projectProperty"},
+        "repo_name": {"type": "string", "minLength": 1, "maxLength": 50}
+      }
+    },
+    "guardrailAssignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["guardrail_id", "mode", "source"],
+      "properties": {
+        "guardrail_id": {"type": "string", "minLength": 1},
+        "mode": {"enum": ["all", "filtered"]},
+        "source": {"enum": ["input", "output", "both"]},
+        "editable": {"type": ["boolean", "null"]},
+        "guardrail_name": {"type": ["string", "null"]}
+      }
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "settings_config"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "label": {"type": ["string", "null"]},
+        "settings_config": {"type": "boolean"},
+        "description": {"type": ["string", "null"]},
+        "user_description": {"type": ["string", "null"]},
+        "settings": {"anyOf": [{"$ref": "#/$defs/integrationSelection"}, {"type": "null"}]}
+      }
+    },
+    "integrationSelection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "alias": {"type": ["string", "null"]}
+      }
+    },
+    "toolkit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["toolkit", "tools", "label", "settings_config"],
+      "properties": {
+        "toolkit": {"type": "string", "minLength": 1},
+        "tools": {"type": "array", "items": {"$ref": "#/$defs/tool"}},
+        "label": {"type": "string"},
+        "settings_config": {"type": "boolean"},
+        "settings": {"anyOf": [{"$ref": "#/$defs/integrationSelection"}, {"type": "null"}]},
+        "is_external": {"type": ["boolean", "null"]}
+      }
+    },
+    "mcpServer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "enabled", "use_custom_config", "resolve_dynamic_values_in_arguments"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "description": {"type": ["string", "null"]},
+        "enabled": {"type": "boolean"},
+        "mcp_config_id": {"type": ["string", "null"]},
+        "use_custom_config": {"type": "boolean"},
+        "mcp_connect_url": {"type": ["string", "null"], "pattern": "^https?://[^@#\\x00-\\x1f\\x7f\\s]+$"},
+        "tools_tokens_size_limit": {"type": ["integer", "null"], "minimum": 1},
+        "command": {"type": ["string", "null"]},
+        "arguments": {"type": ["string", "null"]},
+        "settings": {"anyOf": [{"$ref": "#/$defs/integrationSelection"}, {"type": "null"}]},
+        "integration_alias": {"type": ["string", "null"]},
+        "resolve_dynamic_values_in_arguments": {"type": "boolean"},
+        "tools": {"type": ["array", "null"], "items": {"type": "string"}}
+      }
+    },
+    "promptVariable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "default_value", "is_sensitive"],
+      "properties": {
+        "key": {"type": "string", "minLength": 1, "maxLength": 100},
+        "description": {"type": ["string", "null"], "maxLength": 200},
+        "default_value": {"type": "string", "maxLength": 500},
+        "is_sensitive": {"type": "boolean"}
+      }
+    },
+    "hedgingConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["timeout_ms", "input_mapping"],
+      "properties": {
+        "tool": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["name"],
+          "properties": {"name": {"type": "string", "minLength": 1}}
+        },
+        "provider_tool": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["provider_name", "toolkit_name", "tool_name"],
+          "properties": {
+            "provider_name": {"type": "string", "minLength": 1},
+            "toolkit_name": {"type": "string", "minLength": 1},
+            "tool_name": {"type": "string", "minLength": 1},
+            "datasource_name": {"type": ["string", "null"]},
+            "result_condition": {"type": ["string", "null"]}
+          }
+        },
+        "timeout_ms": {"type": "integer", "minimum": 1},
+        "input_mapping": {"type": "object", "additionalProperties": {"type": "string"}},
+        "output_field": {"type": ["string", "null"]}
+      },
+      "oneOf": [
+        {"required": ["tool"], "properties": {"tool": {"type": "object"}}, "not": {"required": ["provider_tool"]}},
+        {"required": ["provider_tool"], "properties": {"provider_tool": {"type": "object"}}, "not": {"required": ["tool"]}}
+      ]
+    },
+    "interactiveFeatures": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action_buttons", "choice", "short_forms"],
+      "properties": {
+        "action_buttons": {"type": "boolean"},
+        "choice": {"type": "boolean"},
+        "short_forms": {"type": "boolean"}
+      }
+    },
+    "assistantMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slug"],
+      "properties": {
+        "project": {"$ref": "#/$defs/projectProperty"},
+        "slug": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[^\\u0000-\\u001f\\u007f\\u0080-\\u009f\\u202a-\\u202e\\u2066-\\u2069]+$"
+        }
+      }
+    },
+    "assistantSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name", "system_prompt", "llm_model_type", "type", "context",
+        "toolkits", "conversation_starters",
+        "shared", "mcp_servers",
+        "sub_assistants", "enabled_builtin_subagents", "skills", "categories"
+      ],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "description": {"type": ["string", "null"]},
+        "system_prompt": {"type": "string", "minLength": 1},
+        "type": {"const": "codemie"},
+        "context": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["context_type", "ref"],
+            "properties": {
+              "context_type": {"enum": ["knowledge_base", "code", "provider"]},
+              "ref": {"$ref": "#/$defs/datasourceKey"}
+            }
+          }
+        },
+        "icon_url": {"type": ["string", "null"]},
+        "llm_model_type": {"type": "string", "minLength": 1},
+        "enable_image_generation": {"type": ["boolean", "null"]},
+        "image_generation_model": {"type": ["string", "null"]},
+        "toolkits": {"type": "array", "items": {"$ref": "#/$defs/toolkit"}},
+        "conversation_starters": {"type": "array", "items": {"type": "string"}},
+        "shared": {"type": "boolean"},
+        "is_global": {"type": ["boolean", "null"]},
+        "agent_mode": {"enum": ["general", "plan_execute", null]},
+        "plan_prompt": {"type": ["string", "null"]},
+        "temperature": {"type": ["number", "null"], "minimum": 0, "maximum": 2},
+        "top_p": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "tools_tokens_size_limit": {"type": ["integer", "null"], "minimum": 1},
+        "smart_tool_selection_enabled": {"type": ["boolean", "null"]},
+        "hedging_config": {"anyOf": [{"$ref": "#/$defs/hedgingConfig"}, {"type": "null"}]},
+        "interactive_features": {"anyOf": [{"$ref": "#/$defs/interactiveFeatures"}, {"type": "null"}]},
+        "mcp_servers": {"type": "array", "items": {"$ref": "#/$defs/mcpServer"}},
+        "sub_assistants": {"type": "array", "items": {"$ref": "#/$defs/assistantKey"}},
+        "enabled_builtin_subagents": {"type": "array", "uniqueItems": true, "items": {"const": "GENERAL_PURPOSE_SUBAGENT"}},
+        "skills": {"type": "array", "items": {"$ref": "#/$defs/skillKey"}},
+        "categories": {"type": "array", "maxItems": 3, "items": {"type": "string"}},
+        "prompt_variables": {"type": ["array", "null"], "items": {"$ref": "#/$defs/promptVariable"}},
+        "custom_metadata": {"type": ["object", "null"]},
+        "guardrail_assignments": {"type": ["array", "null"], "items": {"$ref": "#/$defs/guardrailAssignment"}}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"agent_mode": {"const": "plan_execute"}}, "required": ["agent_mode"]},
+          "then": {"required": ["plan_prompt"], "properties": {"plan_prompt": {"type": "string", "minLength": 1}}}
+        }
+      ]
+    },
+    "assistantDeclaration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["apiVersion", "kind", "metadata", "spec"],
+      "properties": {
+        "apiVersion": {"const": "codemie.epam.com/v1alpha1"},
+        "kind": {"const": "Assistant"},
+        "metadata": {"$ref": "#/$defs/assistantMetadata"},
+        "spec": {"$ref": "#/$defs/assistantSpec"}
+      }
+    },
+    "skillMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "project": {"$ref": "#/$defs/projectProperty"},
+        "name": {"type": "string", "minLength": 3, "maxLength": 64, "pattern": "^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$"}
+      }
+    },
+    "companionFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "mime_type", "encoding", "size_bytes", "content"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "mime_type": {"type": "string", "minLength": 1},
+        "encoding": {"enum": ["text", "base64"]},
+        "size_bytes": {"type": "integer", "minimum": 0},
+        "content": {"type": "string"}
+      }
+    },
+    "skillSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "visibility", "categories", "toolkits", "mcp_servers", "companion_files", "enabled_builtin_subagents"],
+      "properties": {
+        "description": {"type": "string", "minLength": 10, "maxLength": 1000},
+        "content": {"type": "string", "minLength": 100, "maxLength": 30000},
+        "contentFrom": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?![A-Za-z]:[\\\\/]).+\\.md$"},
+        "visibility": {"enum": ["private", "project", "public"]},
+        "categories": {"type": "array", "maxItems": 3, "items": {"type": "string"}},
+        "toolkits": {"type": "array", "items": {"$ref": "#/$defs/toolkit"}},
+        "mcp_servers": {"type": "array", "items": {"$ref": "#/$defs/mcpServer"}},
+        "companion_files": {"type": "array", "items": {"$ref": "#/$defs/companionFile"}},
+        "enabled_builtin_subagents": {"type": "array", "uniqueItems": true, "items": {"const": "GENERAL_PURPOSE_SUBAGENT"}}
+      },
+      "oneOf": [
+        {"required": ["content"], "not": {"required": ["contentFrom"]}},
+        {"required": ["contentFrom"], "not": {"required": ["content"]}}
+      ]
+    },
+    "skillDeclaration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["apiVersion", "kind", "metadata", "spec"],
+      "properties": {
+        "apiVersion": {"const": "codemie.epam.com/v1alpha1"},
+        "kind": {"const": "Skill"},
+        "metadata": {"$ref": "#/$defs/skillMetadata"},
+        "spec": {"$ref": "#/$defs/skillSpec"}
+      }
+    },
+    "workflowMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slug"],
+      "properties": {
+        "project": {"$ref": "#/$defs/projectProperty"},
+        "slug": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[^\\u0000-\\u001f\\u007f\\u0080-\\u009f\\u202a-\\u202e\\u2066-\\u2069]+$"
+        }
+      }
+    },
+    "workflowAssistantTool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "integration_alias": {"type": "string"}
+      }
+    },
+    "workflowActorCommon": {
+      "type": "object",
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "name": {"type": ["string", "null"]},
+        "model": {"type": ["string", "null"]},
+        "temperature": {"type": ["number", "null"], "minimum": 0, "maximum": 2},
+        "limit_tool_output_tokens": {"type": ["integer", "null"], "minimum": 1, "maximum": 2147483647},
+        "tools": {"type": "array", "items": {"$ref": "#/$defs/workflowAssistantTool"}},
+        "exclude_extra_context_tools": {"type": "boolean"},
+        "mcp_servers": {"type": "array", "items": {"$ref": "#/$defs/mcpServer"}}
+      }
+    },
+    "persistedWorkflowActor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "assistantRef", "name", "model", "limit_tool_output_tokens",
+        "tools", "exclude_extra_context_tools", "mcp_servers"
+      ],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "assistantRef": {"$ref": "#/$defs/assistantKey"},
+        "name": {"type": "string"},
+        "model": {"type": "string"},
+        "temperature": {"type": ["number", "null"], "minimum": 0, "maximum": 2},
+        "limit_tool_output_tokens": {"type": "integer", "minimum": 1, "maximum": 2147483647},
+        "tools": {"type": "array", "items": {"$ref": "#/$defs/workflowAssistantTool"}},
+        "exclude_extra_context_tools": {"type": "boolean"},
+        "mcp_servers": {"type": "array", "items": {"$ref": "#/$defs/mcpServer"}}
+      }
+    },
+    "inlineWorkflowActor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "name", "model", "system_prompt", "limit_tool_output_tokens",
+        "tools", "exclude_extra_context_tools", "mcp_servers", "skillRefs",
+        "datasourceRefs"
+      ],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "name": {"type": "string"},
+        "model": {"type": "string"},
+        "temperature": {"type": ["number", "null"], "minimum": 0, "maximum": 2},
+        "system_prompt": {"type": "string", "minLength": 1},
+        "limit_tool_output_tokens": {"type": "integer", "minimum": 1, "maximum": 2147483647},
+        "tools": {"type": "array", "items": {"$ref": "#/$defs/workflowAssistantTool"}},
+        "exclude_extra_context_tools": {"type": "boolean"},
+        "mcp_servers": {"type": "array", "items": {"$ref": "#/$defs/mcpServer"}},
+        "skillRefs": {"type": "array", "items": {"$ref": "#/$defs/skillKey"}},
+        "datasourceRefs": {"type": "array", "items": {"$ref": "#/$defs/datasourceKey"}}
+      }
+    },
+    "workflowTool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "tool", "tool_args", "integration_alias", "trace",
+        "resolve_dynamic_values_in_response", "input_key"
+      ],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "tool": {"type": "string", "minLength": 1},
+        "tool_args": {"type": "object"},
+        "integration_alias": {"type": "string"},
+        "tool_result_json_pointer": {"type": ["string", "null"]},
+        "trace": {"type": "boolean"},
+        "mcp_server": {"anyOf": [{"$ref": "#/$defs/mcpServer"}, {"type": "null"}]},
+        "resolve_dynamic_values_in_response": {"type": "boolean"},
+        "input_key": {"type": "string"},
+        "tokens_size_limit": {"type": ["integer", "null"], "minimum": 1}
+      }
+    },
+    "workflowCustomNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "custom_node_id", "name", "model", "system_prompt", "config"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "custom_node_id": {"type": "string", "minLength": 1},
+        "name": {"type": "string"},
+        "model": {"type": "string"},
+        "system_prompt": {"type": "string"},
+        "config": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "documents_filter": {"type": "string"},
+            "documents_filtering_pattern": {"type": "string"}
+          },
+          "not": {"required": ["documents_filter", "documents_filtering_pattern"]}
+        }
+      }
+    },
+    "workflowRetryPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["initial_interval", "backoff_factor", "max_interval", "max_attempts"],
+      "properties": {
+        "initial_interval": {"type": "number", "minimum": 0, "maximum": 3600000},
+        "backoff_factor": {"type": "number", "minimum": 1, "maximum": 10},
+        "max_interval": {"type": "number", "minimum": 0, "maximum": 3600000},
+        "max_attempts": {"type": "integer", "minimum": 1, "maximum": 100}
+      }
+    },
+    "workflowNext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "override_task", "store_in_context", "include_in_llm_history",
+        "clear_prior_messages", "clear_context_store",
+        "include_in_iterator_context", "append_to_context"
+      ],
+      "properties": {
+        "state_id": {"type": "string"},
+        "state_ids": {"type": "array", "items": {"type": "string"}},
+        "iter_key": {"type": "string"},
+        "override_task": {"type": "boolean"},
+        "condition": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["expression", "then", "otherwise"],
+          "properties": {
+            "expression": {"type": "string"},
+            "then": {"type": "string"},
+            "otherwise": {"type": "string"}
+          }
+        },
+        "switch": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["cases", "default"],
+          "properties": {
+            "cases": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["condition", "state_id"],
+                "properties": {"condition": {"type": "string"}, "state_id": {"type": "string"}}
+              }
+            },
+            "default": {"type": "string"}
+          }
+        },
+        "output_key": {"type": "string"},
+        "store_in_context": {"type": "boolean"},
+        "include_in_llm_history": {"type": "boolean"},
+        "clear_prior_messages": {"type": "boolean"},
+        "clear_context_store": {"oneOf": [{"type": "boolean"}, {"const": "keep_current"}]},
+        "reset_keys_in_context_store": {"type": "array", "items": {"type": "string"}},
+        "include_in_iterator_context": {"type": "array", "items": {"type": "string"}},
+        "append_to_context": {"type": "boolean"}
+      },
+      "allOf": [
+        {"not": {"required": ["condition", "switch"]}},
+        {"not": {"required": ["state_id", "state_ids"]}},
+        {"not": {"required": ["state_ids", "iter_key"]}},
+        {"not": {"required": ["state_ids", "condition"]}},
+        {"not": {"required": ["state_ids", "switch"]}},
+        {"not": {"required": ["iter_key", "condition"]}},
+        {"not": {"required": ["iter_key", "switch"]}}
+      ],
+      "dependentRequired": {"iter_key": ["state_id"]}
+    },
+    "workflowState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "task", "finish_iteration", "next", "retry_policy",
+        "interrupt_before", "resolve_dynamic_values_in_prompt", "result_as_human_message"
+      ],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "assistant_id": {"type": "string", "minLength": 1},
+        "custom_node_id": {"type": "string", "minLength": 1},
+        "tool_id": {"type": "string", "minLength": 1},
+        "tool_args": {"type": "object"},
+        "task": {"type": "string"},
+        "finish_iteration": {"type": "boolean"},
+        "next": {"$ref": "#/$defs/workflowNext"},
+        "output_schema": {"type": "string"},
+        "retry_policy": {"$ref": "#/$defs/workflowRetryPolicy"},
+        "interrupt_before": {"type": "boolean"},
+        "resolve_dynamic_values_in_prompt": {"type": "boolean"},
+        "result_as_human_message": {"type": "boolean"}
+      },
+      "oneOf": [
+        {"required": ["assistant_id"], "not": {"anyOf": [{"required": ["custom_node_id"]}, {"required": ["tool_id"]}]}},
+        {"required": ["custom_node_id"], "not": {"anyOf": [{"required": ["assistant_id"]}, {"required": ["tool_id"]}]}},
+        {"required": ["tool_id", "tool_args"], "not": {"anyOf": [{"required": ["assistant_id"]}, {"required": ["custom_node_id"]}]}}
+      ]
+    },
+    "executionConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "messages_limit_before_summarization", "tokens_limit_before_summarization",
+        "type", "enable_summarization_node", "recursion_limit", "max_concurrency",
+        "verbose", "max_iteration_key_output_limit", "assistants", "tools",
+        "custom_nodes", "states", "retry_policy"
+      ],
+      "properties": {
+        "messages_limit_before_summarization": {"type": "integer", "minimum": 1, "maximum": 10000},
+        "tokens_limit_before_summarization": {"type": "integer", "minimum": 1, "maximum": 2147483647},
+        "type": {"type": "string"},
+        "enable_summarization_node": {"type": "boolean"},
+        "recursion_limit": {"type": "integer", "minimum": 1, "maximum": 5000},
+        "max_concurrency": {"type": "integer", "minimum": 1, "maximum": 100},
+        "verbose": {"type": "boolean"},
+        "max_iteration_key_output_limit": {"type": "integer", "minimum": 1, "maximum": 10000},
+        "assistants": {"type": "array", "items": {"oneOf": [{"$ref": "#/$defs/persistedWorkflowActor"}, {"$ref": "#/$defs/inlineWorkflowActor"}]}},
+        "tools": {"type": "array", "items": {"$ref": "#/$defs/workflowTool"}},
+        "custom_nodes": {"type": "array", "items": {"$ref": "#/$defs/workflowCustomNode"}},
+        "states": {"type": "array", "items": {"$ref": "#/$defs/workflowState"}},
+        "retry_policy": {"$ref": "#/$defs/workflowRetryPolicy"}
+      }
+    },
+    "workflowSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "description", "mode", "execution_config", "shared"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "description": {"type": "string"},
+        "mode": {"enum": ["Sequential", "Autonomous"]},
+        "execution_config": {"$ref": "#/$defs/executionConfig"},
+        "start_hint": {"type": ["string", "null"]},
+        "icon_url": {"type": ["string", "null"]},
+        "shared": {"type": "boolean"},
+        "supervisor_prompt": {"type": ["string", "null"]},
+        "meta_config": {
+          "type": ["object", "null"],
+          "propertyNames": {"not": {"const": "codemie.epam.com/gitops/workflow-identity"}}
+        },
+        "guardrail_assignments": {"type": ["array", "null"], "items": {"$ref": "#/$defs/guardrailAssignment"}}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"mode": {"const": "Autonomous"}}, "required": ["mode"]},
+          "then": {"required": ["supervisor_prompt"], "properties": {"supervisor_prompt": {"type": "string", "minLength": 1}}}
+        }
+      ]
+    },
+    "workflowDeclaration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["apiVersion", "kind", "metadata", "spec"],
+      "properties": {
+        "apiVersion": {"const": "codemie.epam.com/v1alpha1"},
+        "kind": {"const": "Workflow"},
+        "metadata": {"$ref": "#/$defs/workflowMetadata"},
+        "spec": {"$ref": "#/$defs/workflowSpec"}
+      }
+    },
+    "datasourceMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo_name"],
+      "properties": {
+        "project": {"$ref": "#/$defs/projectProperty"},
+        "repo_name": {"type": "string", "minLength": 4, "maxLength": 50, "pattern": "^[a-zA-Z0-9][A-Za-z0-9_-]*$"}
+      }
+    },
+    "gitDatasourceSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index_type", "description", "link", "branch", "indexType", "projectSpaceVisible"],
+      "properties": {
+        "index_type": {"const": "git"},
+        "description": {"type": "string", "minLength": 1, "maxLength": 500},
+        "link": {"type": "string", "minLength": 1, "maxLength": 1000, "pattern": "^https?://[^@#\\x00-\\x1f\\x7f\\s]+$"},
+        "branch": {"type": "string", "minLength": 1, "maxLength": 1000, "pattern": "^[a-zA-Z0-9][A-Za-z0-9_./-]*$"},
+        "filesFilter": {"type": ["string", "null"]},
+        "indexType": {"enum": ["code", "summary", "chunk-summary"]},
+        "embeddingsModel": {"type": ["string", "null"]},
+        "summarizationModel": {"type": ["string", "null"]},
+        "prompt": {"type": ["string", "null"]},
+        "docsGeneration": {"type": ["boolean", "null"]},
+        "projectSpaceVisible": {"type": "boolean"},
+        "setting_id": {"type": ["string", "null"]},
+        "guardrail_assignments": {"type": ["array", "null"], "items": {"$ref": "#/$defs/guardrailAssignment"}},
+        "cron_expression": {"type": ["string", "null"]},
+        "timezone": {"type": ["string", "null"]}
+      }
+    },
+    "svnDatasourceSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index_type", "description", "link", "branch", "indexType", "projectSpaceVisible"],
+      "properties": {
+        "index_type": {"const": "svn"},
+        "description": {"type": "string", "minLength": 1, "maxLength": 500},
+        "link": {"type": "string", "minLength": 1, "maxLength": 1000, "pattern": "^(?:https?|svn(?:\\+ssh)?)://[^@#\\x00-\\x1f\\x7f\\s]+$"},
+        "branch": {"type": "string", "minLength": 1, "maxLength": 1000, "pattern": "^[a-zA-Z0-9][A-Za-z0-9_./-]*$"},
+        "filesFilter": {"type": ["string", "null"]},
+        "indexType": {"enum": ["code", "summary", "chunk-summary"]},
+        "embeddingsModel": {"type": ["string", "null"]},
+        "summarizationModel": {"type": ["string", "null"]},
+        "prompt": {"type": ["string", "null"]},
+        "docsGeneration": {"type": ["boolean", "null"]},
+        "projectSpaceVisible": {"type": "boolean"},
+        "setting_id": {"type": ["string", "null"]},
+        "guardrail_assignments": {"type": ["array", "null"], "items": {"$ref": "#/$defs/guardrailAssignment"}},
+        "cron_expression": {"type": ["string", "null"]},
+        "timezone": {"type": ["string", "null"]}
+      }
+    },
+    "confluenceDatasourceSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index_type", "description", "cql"],
+      "properties": {
+        "index_type": {"const": "confluence"},
+        "description": {"type": "string", "minLength": 1, "maxLength": 500},
+        "project_space_visible": {"type": ["boolean", "null"]},
+        "guardrail_assignments": {"type": ["array", "null"], "items": {"$ref": "#/$defs/guardrailAssignment"}},
+        "cql": {"type": "string", "minLength": 1},
+        "setting_id": {"type": ["string", "null"]},
+        "include_restricted_content": {"type": ["boolean", "null"]},
+        "include_archived_content": {"type": ["boolean", "null"]},
+        "include_attachments": {"type": ["boolean", "null"]},
+        "include_comments": {"type": ["boolean", "null"]},
+        "keep_markdown_format": {"type": ["boolean", "null"]},
+        "keep_newlines": {"type": ["boolean", "null"]},
+        "embedding_model": {"type": ["string", "null"]},
+        "cron_expression": {"type": ["string", "null"]},
+        "timezone": {"type": ["string", "null"]}
+      }
+    },
+    "jiraDatasourceSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index_type", "description", "jql"],
+      "properties": {
+        "index_type": {"const": "jira"},
+        "description": {"type": "string", "minLength": 1, "maxLength": 500},
+        "project_space_visible": {"type": ["boolean", "null"]},
+        "guardrail_assignments": {"type": ["array", "null"], "items": {"$ref": "#/$defs/guardrailAssignment"}},
+        "jql": {"type": "string", "minLength": 1},
+        "setting_id": {"type": ["string", "null"]},
+        "embedding_model": {"type": ["string", "null"]},
+        "cron_expression": {"type": ["string", "null"]},
+        "timezone": {"type": ["string", "null"]}
+      }
+    },
+    "xrayDatasourceSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index_type", "description", "jql"],
+      "properties": {
+        "index_type": {"const": "xray"},
+        "description": {"type": "string", "minLength": 1, "maxLength": 500},
+        "project_space_visible": {"type": ["boolean", "null"]},
+        "guardrail_assignments": {"type": ["array", "null"], "items": {"$ref": "#/$defs/guardrailAssignment"}},
+        "jql": {"type": "string", "minLength": 1},
+        "setting_id": {"type": ["string", "null"]},
+        "embedding_model": {"type": ["string", "null"]},
+        "cron_expression": {"type": ["string", "null"]},
+        "timezone": {"type": ["string", "null"]}
+      }
+    },
+    "azureWikiDatasourceSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index_type", "description", "wiki_query"],
+      "properties": {
+        "index_type": {"const": "azure_devops_wiki"},
+        "description": {"type": "string", "minLength": 1, "maxLength": 500},
+        "project_space_visible": {"type": ["boolean", "null"]},
+        "guardrail_assignments": {"type": ["array", "null"], "items": {"$ref": "#/$defs/guardrailAssignment"}},
+        "wiki_query": {"type": "string"},
+        "wiki_name": {"type": ["string", "null"]},
+        "setting_id": {"type": ["string", "null"]},
+        "embedding_model": {"type": ["string", "null"]},
+        "cron_expression": {"type": ["string", "null"]},
+        "timezone": {"type": ["string", "null"]}
+      }
+    },
+    "azureWorkItemDatasourceSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index_type", "description", "wiql_query"],
+      "properties": {
+        "index_type": {"const": "azure_devops_work_item"},
+        "description": {"type": "string", "minLength": 1, "maxLength": 500},
+        "project_space_visible": {"type": ["boolean", "null"]},
+        "guardrail_assignments": {"type": ["array", "null"], "items": {"$ref": "#/$defs/guardrailAssignment"}},
+        "wiql_query": {"type": "string"},
+        "setting_id": {"type": ["string", "null"]},
+        "embedding_model": {"type": ["string", "null"]},
+        "cron_expression": {"type": ["string", "null"]},
+        "timezone": {"type": ["string", "null"]}
+      }
+    },
+    "fileDatasourceSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index_type", "description", "files", "include_email_attachments"],
+      "properties": {
+        "index_type": {"const": "file"},
+        "description": {"type": "string", "minLength": 1, "maxLength": 500},
+        "project_space_visible": {"type": ["boolean", "null"]},
+        "guardrail_assignments": {"type": ["array", "null"], "items": {"$ref": "#/$defs/guardrailAssignment"}},
+        "files": {"type": "array", "minItems": 1, "maxItems": 10, "items": {"type": "string", "minLength": 1}},
+        "uploaded_files": {"type": ["array", "null"], "items": {"type": "string", "minLength": 1}},
+        "csv_separator": {"type": ["string", "null"]},
+        "csv_start_row": {"type": ["integer", "null"], "minimum": 0},
+        "csv_rows_per_document": {"type": ["integer", "null"], "minimum": 1},
+        "embedding_model": {"type": ["string", "null"]},
+        "include_email_attachments": {"type": "boolean"}
+      }
+    },
+    "googleDatasourceSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index_type", "description", "googleDoc", "setting_id"],
+      "properties": {
+        "index_type": {"const": "google"},
+        "description": {"type": "string", "minLength": 1, "maxLength": 500},
+        "project_space_visible": {"type": ["boolean", "null"]},
+        "guardrail_assignments": {"type": ["array", "null"], "items": {"$ref": "#/$defs/guardrailAssignment"}},
+        "googleDoc": {"type": "string", "pattern": "^https://docs\\.google\\.com/document/(?:u/[0-9]+/)?d/[^/]+/edit(?:[?#].*)?$"},
+        "setting_id": {"type": "string", "minLength": 1},
+        "embedding_model": {"type": ["string", "null"]},
+        "cron_expression": {"type": ["string", "null"]},
+        "timezone": {"type": ["string", "null"]}
+      }
+    },
+    "sharepointDatasourceSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index_type", "description", "site_url", "auth_type"],
+      "properties": {
+        "index_type": {"const": "sharepoint"},
+        "description": {"type": "string", "minLength": 1, "maxLength": 500},
+        "project_space_visible": {"type": ["boolean", "null"]},
+        "guardrail_assignments": {"type": ["array", "null"], "items": {"$ref": "#/$defs/guardrailAssignment"}},
+        "site_url": {"type": "string", "pattern": "^https://[^@#\\x00-\\x1f\\x7f\\s]+$"},
+        "include_pages": {"type": ["boolean", "null"]},
+        "include_documents": {"type": ["boolean", "null"]},
+        "include_lists": {"type": ["boolean", "null"]},
+        "max_file_size_mb": {"type": ["integer", "null"], "minimum": 1, "maximum": 500},
+        "files_filter": {"type": ["string", "null"]},
+        "auth_type": {"enum": ["integration", "oauth_codemie", "oauth_custom"]},
+        "setting_id": {"type": ["string", "null"]},
+        "embedding_model": {"type": ["string", "null"]},
+        "cron_expression": {"type": ["string", "null"]},
+        "timezone": {"type": ["string", "null"]},
+        "oauth_client_id": {"type": ["string", "null"]},
+        "oauth_tenant_id": {"type": ["string", "null"]}
+      }
+    },
+    "datasourceSpec": {
+      "oneOf": [
+        {"$ref": "#/$defs/gitDatasourceSpec"},
+        {"$ref": "#/$defs/svnDatasourceSpec"},
+        {"$ref": "#/$defs/confluenceDatasourceSpec"},
+        {"$ref": "#/$defs/jiraDatasourceSpec"},
+        {"$ref": "#/$defs/xrayDatasourceSpec"},
+        {"$ref": "#/$defs/fileDatasourceSpec"},
+        {"$ref": "#/$defs/googleDatasourceSpec"},
+        {"$ref": "#/$defs/azureWikiDatasourceSpec"},
+        {"$ref": "#/$defs/azureWorkItemDatasourceSpec"},
+        {"$ref": "#/$defs/sharepointDatasourceSpec"}
+      ]
+    },
+    "datasourceDeclaration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["apiVersion", "kind", "metadata", "spec"],
+      "properties": {
+        "apiVersion": {"const": "codemie.epam.com/v1alpha1"},
+        "kind": {"const": "Datasource"},
+        "metadata": {"$ref": "#/$defs/datasourceMetadata"},
+        "spec": {"$ref": "#/$defs/datasourceSpec"}
+      }
+    }
+  }
+}

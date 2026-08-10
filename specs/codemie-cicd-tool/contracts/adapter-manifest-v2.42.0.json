@@ -1,0 +1,459 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "manifestVersion": 2,
+  "declarationApiVersion": "codemie.epam.com/v1alpha1",
+  "source": {
+    "backend": {
+      "tag": "2.42.0",
+      "commit": "2a481c290c99bf30ef80aadafa03d876a7f5f732"
+    },
+    "ui": {
+      "tag": "2.42.0",
+      "commit": "55945d075d82e771c4a2f4238afec1eb4c79d1e1"
+    }
+  },
+  "compatibilityPolicy": {
+    "infoEndpointIsIdentity": false,
+    "unknownConsumedResponseField": "ignore",
+    "missingOrInvalidConsumedResponseField": "fail-before-write",
+    "unknownRequestOrDeclarationField": "reject",
+    "deploymentDrift": "verification-and-release-contract-test"
+  },
+  "clientConfigurationContract": {
+    "repositorySchema": "repository-config.schema.json",
+    "repositoryAllowedKeys": ["url", "auth_url", "project"],
+    "targetUrlPrecedence": ["--url", "CODEMIE_URL", "config.url"],
+    "authUrlPrecedence": ["--auth-url", "CODEMIE_AUTH_URL", "config.auth_url"],
+    "authUrlRequiredFor": "keycloak_client_credentials",
+    "authUrlNeverDerivedFrom": ["--url", "CODEMIE_URL", "config.url", "hostname-or-path-convention"],
+    "credentialPrecedence": {
+      "bearer_token": ["CODEMIE_TOKEN"],
+      "client_id": ["--client-id", "CODEMIE_CLIENT_ID"],
+      "client_secret": ["CODEMIE_CLIENT_SECRET"],
+      "email": ["--email", "CODEMIE_EMAIL"],
+      "password": ["CODEMIE_PASSWORD"]
+    },
+    "secretCredentialFlagsForbidden": ["--token", "--client-secret", "--password"],
+    "nonSecretSelectors": ["--client-id", "--email"],
+    "secretFlagPolicy": "exit-2-before-network",
+    "securityNote": "SEC-001 remediation (v25): bearer_token, client_secret, and password are environment-only. Supplying --token, --client-secret, or --password as a CLI flag is E_USAGE exit 2 before network access.",
+    "missingOrInvalidSelectedAuthUrl": "exit-2-before-network",
+    "credentialsInRepositoryConfig": "reject"
+  },
+  "projectionPolicy": {
+    "authoringRequired": "present and non-null before network; server defaults are not materialized",
+    "optionalNull": "omission or YAML null becomes an explicit JSON null in every applicable JSON request",
+    "authoringOnly": "consumed by a named transform and never emitted under the author field name",
+    "operationInapplicable": "absent from that operation without a fabricated property",
+    "mixedOwned": "assembled by the named read/merge/write rule",
+    "readOnlyOrProhibited": "rejected in declarations",
+    "identityProjectDefault": "metadata.project may be absent only when repository config supplies the non-empty effective project"
+  },
+  "capabilityPreflight": {
+    "route": "GET /v1/user",
+    "consumedFields": ["is_admin", "is_maintainer", "projects[].name", "projects[].is_project_admin"],
+    "sourceEvidence": "rest_api/routers/user.py:52-115; rest_api/models/user_management.py:246-263"
+  },
+  "entities": {
+    "Assistant": {
+      "naturalKey": ["project", "slug"],
+      "routes": {
+        "resolve": "GET /v1/assistants/slug/{slug}?project={project}",
+        "create": "POST /v1/assistants",
+        "update": "PUT /v1/assistants/{id}"
+      },
+      "requestModel": "rest_api/models/assistant.py:294-354 AssistantRequest",
+      "requestFields": [
+        "name", "description", "system_prompt", "project", "context", "icon_url",
+        "llm_model_type", "enable_image_generation", "image_generation_model", "toolkits",
+        "conversation_starters", "shared", "is_react", "is_global", "agent_mode",
+        "plan_prompt", "slug", "temperature", "top_p", "tools_tokens_size_limit",
+        "smart_tool_selection_enabled", "hedging_config", "interactive_features",
+        "mcp_servers", "assistant_ids", "enabled_builtin_subagents", "skill_ids", "bedrock",
+        "bedrock_agentcore_runtime", "type", "agent_card", "categories", "prompt_variables",
+        "custom_metadata", "guardrail_assignments", "skip_integration_validation"
+      ],
+      "excludedRequestFields": ["is_react", "bedrock", "bedrock_agentcore_runtime", "agent_card", "skip_integration_validation"],
+      "fieldClasses": {
+        "authoringRequired": [
+          "spec.name", "spec.system_prompt", "spec.llm_model_type", "spec.type",
+          "spec.context", "spec.toolkits", "spec.conversation_starters", "spec.shared",
+          "spec.mcp_servers", "spec.sub_assistants", "spec.enabled_builtin_subagents",
+          "spec.skills", "spec.categories", "spec.toolkits[].toolkit",
+          "spec.toolkits[].tools", "spec.toolkits[].label", "spec.toolkits[].settings_config",
+          "spec.toolkits[].tools[].name", "spec.toolkits[].tools[].settings_config",
+          "spec.mcp_servers[].name", "spec.mcp_servers[].enabled",
+          "spec.mcp_servers[].use_custom_config",
+          "spec.mcp_servers[].resolve_dynamic_values_in_arguments",
+          "spec.prompt_variables[].key", "spec.prompt_variables[].default_value",
+          "spec.prompt_variables[].is_sensitive"
+        ],
+        "conditionalRequired": ["spec.plan_prompt when spec.agent_mode=plan_execute"],
+        "optionalNull": [
+          "spec.description", "spec.icon_url", "spec.enable_image_generation",
+          "spec.image_generation_model", "spec.is_global", "spec.agent_mode",
+          "spec.plan_prompt", "spec.temperature", "spec.top_p",
+          "spec.tools_tokens_size_limit", "spec.smart_tool_selection_enabled",
+          "spec.hedging_config", "spec.interactive_features", "spec.prompt_variables",
+          "spec.custom_metadata", "spec.guardrail_assignments",
+          "all nullable nested Tool/Toolkit/MCP/guardrail/hedging/prompt members admitted by the declaration schema"
+        ],
+        "authoringOnly": ["metadata.project", "metadata.slug", "spec.sub_assistants", "spec.skills", "spec.context[].ref"],
+        "readOnlyOrProhibited": ["id", "created_by", "created_date", "updated_date", "is_react", "bedrock", "bedrock_agentcore_runtime", "agent_card", "skip_integration_validation"]
+      },
+      "defaultsIgnored": {
+        "project": "DEMO_PROJECT", "context": [], "toolkits": [],
+        "conversation_starters": [], "shared": true, "type": "codemie",
+        "categories": []
+      },
+      "authorTransform": {
+        "metadata.project": "project",
+        "metadata.slug": "slug",
+        "sub_assistants": "assistant_ids server IDs",
+        "skills": "skill_ids server IDs",
+        "datasourceRefs": "context {context_type,name} after exact validation"
+      },
+      "serverOwnedReadFields": ["id", "created_date", "updated_date", "created_by", "user_abilities"],
+      "writeEvidence": "detail/list user_abilities and project authorization",
+      "sourceEvidence": [
+        "rest_api/routers/assistant.py:194-364,669-809",
+        "rest_api/models/assistant.py:294-354,728-735"
+      ]
+    },
+    "Workflow": {
+      "naturalKey": ["project", "slug"],
+      "serverTransportId": "UUID returned by exhaustive reserved-meta_config resolution",
+      "routes": {
+        "enumerate": "GET /v1/workflows?minimal_response=false&page={page}&per_page={per_page}&scope={scope}",
+        "detail": "GET /v1/workflows/id/{id}",
+        "create": "POST /v1/workflows",
+        "update": "PUT /v1/workflows/{id}"
+      },
+      "requestModels": [
+        "core/workflow_models/workflow_models.py:406-423 CreateWorkflowRequest",
+        "core/workflow_models/workflow_models.py:424-436 UpdateWorkflowRequest"
+      ],
+      "createRequestFields": [
+        "id", "name", "mode", "description", "start_hint", "project", "icon_url",
+        "yaml_config", "shared", "assistants", "tools", "states", "supervisor_prompt",
+        "meta_config", "guardrail_assignments"
+      ],
+      "updateRequestFields": [
+        "id", "name", "description", "start_hint", "project", "mode", "icon_url",
+        "shared", "yaml_config", "supervisor_prompt", "meta_config", "guardrail_assignments"
+      ],
+      "clientExcludedRequestFields": ["id"],
+      "fieldClasses": {
+        "authoringRequired": [
+          "spec.name", "spec.description", "spec.mode", "spec.shared",
+          "spec.execution_config", "all declaration-schema required execution_config members"
+        ],
+        "conditionalRequired": ["spec.supervisor_prompt when spec.mode=Autonomous"],
+        "optionalNull": [
+          "spec.start_hint", "spec.icon_url", "spec.supervisor_prompt",
+          "spec.guardrail_assignments", "spec.execution_config.assistants[].temperature",
+          "spec.execution_config.tools[].tool_result_json_pointer",
+          "spec.execution_config.tools[].mcp_server",
+          "spec.execution_config.tools[].tokens_size_limit"
+        ],
+        "authoringOnly": ["metadata.project", "metadata.slug", "spec.execution_config.* natural-reference positions"],
+        "operationInapplicable": [
+          "create flattened assistants/tools/states are not separate update properties",
+          "persisted assistant inline-only skillRefs/datasourceRefs",
+          "inline assistant assistantRef",
+          "non-selected state actor ID and non-tool state tool_args",
+          "non-selected next routing alternatives",
+          "unused custom-node filter alternative",
+          "optional output_schema when no output schema is selected",
+          "optional assistant-tool integration_alias when no integration is selected"
+        ],
+        "mixedOwned": ["spec.meta_config"],
+        "readOnlyOrProhibited": ["request.id", "server id", "created_by", "updated_by", "yaml_config_history"]
+      },
+      "defaultsIgnored": {
+        "mode": "Sequential", "shared": true,
+        "execution_config.assistants[].limit_tool_output_tokens": 10000,
+        "execution_config.assistants[].tools": [],
+        "execution_config.assistants[].exclude_extra_context_tools": false,
+        "execution_config.assistants[].mcp_servers": [],
+        "execution_config.tools[].trace": false,
+        "execution_config.tools[].resolve_dynamic_values_in_response": false,
+        "execution_config.states[].task": "",
+        "execution_config.states[].finish_iteration": false,
+        "execution_config.states[].interrupt_before": false,
+        "execution_config.states[].resolve_dynamic_values_in_prompt": false,
+        "execution_config.states[].result_as_human_message": false,
+        "execution_config.states[].next.override_task": false,
+        "execution_config.states[].next.store_in_context": true,
+        "execution_config.states[].next.include_in_llm_history": true,
+        "execution_config.states[].next.clear_prior_messages": false,
+        "execution_config.states[].next.clear_context_store": false,
+        "execution_config.states[].next.include_in_iterator_context": ["*"],
+        "execution_config.states[].next.append_to_context": false,
+        "execution_config.type": "generic",
+        "execution_config.enable_summarization_node": true,
+        "execution_config.verbose": true,
+        "execution_config.max_iteration_key_output_limit": 200
+      },
+      "reservedIdentityReadWritePath": "meta_config[\"codemie.epam.com/gitops/workflow-identity\"]",
+      "metaConfigCodec": {
+        "serverType": "nullable UTF-8 JSON object encoded as one string",
+        "decode": "reject malformed JSON, duplicate object keys, non-object roots, invalid reserved record, and invalid UTF-8",
+        "merge": "preserve decoded non-reserved members, overlay authored non-reserved members, then set the exact reserved identity member",
+        "encode": "compact JSON string; object keys sorted recursively by Unicode scalar value; UTF-8 without BOM; non-finite numbers rejected"
+      },
+      "authorTransform": {
+        "execution_config": "create yaml_config plus flattened assistants/tools/states; update yaml_config is parsed by the service",
+        "persisted assistants[].assistantRef": "assistants[].assistant_id",
+        "inline assistants[].skillRefs": "assistants[].skill_ids",
+        "inline assistants[].datasourceRefs": "assistants[].datasource_ids",
+        "assistants[].id": "workflow-local id preserved",
+        "states[].assistant_id": "workflow-local assistant id preserved"
+      },
+      "paginationConsumedFields": ["data", "pagination.page", "pagination.pages", "pagination.total", "pagination.per_page"],
+      "entityConsumedFields": ["id", "project", "name", "meta_config", "user_abilities"],
+      "sourceEvidence": [
+        "rest_api/routers/workflow.py:109-142,224-392",
+        "core/workflow_models/workflow_models.py:34-64,406-436",
+        "core/workflow_models/workflow_config.py:69-125,343-374",
+        "service/workflow_config/workflow_config_index_service.py:46-163,222-265",
+        "service/workflow_service.py:54-66,651-683"
+      ]
+    },
+    "Skill": {
+      "naturalKey": ["project", "name"],
+      "serverTransportId": "UUID returned by exhaustive exact list resolution",
+      "routes": {
+        "enumerate": "GET /v1/skills?filters={project,scope:project_with_marketplace,search}&page={page}&per_page=100",
+        "detail": "GET /v1/skills/{id}",
+        "create": "POST /v1/skills",
+        "update": "PUT /v1/skills/{id}"
+      },
+      "createRequestFields": ["name", "description", "content", "project", "visibility", "categories", "toolkits", "mcp_servers", "companion_files", "enabled_builtin_subagents"],
+      "updateRequestFields": ["name", "description", "content", "project", "visibility", "categories", "toolkits", "mcp_servers", "companion_files", "enabled_builtin_subagents"],
+      "fieldClasses": {
+        "authoringRequired": ["spec.description", "spec.visibility", "spec.categories", "spec.toolkits", "spec.mcp_servers", "spec.companion_files", "spec.enabled_builtin_subagents", "exactly one of spec.content/spec.contentFrom"],
+        "optionalNull": [],
+        "authoringOnly": ["metadata.project", "metadata.name", "spec.contentFrom"],
+        "operationInapplicable": ["unused content/contentFrom selector"],
+        "readOnlyOrProhibited": ["id", "created_by", "created_date", "updated_date", "user_abilities"]
+      },
+      "defaultsIgnored": {"visibility": "private", "categories": [], "toolkits": [], "mcp_servers": [], "companion_files": [], "enabled_builtin_subagents": []},
+      "authorTransform": {
+        "metadata.name": "name",
+        "metadata.project": "project",
+        "contentFrom": "content bytes read from the scalar path relative to the declaring YAML"
+      },
+      "paginationConsumedFields": ["skills", "page", "perPage", "total", "pages"],
+      "entityConsumedFields": ["id", "name", "project", "created_by", "user_abilities"],
+      "persistenceUniqueness": ["name", "created_by.id", "project"],
+      "sourceEvidence": [
+        "rest_api/models/skill.py:165-211,240-277,421-471,531-539",
+        "rest_api/routers/skill.py:198-316,351-436",
+        "service/skill_service.py:295-370,602-667",
+        "repository/skill_repository.py:46-253,432-631"
+      ]
+    },
+    "Datasource": {
+      "naturalKey": ["project", "repo_name"],
+      "resolution": {
+        "authoritative": "all zero-indexed pages of GET /v1/index?full_response=true&page={page}&per_page=100&filters={json} with exact client filtering",
+        "hintOnly": "GET /v1/index/find_id",
+        "pageSize": 100,
+        "paginationConsumedFields": ["data", "pagination.page", "pagination.per_page", "pagination.total", "pagination.pages"],
+        "consumedFields": ["id", "repo_name", "project_name", "index_type", "user_abilities"],
+        "sourceEvidence": "rest_api/routers/index.py:188-219; service/index/index_service.py:162-229"
+      },
+      "ordinaryCrudOnly": true,
+      "dedicatedLifecycleSurface": "not exposed by codemie-gitops",
+      "types": {
+        "git": {
+          "status": "authorable",
+          "create": "POST /v1/application/{project}/index",
+          "update": "PUT /v1/application/{project}/index/{repo_name}",
+          "authorFields": ["description", "link", "branch", "filesFilter", "indexType", "embeddingsModel", "summarizationModel", "prompt", "docsGeneration", "projectSpaceVisible", "setting_id", "guardrail_assignments", "cron_expression", "timezone"],
+          "createRequestFields": ["name", "description", "link", "branch", "filesFilter", "indexType", "embeddingsModel", "summarizationModel", "prompt", "docsGeneration", "projectSpaceVisible", "setting_id", "guardrail_assignments", "cron_expression", "timezone"],
+          "updateRequestFields": ["name", "description", "prompt", "embeddingsModel", "projectSpaceVisible", "docsGeneration", "branch", "link", "filesFilter", "setting_id", "guardrail_assignments", "cron_expression", "timezone"],
+          "createOnlyFields": ["indexType", "summarizationModel"],
+          "identityInjection": {"metadata.project": "route {project}", "metadata.repo_name": "create name / update route {repo_name}"},
+          "sourceEvidence": "core/models.py:121-151; rest_api/routers/index.py:450-561,875-1007"
+        },
+        "svn": {
+          "status": "authorable",
+          "create": "POST /v1/application/{app_name}/index/svn",
+          "update": "PUT /v1/application/{app_name}/index/svn/{repo_name}",
+          "authorFields": ["description", "link", "branch", "filesFilter", "indexType", "embeddingsModel", "summarizationModel", "prompt", "docsGeneration", "projectSpaceVisible", "setting_id", "guardrail_assignments", "cron_expression", "timezone"],
+          "createRequestFields": ["name", "description", "link", "branch", "filesFilter", "indexType", "embeddingsModel", "summarizationModel", "prompt", "docsGeneration", "projectSpaceVisible", "setting_id", "guardrail_assignments", "cron_expression", "timezone"],
+          "updateRequestFields": ["name", "description", "prompt", "embeddingsModel", "projectSpaceVisible", "docsGeneration", "branch", "link", "filesFilter", "setting_id", "guardrail_assignments", "cron_expression", "timezone"],
+          "createOnlyFields": ["indexType", "summarizationModel"],
+          "identityInjection": {"metadata.project": "route {app_name}", "metadata.repo_name": "create name / update route {repo_name}"},
+          "sourceEvidence": "core/models.py:121-151; rest_api/routers/index.py:563-704"
+        },
+        "confluence": {
+          "status": "authorable",
+          "create": "POST /v1/index/knowledge_base/confluence",
+          "update": "PUT /v1/index/knowledge_base/confluence",
+          "createRequestFields": ["name", "project_name", "description", "project_space_visible", "cql", "setting_id", "include_restricted_content", "include_archived_content", "include_attachments", "include_comments", "keep_markdown_format", "keep_newlines", "embedding_model", "cron_expression", "timezone", "guardrail_assignments"],
+          "updateRequestFields": ["name", "project_name", "description", "project_space_visible", "cql", "setting_id", "cron_expression", "timezone", "guardrail_assignments"],
+          "createOnlyFields": ["include_restricted_content", "include_archived_content", "include_attachments", "include_comments", "keep_markdown_format", "keep_newlines", "embedding_model"],
+          "sourceEvidence": "rest_api/models/index.py:1387-1426,1584-1595; rest_api/routers/index.py:1009-1062,1458-1534"
+        },
+        "jira": {
+          "status": "authorable",
+          "create": "POST /v1/index/knowledge_base/jira",
+          "update": "PUT /v1/index/knowledge_base/jira",
+          "createRequestFields": ["name", "project_name", "description", "project_space_visible", "jql", "setting_id", "embedding_model", "cron_expression", "timezone", "guardrail_assignments"],
+          "updateRequestFields": ["name", "project_name", "description", "project_space_visible", "jql", "setting_id", "cron_expression", "timezone", "guardrail_assignments"],
+          "createOnlyFields": ["embedding_model"],
+          "sourceEvidence": "rest_api/models/index.py:1427-1433,1596-1608; rest_api/routers/index.py:1063-1103,1535-1614"
+        },
+        "xray": {
+          "status": "authorable",
+          "create": "POST /v1/index/knowledge_base/xray",
+          "update": "PUT /v1/index/knowledge_base/xray",
+          "createRequestFields": ["name", "project_name", "description", "project_space_visible", "jql", "setting_id", "embedding_model", "cron_expression", "timezone", "guardrail_assignments"],
+          "updateRequestFields": ["name", "project_name", "description", "project_space_visible", "jql", "setting_id", "cron_expression", "timezone", "guardrail_assignments"],
+          "createOnlyFields": ["embedding_model"],
+          "sourceEvidence": "rest_api/models/index.py:1434-1440,1609-1621; rest_api/routers/index.py:1104-1144,1615-1694"
+        },
+        "azure_devops_wiki": {
+          "status": "authorable",
+          "create": "POST /v1/index/knowledge_base/azure_devops_wiki",
+          "update": "PUT /v1/index/knowledge_base/azure_devops_wiki",
+          "createRequestFields": ["name", "project_name", "description", "project_space_visible", "wiki_query", "wiki_name", "setting_id", "embedding_model", "cron_expression", "timezone", "guardrail_assignments"],
+          "updateRequestFields": ["name", "project_name", "description", "project_space_visible", "wiki_query", "wiki_name", "setting_id", "cron_expression", "timezone", "guardrail_assignments"],
+          "createOnlyFields": ["embedding_model"],
+          "sourceEvidence": "rest_api/models/index.py:1441-1448,1622-1635; rest_api/routers/index.py:1145-1176,1695-1775"
+        },
+        "azure_devops_work_item": {
+          "status": "authorable",
+          "create": "POST /v1/index/knowledge_base/azure_devops_work_item",
+          "update": "PUT /v1/index/knowledge_base/azure_devops_work_item",
+          "createRequestFields": ["name", "project_name", "description", "project_space_visible", "wiql_query", "setting_id", "embedding_model", "cron_expression", "timezone", "guardrail_assignments"],
+          "updateRequestFields": ["name", "project_name", "description", "project_space_visible", "wiql_query", "setting_id", "cron_expression", "timezone", "guardrail_assignments"],
+          "createOnlyFields": ["embedding_model"],
+          "sourceEvidence": "rest_api/models/index.py:1449-1455,1636-1648; rest_api/routers/index.py:1776-1865"
+        },
+        "sharepoint": {
+          "status": "authorable",
+          "create": "POST /v1/index/knowledge_base/sharepoint",
+          "update": "PUT /v1/index/knowledge_base/sharepoint",
+          "createRequestFields": ["name", "project_name", "description", "project_space_visible", "site_url", "include_pages", "include_documents", "include_lists", "max_file_size_mb", "files_filter", "auth_type", "setting_id", "embedding_model", "cron_expression", "timezone", "oauth_client_id", "oauth_tenant_id", "guardrail_assignments"],
+          "updateRequestFields": ["name", "project_name", "description", "project_space_visible", "site_url", "include_pages", "include_documents", "include_lists", "max_file_size_mb", "files_filter", "auth_type", "setting_id", "embedding_model", "cron_expression", "timezone", "oauth_client_id", "oauth_tenant_id", "guardrail_assignments"],
+          "sourceEvidence": "rest_api/models/index.py:1456-1478,1649-1684; rest_api/routers/index.py:1177-1252,1972-2068"
+        },
+        "file": {
+          "status": "authorable",
+          "create": "POST /v1/index/knowledge_base/file (multipart/form-data files plus query parameters)",
+          "update": "PUT /v1/index/knowledge_base/file (multipart/form-data files plus query parameters)",
+          "createRequestFields": ["name", "project_name", "description", "project_space_visible", "files", "csv_separator", "csv_start_row", "csv_rows_per_document", "embedding_model", "guardrail_assignments", "include_email_attachments"],
+          "updateRequestFields": ["name", "project_name", "description", "project_space_visible", "uploaded_files", "files", "csv_separator", "csv_start_row", "csv_rows_per_document", "embedding_model", "guardrail_assignments", "include_email_attachments"],
+          "identityReadFields": ["repo_name", "project_name", "index_type", "user_abilities"],
+          "transportTransform": {
+            "files": "each YAML-relative, repository-contained regular file becomes one UploadFile multipart part named files; transmit bytes without text transcoding and basename as filename",
+            "uploaded_files": "update-only JSON-encoded UTF-8 compact array in the uploaded_files query parameter",
+            "guardrail_assignments": "JSON-encoded UTF-8 compact array in the guardrail_assignments query parameter",
+            "otherFields": "FastAPI Depends scalar query parameters; no JSON body",
+            "nullEncoding": "there is no JSON-property channel; a logical nullable value is represented only by an absent query parameter and reaches the request model as None"
+          },
+          "readOnlyOrProhibited": ["new_project_name"],
+          "sourceEvidence": "rest_api/routers/index.py:1436-1448,2049-2085; rest_api/models/index.py:1529-1581,1718-1725; use_cases/datasource/update_file_datasource_use_case.py:34-120"
+        },
+        "google": {
+          "status": "authorable",
+          "create": "POST /v1/index/knowledge_base/google",
+          "update": "PUT /v1/index/knowledge_base/google",
+          "createRequestFields": ["name", "project_name", "description", "project_space_visible", "googleDoc", "setting_id", "embedding_model", "cron_expression", "timezone", "guardrail_assignments"],
+          "updateRequestFields": ["name", "project_name", "description", "project_space_visible", "cron_expression", "timezone", "guardrail_assignments"],
+          "createOnlyFields": ["googleDoc", "setting_id", "embedding_model"],
+          "sourceEvidence": "rest_api/models/index.py:1479-1518; rest_api/routers/index.py:1253-1433"
+        },
+        "provider": {
+          "status": "conditionally-authorable",
+          "condition": "an exact deployment-provider schema is bundled before accepting a declaration",
+          "sourceEvidence": "rest_api/models/index.py:223-234,1372-1378"
+        },
+        "bedrock": {
+          "status": "unsupported",
+          "reason": "pinned source exposes vendor import rather than ordinary Datasource CRUD",
+          "sourceEvidence": "rest_api/models/vendor.py:50-58"
+        }
+      },
+      "commonFieldClasses": {
+        "authoringRequired": ["spec.index_type", "spec.description", "kind-specific fields whose applicable request rejects null"],
+        "optionalNull": ["JSON-body properties typed Optional in every applicable operation"],
+        "authoringOnly": ["metadata.project", "metadata.repo_name", "spec.index_type discriminator where mapped to a route/server discriminator"],
+        "operationInapplicable": ["create-only properties on update"],
+        "readOnlyOrProhibited": ["id", "created_by", "processed_files", "new_project_name", "SharePoint access_token", "dedicated lifecycle-control parameters"]
+      },
+      "classificationByKind": {
+        "git": {
+          "authoringRequired": ["description", "link", "branch", "indexType", "projectSpaceVisible"],
+          "optionalNull": ["filesFilter", "embeddingsModel", "summarizationModel", "prompt", "docsGeneration", "setting_id", "guardrail_assignments", "cron_expression", "timezone"],
+          "operationInapplicableOnUpdate": ["indexType", "summarizationModel"],
+          "sourceDefaultsIgnored": {"filesFilter": "", "docsGeneration": false, "projectSpaceVisible": false}
+        },
+        "svn": {
+          "authoringRequired": ["description", "link", "branch", "indexType", "projectSpaceVisible"],
+          "optionalNull": ["filesFilter", "embeddingsModel", "summarizationModel", "prompt", "docsGeneration", "setting_id", "guardrail_assignments", "cron_expression", "timezone"],
+          "operationInapplicableOnUpdate": ["indexType", "summarizationModel"],
+          "sourceDefaultsIgnored": {"branch": "trunk", "filesFilter": "", "docsGeneration": false, "projectSpaceVisible": false}
+        },
+        "confluence": {
+          "authoringRequired": ["description", "cql"],
+          "optionalNull": ["project_space_visible", "guardrail_assignments", "setting_id", "include_restricted_content", "include_archived_content", "include_attachments", "include_comments", "keep_markdown_format", "keep_newlines", "embedding_model", "cron_expression", "timezone"],
+          "operationInapplicableOnUpdate": ["include_restricted_content", "include_archived_content", "include_attachments", "include_comments", "keep_markdown_format", "keep_newlines", "embedding_model"],
+          "sourceDefaultsIgnored": {"project_space_visible": false, "include_restricted_content": true, "include_archived_content": false, "include_attachments": false, "include_comments": false, "keep_markdown_format": false, "keep_newlines": false}
+        },
+        "jira": {
+          "authoringRequired": ["description", "jql"],
+          "optionalNull": ["project_space_visible", "guardrail_assignments", "setting_id", "embedding_model", "cron_expression", "timezone"],
+          "operationInapplicableOnUpdate": ["embedding_model"],
+          "sourceDefaultsIgnored": {"project_space_visible": false}
+        },
+        "xray": {
+          "authoringRequired": ["description", "jql"],
+          "optionalNull": ["project_space_visible", "guardrail_assignments", "setting_id", "embedding_model", "cron_expression", "timezone"],
+          "operationInapplicableOnUpdate": ["embedding_model"],
+          "sourceDefaultsIgnored": {"project_space_visible": false}
+        },
+        "azure_devops_wiki": {
+          "authoringRequired": ["description", "wiki_query"],
+          "optionalNull": ["project_space_visible", "guardrail_assignments", "wiki_name", "setting_id", "embedding_model", "cron_expression", "timezone"],
+          "operationInapplicableOnUpdate": ["embedding_model"],
+          "sourceDefaultsIgnored": {"wiki_query": "", "project_space_visible": false}
+        },
+        "azure_devops_work_item": {
+          "authoringRequired": ["description", "wiql_query"],
+          "optionalNull": ["project_space_visible", "guardrail_assignments", "setting_id", "embedding_model", "cron_expression", "timezone"],
+          "operationInapplicableOnUpdate": ["embedding_model"],
+          "sourceDefaultsIgnored": {"wiql_query": "", "project_space_visible": false}
+        },
+        "sharepoint": {
+          "authoringRequired": ["description", "site_url", "auth_type"],
+          "optionalNull": ["project_space_visible", "guardrail_assignments", "include_pages", "include_documents", "include_lists", "max_file_size_mb", "files_filter", "setting_id", "embedding_model", "cron_expression", "timezone", "oauth_client_id", "oauth_tenant_id"],
+          "operationInapplicableOnUpdate": [],
+          "sourceDefaultsIgnored": {"project_space_visible": false, "include_pages": true, "include_documents": true, "include_lists": true, "max_file_size_mb": 50, "files_filter": "", "auth_type": "integration"},
+          "prohibited": ["access_token"]
+        },
+        "file": {
+          "authoringRequired": ["description", "files", "include_email_attachments"],
+          "optionalNull": ["project_space_visible", "guardrail_assignments", "uploaded_files", "csv_separator", "csv_start_row", "csv_rows_per_document", "embedding_model"],
+          "operationInapplicableOnCreate": ["uploaded_files"],
+          "sourceDefaultsIgnored": {"project_space_visible": false, "csv_rows_per_document": 1, "include_email_attachments": true},
+          "prohibited": ["new_project_name"]
+        },
+        "google": {
+          "authoringRequired": ["description", "googleDoc", "setting_id"],
+          "optionalNull": ["project_space_visible", "guardrail_assignments", "embedding_model", "cron_expression", "timezone"],
+          "operationInapplicableOnUpdate": ["googleDoc", "setting_id", "embedding_model"],
+          "sourceDefaultsIgnored": {"project_space_visible": false}
+        }
+      },
+      "sourceEvidence": [
+        "rest_api/models/index.py:114-125,248-305,1162-1192,1290-1314,1379-1775",
+        "rest_api/routers/index.py:188-278"
+      ]
+    }
+  }
+}
