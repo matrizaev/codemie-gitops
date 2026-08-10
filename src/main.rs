@@ -12,6 +12,7 @@ mod projection;
 mod reference;
 mod render;
 mod schema;
+pub mod validate;
 
 use tracing_subscriber::EnvFilter;
 
