@@ -1,0 +1,82 @@
+# CI workflow for codemie-gitops
+#
+# Supply-chain controls (SEC-006, ADR-005 amendment):
+# - Third-party actions are pinned to immutable commit SHAs.
+# - Every job has an explicit permissions block (minimum: contents: read).
+# - Secrets are not referenced in this file; no secret is available to
+#   fork-triggered pull_request jobs.
+# - Deployment and release jobs are not present here; they run in separate
+#   protected environment workflows requiring human approval (O-002 scope).
+
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+# Default permissions for all jobs: read-only.
+# Each job narrows further if needed.
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: cargo check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # actions/checkout pinned to SHA (SEC-006: no mutable tag references).
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Install musl toolchain
+        run: sudo apt-get update -q && sudo apt-get install -y musl-tools
+
+      - name: Add musl Rust target
+        run: rustup target add x86_64-unknown-linux-musl
+
+      - name: cargo check (locked, musl)
+        run: cargo check --locked
+
+  test:
+    name: cargo test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Install musl toolchain
+        run: sudo apt-get update -q && sudo apt-get install -y musl-tools
+
+      - name: Add musl Rust target
+        run: rustup target add x86_64-unknown-linux-musl
+
+      - name: cargo test (locked, musl)
+        run: cargo test --locked
+
+  audit:
+    name: cargo audit (RustSec)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      # Install cargo-audit directly rather than using a third-party action,
+      # to avoid an additional SHA-pinned action dependency.
+      # cargo install uses --locked to respect Cargo.lock in the audit crate.
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      # Run the RustSec advisory scan. Any unresolved advisory causes a
+      # non-zero exit; see ADR-005 amendment for triage policy.
+      - name: cargo audit
+        run: cargo audit
