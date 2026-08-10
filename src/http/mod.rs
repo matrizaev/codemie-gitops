@@ -63,9 +63,16 @@ pub struct HttpClient {
 
 impl HttpClient {
     /// Construct a new HTTP client with rustls TLS.
+    ///
+    /// **Superseded by `ApiClient`** — any new code should use `ApiClient`
+    /// instead. `HttpClient` is kept only for backward-compatible callers.
+    ///
+    /// `redirect::Policy::none()` is set here to satisfy ADR-011 §4; any
+    /// future real construction of this client MUST preserve this invariant.
     pub fn new() -> Result<Self, AppError> {
         let inner = reqwest::Client::builder()
             .use_rustls_tls()
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| AppError::Internal(format!("failed to build HTTP client: {e}")))?;
         Ok(HttpClient { inner })

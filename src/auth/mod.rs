@@ -22,6 +22,8 @@
 ///   network call.
 ///
 /// Full authentication implementation is in T-001.
+use std::time::Duration;
+
 use serde::Deserialize;
 
 use crate::config::ValidatedUrl;
@@ -164,11 +166,15 @@ pub fn effective_client_id(mode: &AuthMode, credentials: &Credentials) -> Option
 
 /// Build a reqwest client for authentication POST requests.
 ///
-/// Security invariants (SEC-002, ADR-011 §4):
+/// Security invariants (SEC-002, SEC-003, ADR-011 §4, http-adapter.md §2.4):
 /// - `redirect::Policy::none()`: redirect following is disabled. Any 3xx
 ///   response from an authentication endpoint is returned as-is; credentials
 ///   are never replayed to a redirect target.
 /// - `use_rustls_tls()`: enforces TLS via rustls with no OpenSSL runtime dep.
+/// - `connect_timeout(10 s)`: connection establishment is bounded; the `login`
+///   subcommand cannot hang indefinitely during TCP/TLS handshake.
+/// - `timeout(60 s)`: per-request (send + response) timeout, consistent with
+///   `ApiClient`'s `REQUEST_TIMEOUT_SECS` (http-adapter.md §2.4).
 ///
 /// This function is `pub` so T-002 can share or extend the same base
 /// configuration for authenticated API calls.
@@ -176,6 +182,8 @@ pub fn build_auth_client() -> Result<reqwest::Client, AppError> {
     reqwest::Client::builder()
         .use_rustls_tls()
         .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(60))
         .build()
         .map_err(|_e| AppError::Internal("failed to build auth HTTP client".into()))
 }
