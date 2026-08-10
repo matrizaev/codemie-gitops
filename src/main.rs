@@ -7,6 +7,7 @@ mod error;
 mod http;
 mod index;
 mod output;
+mod parse;
 mod projection;
 mod reference;
 mod render;

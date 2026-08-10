@@ -22,11 +22,40 @@ pub const DECLARATION_SCHEMA_JSON: &str = include_str!(
 
 /// Validate a declaration value against the bundled v1alpha1 schema.
 ///
-/// This is a stub; full validation including YAML resource budgets, unknown
-/// field rejection, secret/runtime field rejection, and applicability rules
-/// is implemented in F-004.
-pub fn validate_declaration(_value: &serde_json::Value) -> Result<(), AppError> {
-    todo!("declaration schema validation implemented in F-004")
+/// Compiles the bundled schema on first call, validates `value`, and collects
+/// all validation errors. Returns `Ok(())` when the value is fully conformant
+/// with the closed v1alpha1 schema. Returns `AppError::Schema` (exit 2) when
+/// any schema violation is found. Returns `AppError::Internal` when the bundled
+/// schema fails to compile (indicating a defect in the schema artifact).
+///
+/// Note: the full YAML safety pipeline (injection scan, resource budgets,
+/// sidecar expansion) is implemented in `crate::parse`. Call
+/// `parse::parse_and_validate` in preference to this function when the input
+/// arrives as raw YAML.
+pub fn validate_declaration(value: &serde_json::Value) -> Result<(), AppError> {
+    let schema_json: serde_json::Value =
+        serde_json::from_str(DECLARATION_SCHEMA_JSON).map_err(|e| {
+            AppError::Internal(format!(
+                "bundled declaration schema is not valid JSON: {e}"
+            ))
+        })?;
+
+    let validator = jsonschema::validator_for(&schema_json).map_err(|e| {
+        AppError::Internal(format!(
+            "bundled declaration schema failed to compile: {e}"
+        ))
+    })?;
+
+    let errors: Vec<String> = validator
+        .iter_errors(value)
+        .map(|e| e.to_string())
+        .collect();
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(AppError::Schema(errors.join("; ")))
+    }
 }
 
 #[cfg(test)]
