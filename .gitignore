@@ -1,0 +1,4 @@
+# Vendored source repositories — read-only reference copies, not part of this project
+codemie/
+codemie-ui/
+target/
