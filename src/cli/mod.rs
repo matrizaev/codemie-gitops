@@ -22,7 +22,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-use crate::auth::{select_auth_mode, Credentials};
+use crate::auth::{login, select_auth_mode, Credentials};
 use crate::config::{resolve_config, ResolveConfigArgs};
 use crate::output::OutputMode;
 
@@ -185,18 +185,34 @@ pub async fn run() -> i32 {
             let config = match resolve_config(&args) {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("error: {e}");
+                    crate::render::write_app_error_to_stderr(&e, OutputMode::default());
                     return e.exit_code();
                 }
             };
             let credentials = Credentials::from_env(client_id, email);
-            match select_auth_mode(&credentials, config.auth_url.as_deref()) {
-                Ok(_mode) => {
-                    // Auth mode selected; network call is implemented in T-001.
-                    todo!("login authentication implemented in T-001")
+            let mode = match select_auth_mode(&credentials, config.auth_url.as_deref()) {
+                Ok(m) => m,
+                Err(e) => {
+                    crate::render::write_app_error_to_stderr(&e, OutputMode::default());
+                    return e.exit_code();
+                }
+            };
+            match login(
+                mode,
+                &credentials,
+                config.url.as_ref().map(|u| u.as_str()),
+                config.auth_url.as_ref().map(|u| u.as_str()),
+            )
+            .await
+            {
+                Ok(token) => {
+                    // Print the bearer token to stdout, newline-terminated.
+                    // No other output on the success path (contracts/cli.md §7).
+                    println!("{token}");
+                    0
                 }
                 Err(e) => {
-                    eprintln!("error: {e}");
+                    crate::render::write_app_error_to_stderr(&e, OutputMode::default());
                     e.exit_code()
                 }
             }

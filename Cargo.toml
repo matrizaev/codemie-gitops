@@ -22,3 +22,6 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 jsonschema = "0.29"
 url = "2"
+
+[dev-dependencies]
+mockito = "1"
