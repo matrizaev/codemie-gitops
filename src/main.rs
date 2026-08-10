@@ -8,6 +8,7 @@ mod http;
 mod index;
 mod output;
 mod parse;
+pub mod preflight;
 mod projection;
 mod reference;
 mod render;
