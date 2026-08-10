@@ -22,6 +22,8 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+use crate::auth::{select_auth_mode, Credentials};
+use crate::config::{resolve_config, ResolveConfigArgs};
 use crate::output::OutputMode;
 
 /// The top-level CLI structure.
@@ -123,20 +125,81 @@ pub enum Command {
 
 /// Entry point for the command dispatcher.
 ///
-/// Returns the process exit code. This is a stub; full command dispatch
-/// including config resolution, validation, and network calls is implemented
-/// across F-002 through R-001.
+/// Returns the process exit code. Config resolution and auth-mode selection
+/// are performed before any network access; any `AppError` at these stages
+/// writes a safe message to stderr and returns the error's exit code.
+///
+/// Stdout is empty on every failure path in this function.
 pub async fn run() -> i32 {
     let cli = Cli::parse();
     match cli.command {
-        Command::Lint { .. } => {
-            todo!("lint implemented in F-002 through F-005")
+        Command::Lint {
+            repo_root,
+            follow_symlinks,
+            ..
+        } => {
+            let args = ResolveConfigArgs {
+                flag_url: None,
+                flag_auth_url: None,
+                repo_root,
+                follow_symlinks,
+            };
+            if let Err(e) = resolve_config(&args) {
+                eprintln!("error: {e}");
+                return e.exit_code();
+            }
+            todo!("lint implemented in F-003 through F-005")
         }
-        Command::Apply { .. } => {
-            todo!("apply implemented in F-002 through R-001")
+
+        Command::Apply {
+            repo_root,
+            url,
+            follow_symlinks,
+            ..
+        } => {
+            let args = ResolveConfigArgs {
+                flag_url: url,
+                flag_auth_url: None,
+                repo_root,
+                follow_symlinks,
+            };
+            if let Err(e) = resolve_config(&args) {
+                eprintln!("error: {e}");
+                return e.exit_code();
+            }
+            todo!("apply implemented in F-003 through R-001")
         }
-        Command::Login { .. } => {
-            todo!("login implemented in F-002 and T-001")
+
+        Command::Login {
+            url,
+            auth_url,
+            client_id,
+            email,
+        } => {
+            let args = ResolveConfigArgs {
+                flag_url: url,
+                flag_auth_url: auth_url,
+                repo_root: None,
+                follow_symlinks: false,
+            };
+            let config = match resolve_config(&args) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return e.exit_code();
+                }
+            };
+            let credentials = Credentials::from_env(client_id, email);
+            match select_auth_mode(&credentials, config.auth_url.as_deref()) {
+                Ok(_mode) => {
+                    // Auth mode selected; network call is implemented in T-001.
+                    todo!("login authentication implemented in T-001")
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    e.exit_code()
+                }
+            }
         }
     }
 }
@@ -145,6 +208,8 @@ pub async fn run() -> i32 {
 mod tests {
     use super::*;
     use clap::CommandFactory;
+
+    // --- Existing: binary name and subcommand presence ---
 
     #[test]
     fn cli_binary_name_is_codemie_gitops() {
@@ -179,6 +244,8 @@ mod tests {
         );
     }
 
+    // --- Existing: SEC-001 flag rejection ---
+
     #[test]
     fn cli_does_not_have_token_flag_on_login() {
         let cmd = Cli::command();
@@ -186,7 +253,6 @@ mod tests {
             .get_subcommands()
             .find(|s| s.get_name() == "login")
             .expect("login subcommand must exist");
-        // SEC-001: --token must not be an accepted flag.
         assert!(
             login.get_arguments().all(|a| a.get_long() != Some("token")),
             "--token flag must not exist on login (SEC-001)"
@@ -248,5 +314,149 @@ mod tests {
     #[test]
     fn output_mode_default_is_text() {
         assert_eq!("text".parse::<OutputMode>().unwrap(), OutputMode::Text);
+    }
+
+    // --- F-002: negative surface (required --file flag) ---
+
+    #[test]
+    fn lint_requires_file_flag() {
+        let result = Cli::try_parse_from(["codemie-gitops", "lint"]);
+        assert!(
+            result.is_err(),
+            "lint without --file must be rejected by clap (exit 2)"
+        );
+    }
+
+    #[test]
+    fn apply_requires_file_flag() {
+        let result = Cli::try_parse_from(["codemie-gitops", "apply"]);
+        assert!(
+            result.is_err(),
+            "apply without --file must be rejected by clap (exit 2)"
+        );
+    }
+
+    #[test]
+    fn lint_with_file_flag_parses_successfully() {
+        let result = Cli::try_parse_from(["codemie-gitops", "lint", "--file", "decl.yaml"]);
+        assert!(result.is_ok(), "lint with --file must parse successfully");
+    }
+
+    #[test]
+    fn apply_with_file_flag_parses_successfully() {
+        let result = Cli::try_parse_from(["codemie-gitops", "apply", "--file", "decl.yaml"]);
+        assert!(result.is_ok(), "apply with --file must parse successfully");
+    }
+
+    // --- F-002: --adopt-workflow-id only on apply ---
+
+    #[test]
+    fn lint_does_not_have_adopt_workflow_id_flag() {
+        let cmd = Cli::command();
+        let lint = cmd
+            .get_subcommands()
+            .find(|s| s.get_name() == "lint")
+            .expect("lint subcommand must exist");
+        assert!(
+            lint.get_arguments()
+                .all(|a| a.get_long() != Some("adopt-workflow-id")),
+            "--adopt-workflow-id must not exist on lint"
+        );
+    }
+
+    #[test]
+    fn login_does_not_have_adopt_workflow_id_flag() {
+        let cmd = Cli::command();
+        let login = cmd
+            .get_subcommands()
+            .find(|s| s.get_name() == "login")
+            .expect("login subcommand must exist");
+        assert!(
+            login
+                .get_arguments()
+                .all(|a| a.get_long() != Some("adopt-workflow-id")),
+            "--adopt-workflow-id must not exist on login"
+        );
+    }
+
+    #[test]
+    fn lint_rejects_adopt_workflow_id_flag_at_parse() {
+        let result = Cli::try_parse_from([
+            "codemie-gitops",
+            "lint",
+            "--file",
+            "decl.yaml",
+            "--adopt-workflow-id",
+            "00000000-0000-0000-0000-000000000001",
+        ]);
+        assert!(
+            result.is_err(),
+            "--adopt-workflow-id on lint must be rejected by clap"
+        );
+    }
+
+    // --- F-002: secret flags must be rejected at parse time ---
+
+    #[test]
+    fn login_rejects_unknown_token_flag() {
+        let result = Cli::try_parse_from([
+            "codemie-gitops",
+            "login",
+            "--token",
+            "secret-value",
+        ]);
+        assert!(
+            result.is_err(),
+            "--token flag must be rejected by clap (SEC-001, E_USAGE)"
+        );
+    }
+
+    #[test]
+    fn login_rejects_unknown_client_secret_flag() {
+        let result = Cli::try_parse_from([
+            "codemie-gitops",
+            "login",
+            "--client-secret",
+            "secret-value",
+        ]);
+        assert!(
+            result.is_err(),
+            "--client-secret flag must be rejected by clap (SEC-001, E_USAGE)"
+        );
+    }
+
+    #[test]
+    fn login_rejects_unknown_password_flag() {
+        let result = Cli::try_parse_from([
+            "codemie-gitops",
+            "login",
+            "--password",
+            "secret-value",
+        ]);
+        assert!(
+            result.is_err(),
+            "--password flag must be rejected by clap (SEC-001, E_USAGE)"
+        );
+    }
+
+    // --- F-002: login parses successfully with non-secret flags ---
+
+    #[test]
+    fn login_parses_with_client_id_and_email() {
+        let result = Cli::try_parse_from([
+            "codemie-gitops",
+            "login",
+            "--client-id",
+            "my-client",
+            "--email",
+            "user@example.com",
+        ]);
+        assert!(result.is_ok(), "login with --client-id and --email must parse");
+    }
+
+    #[test]
+    fn login_parses_without_any_flags() {
+        let result = Cli::try_parse_from(["codemie-gitops", "login"]);
+        assert!(result.is_ok(), "login with no flags must parse (all optional)");
     }
 }
