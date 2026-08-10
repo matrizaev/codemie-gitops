@@ -9,6 +9,7 @@ mod index;
 mod output;
 mod projection;
 mod reference;
+mod render;
 mod schema;
 
 use tracing_subscriber::EnvFilter;

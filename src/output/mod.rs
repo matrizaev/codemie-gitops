@@ -54,37 +54,106 @@ impl Action {
 
 /// A closed success outcome conforming to outcome.schema.json.
 ///
-/// All field values must have passed schema validation before construction;
-/// the struct is intentionally not `pub` constructable by fields — use
-/// `Outcome::new`.
+/// All field values must have passed schema validation before construction.
+/// Only the applicable natural-key field for the kind is serialized; the
+/// others are absent (additionalProperties: false per outcome.schema.json).
+///
+/// Security (SEC-005): field values must come from schema-validated fields only.
 #[derive(Debug, Clone, Serialize)]
 pub struct Outcome {
     action: Action,
     kind: String,
     project: String,
-    slug: String,
+    /// Present for Assistant and Workflow; absent for Skill and Datasource.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    slug: Option<String>,
+    /// Present for Skill; absent for all other kinds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    /// Present for Datasource; absent for all other kinds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repo_name: Option<String>,
 }
 
 impl Outcome {
-    /// Construct a validated outcome record.
+    /// Construct an outcome for an Assistant or Workflow (natural key: `slug`).
     ///
     /// `kind`, `project`, and `slug` must be schema-validated values from
     /// the declaration AST — never from untrusted raw strings.
     pub fn new(action: Action, kind: String, project: String, slug: String) -> Self {
-        Outcome { action, kind, project, slug }
+        Outcome {
+            action,
+            kind,
+            project,
+            slug: Some(slug),
+            name: None,
+            repo_name: None,
+        }
+    }
+
+    /// Construct an outcome for a Skill (natural key: `name`).
+    pub fn new_skill(action: Action, project: String, name: String) -> Self {
+        Outcome {
+            action,
+            kind: "Skill".to_owned(),
+            project,
+            slug: None,
+            name: Some(name),
+            repo_name: None,
+        }
+    }
+
+    /// Construct an outcome for a Datasource (natural key: `repo_name`).
+    pub fn new_datasource(action: Action, project: String, repo_name: String) -> Self {
+        Outcome {
+            action,
+            kind: "Datasource".to_owned(),
+            project,
+            slug: None,
+            name: None,
+            repo_name: Some(repo_name),
+        }
+    }
+
+    /// Returns the natural key value for this outcome.
+    fn key_value(&self) -> &str {
+        if let Some(s) = &self.slug {
+            return s;
+        }
+        if let Some(n) = &self.name {
+            return n;
+        }
+        if let Some(r) = &self.repo_name {
+            return r;
+        }
+        // Invariant: at least one key field must be set; unreachable via
+        // the public constructors.
+        ""
     }
 
     /// Write the outcome to stdout according to the selected mode.
     ///
-    /// Text mode: fixed template `<action> <kind> <project>/<slug>\n`.
-    /// JSON mode: compact JSON object, one line.
+    /// Text mode: fixed template `<action> <kind> <project>/<key>\n`
+    /// where `key` is the kind's natural key.
+    /// JSON mode: compact JSON object produced by serde_json, one line.
+    ///
+    /// Control characters and bidi characters are excluded from identity
+    /// fields by schema validation before this point (SEC-005).
     pub fn write(&self, mode: OutputMode) {
         match mode {
             OutputMode::Text => {
-                println!("{} {} {}/{}", self.action.as_str(), self.kind, self.project, self.slug);
+                println!(
+                    "{} {} {}/{}",
+                    self.action.as_str(),
+                    self.kind,
+                    self.project,
+                    self.key_value()
+                );
             }
             OutputMode::Json => {
-                // Serializer ensures control characters are JSON-escaped.
+                // serde_json serializer ensures control characters are
+                // JSON-escaped and skip_serializing_if keeps only the
+                // applicable key field (SEC-005, outcome.schema.json).
                 let json = serde_json::to_string(self)
                     .unwrap_or_else(|_| r#"{"error":"serialization failure"}"#.to_owned());
                 println!("{json}");
@@ -95,10 +164,11 @@ impl Outcome {
 
 /// Write a failure diagnostic to stderr; stdout must remain empty.
 ///
-/// This is a stub: the full closed diagnostic schema (diagnostic.schema.json)
-/// is implemented in F-007.
-pub fn write_failure(_error: &AppError, _mode: OutputMode) {
-    todo!("diagnostic rendering implemented in F-007")
+/// Delegates to `render::write_app_error_to_stderr`. The error message
+/// string is discarded — only the closed errorCode/category/exitCode are
+/// emitted (SEC-005, F-007).
+pub fn write_failure(error: &AppError, mode: OutputMode) {
+    crate::render::write_app_error_to_stderr(error, mode);
 }
 
 #[cfg(test)]
