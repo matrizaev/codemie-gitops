@@ -1,0 +1,56 @@
+{
+  "workflows": [
+    {
+      "markerPresent": true,
+      "marker": {
+        "version": 1,
+        "project": "project-a",
+        "slug": "release-flow"
+      }
+    },
+    {
+      "markerPresent": true,
+      "marker": {
+        "version": 1,
+        "project": "project-a",
+        "slug": "release-flow"
+      }
+    },
+    {
+      "markerPresent": true,
+      "marker": {
+        "version": 2,
+        "project": "project-a",
+        "slug": "invalid-marker"
+      }
+    }
+  ],
+  "skills": [
+    {
+      "project": "project-a",
+      "name": "Invalid Name"
+    },
+    {
+      "project": "project-a",
+      "name": "release-skill"
+    },
+    {
+      "project": "project-a",
+      "name": "release-skill"
+    }
+  ],
+  "datasources": [
+    {
+      "project": "project-a",
+      "repo_name": "bad"
+    },
+    {
+      "project": "project-a",
+      "repo_name": "docs_repo"
+    },
+    {
+      "project": "project-a",
+      "repo_name": "docs_repo"
+    }
+  ]
+}

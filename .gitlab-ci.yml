@@ -1,0 +1,104 @@
+# O-001 production apply control. Production and the staging mutex drill use
+# static checked-in environment/resource-group names. Remote protection and
+# approval activation remains an adopter responsibility.
+stages:
+  - codemie-build
+  - codemie-apply
+
+# Required production assertions. Project policy must restrict pipeline
+# variable overrides, and the preflight rejects these safe defaults.
+variables:
+  CODEMIE_GITOPS_APPLY: "false"
+  DECLARATION_PATH: ""
+  INVENTORY_APPROVED: "false"
+  WRITER_FREEZE_APPROVED: "false"
+  CONTROL_EVIDENCE: ""
+
+codemie_gitops_build:
+  stage: codemie-build
+  interruptible: false
+  tags:
+    - codemie-gitops-musl-build
+  rules:
+    - if: '$CODEMIE_GITOPS_APPLY == "true" && $CI_COMMIT_REF_PROTECTED == "true" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: on_success
+    - when: never
+  script:
+    - TARGET_ENVIRONMENT=production O001_MODE=apply python3 scripts/check_o001_controls.py --ci-preflight
+    - |
+      command -v musl-gcc
+      rustup target list --installed | grep -Fxq x86_64-unknown-linux-musl
+      export CARGO_BUILD_TARGET=x86_64-unknown-linux-musl
+      make lint
+      make test
+      cargo build --locked --release --target x86_64-unknown-linux-musl
+      target/x86_64-unknown-linux-musl/release/codemie-gitops --version
+      mkdir o001-artifact
+      install -m 0755 target/x86_64-unknown-linux-musl/release/codemie-gitops o001-artifact/codemie-gitops
+      cd o001-artifact
+      sha256sum codemie-gitops > codemie-gitops.sha256
+  artifacts:
+    name: "codemie-gitops-$CI_PIPELINE_ID-$CI_JOB_ID"
+    expire_in: 1 day
+    when: on_success
+    paths:
+      - o001-artifact/codemie-gitops
+      - o001-artifact/codemie-gitops.sha256
+
+codemie_gitops_production_apply:
+  stage: codemie-apply
+  interruptible: false
+  needs:
+    - job: codemie_gitops_build
+      artifacts: true
+  rules:
+    - if: '$CODEMIE_GITOPS_APPLY == "true" && $CI_COMMIT_REF_PROTECTED == "true" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: false
+    - when: never
+  environment:
+    name: production
+  resource_group: codemie-gitops-apply-production
+  tags:
+    - codemie-gitops-production-protected
+  script:
+    - (cd o001-artifact && sha256sum --check --strict codemie-gitops.sha256) && chmod 0555 o001-artifact/codemie-gitops
+    - ./o001-artifact/codemie-gitops apply --file "$DECLARATION_PATH" --repo-root "$CI_PROJECT_DIR"
+
+codemie_gitops_production_mutex_drill:
+  stage: codemie-apply
+  interruptible: false
+  needs: []
+  variables:
+    GIT_STRATEGY: none
+  rules:
+    - if: '$CODEMIE_GITOPS_APPLY == "true" && $CI_COMMIT_REF_PROTECTED == "true" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: false
+    - when: never
+  environment:
+    name: production
+  resource_group: codemie-gitops-apply-production
+  tags:
+    - codemie-gitops-production-protected
+  script:
+    - sleep 30
+
+codemie_gitops_staging_mutex_drill:
+  stage: codemie-apply
+  interruptible: false
+  needs: []
+  variables:
+    GIT_STRATEGY: none
+  rules:
+    - if: '$CODEMIE_GITOPS_APPLY == "true" && $CI_COMMIT_REF_PROTECTED == "true" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: false
+    - when: never
+  environment:
+    name: staging
+  resource_group: codemie-gitops-apply-staging
+  tags:
+    - codemie-gitops-production-protected
+  script:
+    - sleep 30

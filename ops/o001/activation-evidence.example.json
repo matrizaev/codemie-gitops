@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "environment": "production",
+  "github": {
+    "protectedEnvironmentEnabled": null,
+    "requiredReviewersEnabled": null,
+    "deploymentBranchPolicyEnabled": null,
+    "sameEnvironmentRunA": null,
+    "sameEnvironmentRunB": null,
+    "sameEnvironmentOverlapObserved": null,
+    "differentEnvironment": null,
+    "differentEnvironmentRun": null,
+    "differentEnvironmentIndependentObserved": null,
+    "artifactPromotionRun": null,
+    "artifactChecksumVerified": null,
+    "verifiedByRole": "Release Engineering",
+    "verifiedAt": null
+  },
+  "gitlab": {
+    "protectedEnvironmentEnabled": null,
+    "requiredApprovalEnabled": null,
+    "protectedVariablesEnabled": null,
+    "deploymentBranchPolicyEnabled": null,
+    "muslBuildRunnerReady": null,
+    "protectedRunnerEnabled": null,
+    "protectedRefEnabled": null,
+    "pipelineVariableOverridesRestricted": null,
+    "environmentScopedSecrets": null,
+    "secretEnvironmentScope": null,
+    "sameEnvironmentPipelineA": null,
+    "sameEnvironmentPipelineB": null,
+    "sameEnvironmentOverlapObserved": null,
+    "differentEnvironment": null,
+    "differentEnvironmentPipeline": null,
+    "differentEnvironmentIndependentObserved": null,
+    "artifactPromotionPipeline": null,
+    "artifactChecksumVerified": null,
+    "verifiedByRole": "Release Engineering",
+    "verifiedAt": null
+  },
+  "writerGovernance": {
+    "freezeEvidence": null,
+    "inventoryEvidence": null,
+    "inventoryClean": null,
+    "externalWritersFrozen": null,
+    "approvedByRole": "CodeMie Platform Administrator"
+  }
+}

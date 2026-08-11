@@ -5,8 +5,9 @@
 # - Every job has an explicit permissions block (minimum: contents: read).
 # - Secrets are not referenced in this file; no secret is available to
 #   fork-triggered pull_request jobs.
-# - Deployment and release jobs are not present here; they run in separate
-#   protected environment workflows requiring human approval (O-002 scope).
+# - O-001's serialized apply control is isolated in codemie-gitops-apply.yml
+#   and requires remote protected-environment activation. O-002 retains broader
+#   portable CI examples and recovery documentation.
 
 name: CI
 
@@ -58,8 +59,11 @@ jobs:
       - name: Add musl Rust target
         run: rustup target add x86_64-unknown-linux-musl
 
-      - name: cargo test (locked, musl)
-        run: cargo test --locked
+      - name: Rust and O-001 unit tests
+        run: make test
+
+      - name: O-001 checked-in control policy
+        run: python3 scripts/check_o001_controls.py
 
   audit:
     name: cargo audit (RustSec)

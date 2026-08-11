@@ -3,3 +3,7 @@ codemie/
 codemie-ui/
 target/
 .env
+__pycache__/
+*.py[cod]
+/ops/o001/activation-evidence.local.json
+/ops/o001/inventory.local.json

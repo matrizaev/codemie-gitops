@@ -2,8 +2,7 @@
 
 ## 1. Status
 
-**Architecture status: READY FOR INDEPENDENT POST-IMPLEMENTATION VERIFICATION
-AND O-001 HANDOFF**
+**Architecture status: READY FOR O-001 REMOTE ACTIVATION**
 
 Product specification v27 is the approved source. The architecture now pins
 presence, null, applicability, ownership, and transport classes for every
@@ -28,9 +27,14 @@ warning lifecycle (`security-review-preimplementation.md`):
 
 The implementation baseline, including D-001, is complete. Independent review
 of the v27 warning-contract delta found only stale lifecycle text in this plan;
-this synchronization resolves that documentation finding. O-001 is the next
-production-enablement handoff. V-001, V-002, and L-001 remain downstream and
-are not complete.
+that documentation finding is resolved. The checked-in/local O-001 controls
+are now implemented, independently verified, and security-approved, and are
+ready for remote activation. O-001 is not operationally complete: completion
+is blocked on external provider and runner activation evidence, per-environment
+mutex drills, the complete-visibility identity inventory, the identity-writer
+freeze, and checksum evidence from the first remote apply. O-002 and V-000
+remain downstream of this activation gate; V-001 follows both. V-002 and L-001
+also remain downstream and are not complete.
 
 ## 2. Executive summary
 
@@ -348,6 +352,15 @@ manual remediation. Logs and metrics use only safe action/category/status/
 latency/request identifiers. Rollback is the prior binary plus Git revert and a
 new apply; existing remote writes are not automatically reversed.
 
+The checked-in O-001 provider workflows, control policy, operator checklist,
+activation-evidence template, inventory tooling, local validator, and tests are
+implemented and have passed independent verification and security review. They
+are activation inputs, not evidence that remote provider controls are active.
+The platform and release owners must still supply the external provider/runner,
+mutex, live inventory, writer-freeze, and first-apply checksum records required
+by `tasks.md`; until those records pass the checked-in evidence gate, O-001
+remains operationally incomplete.
+
 ## 13. Implementation stages
 
 1. **Complete** — the pre-implementation architecture convergence and security
@@ -362,9 +375,13 @@ new apply; existing remote writes are not automatically reversed.
 5. **Complete** — Assistant, Workflow, Skill, and Datasource adapters/resolvers,
    including D-001.
 6. **Complete** — write-through coordinator and implementation test baseline.
-7. **Next / incomplete** — O-001 serialization and identity-writer governance,
-   followed by O-002 and V-000; V-001, V-002, and L-001 remain downstream in
-   their declared dependency order.
+7. **Implemented locally / operationally incomplete** — O-001 checked-in
+   serialization and identity-writer governance controls are independently
+   verified, security-approved, and ready for remote activation. O-001 remains
+   blocked on the external provider/runner, mutex, live inventory,
+   writer-freeze, and first-apply checksum evidence. O-002 and V-000 follow
+   O-001; V-001 follows both, with V-002 and L-001 remaining farther downstream
+   in their declared dependency order.
 
 Detailed bounded work and exact dependencies are in `tasks.md`.
 
@@ -396,14 +413,19 @@ Statuses below mirror the status section in each ADR file.
 | R-03 | non-blocking | provider schema varies by deployment | reject until an exact reviewed schema is bundled |
 | R-04 | non-blocking | QR-005 has no latency threshold | measure without inventing a release SLO; product owner may later define |
 No open entity, projection, configuration, or authentication-endpoint decision
-remains. Deployment verification and independent security review are bounded
-downstream lifecycle work, not missing architecture inputs.
+remains. V-000 deployment verification and the broader V-002
+post-implementation security review remain bounded downstream lifecycle work,
+not missing architecture inputs; the O-001 local-control security approval does
+not complete either task.
 
 ## 16. Handoff
 
-O-001 is the next production-enablement task: activate per-environment
-serialization and identity-writer governance using the completed implementation
-baseline. O-002 and V-000 follow it. V-001 must still perform independent full
-post-implementation specification-to-code convergence verification; V-002 and
-L-001 remain dependent downstream tasks. This plan does not mark O-001, V-001,
-V-002, or L-001 complete.
+O-001 is ready for its remote production-enablement step: activate the
+independently verified and security-approved checked-in controls, then capture
+provider/runner configuration, per-environment mutex drills, complete-visibility
+identity inventory, identity-writer freeze, and first-apply checksum evidence.
+Those external records block O-001 operational completion. O-002 and V-000
+follow O-001. V-001 must then perform independent full post-implementation
+specification-to-code convergence verification; V-002 and L-001 remain
+dependent downstream tasks. This plan does not mark O-001, O-002, V-000,
+V-001, V-002, or L-001 complete.

@@ -2,11 +2,14 @@
 
 Source: product specification v27 and this architecture set.
 
-Status: **IMPLEMENTATION BASELINE COMPLETE; READY FOR O-001 HANDOFF**. The v27
-warning-contract delta has been independently checked; the remaining stale-plan
-finding is resolved by the synchronized architecture set. ADR-012 is accepted
-and D-001 is complete. O-001 is next; V-001, V-002, and L-001 remain downstream
-and are not complete.
+Status: **O-001 CHECKED-IN CONTROLS VERIFIED AND SECURITY-APPROVED; REMOTE
+ACTIVATION PENDING**. The implementation baseline, ADR-012/D-001 work, and the
+checked-in/local O-001 controls are implemented. Independent verification and
+security review approve those local controls for remote activation. O-001 is
+not complete: external provider/runner activation, mutex drills, live inventory,
+writer-freeze, and first-apply checksum evidence remain blocking. O-002 and
+V-000 follow O-001; V-001 follows both. V-002 and L-001 remain farther
+downstream and are not complete.
 
 ## 1. Dependency policy
 
@@ -507,12 +510,30 @@ Eligibility:
 ### O-001 — Activate serialization and identity-writer governance
 
 - Eligibility: `PRODUCTION-ENABLEMENT`.
-- Objective: implement normative race-prevention controls.
+- Lifecycle state: checked-in/local controls implemented, independently
+  verified, security-approved, and ready for remote activation; operational
+  completion remains blocked on the external evidence below.
+- Objective: activate the normative race-prevention controls in the remote
+  providers and prove their operation.
 - Requirements: FR-033/034, PA-005/006, QR-010/011.
 - Dependencies: R-001.
-- Acceptance evidence: GitHub/GitLab per-environment mutex drill; Workflow
-  marker/Skill duplicate inventory; concurrent-writer and uncertain-write
-  remediation with named owners.
+- Checked-in/local evidence: GitHub and GitLab serialized apply definitions,
+  control policy and checklist, activation-evidence template, identity inventory
+  tooling and fixtures, local control validator, and automated control tests.
+- Independent review state: local implementation verification passed and the
+  security review approved remote activation; neither review substitutes for
+  provider-generated operational evidence.
+- Blocking external acceptance evidence:
+  - activated GitHub/GitLab provider protections and eligible protected runner
+    configuration;
+  - same-environment serialization and different-environment independence
+    mutex drills;
+  - complete-visibility live Workflow marker plus Skill and Datasource
+    duplicate inventory;
+  - identity-writer freeze plus concurrent-writer and uncertain-write
+    remediation with named owners; and
+  - checksum verification proving the first remote apply consumed the exact
+    tested artifact.
 - Completion: production Workflow/Skill apply control checklist passes.
 
 ### O-002 — Publish CI examples and recovery runbooks
