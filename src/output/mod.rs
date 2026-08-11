@@ -9,6 +9,8 @@
 ///   string may enter output.
 /// - Each record produces exactly one physical output line.
 /// - `action`, `kind`, `category`, `errorCode` come from fixed enums.
+use std::io;
+
 use serde::Serialize;
 
 use crate::error::AppError;
@@ -117,22 +119,6 @@ impl Outcome {
         }
     }
 
-    /// Returns the natural key value for this outcome.
-    fn key_value(&self) -> &str {
-        if let Some(s) = &self.slug {
-            return s;
-        }
-        if let Some(n) = &self.name {
-            return n;
-        }
-        if let Some(r) = &self.repo_name {
-            return r;
-        }
-        // Invariant: at least one key field must be set; unreachable via
-        // the public constructors.
-        ""
-    }
-
     /// Write the outcome to stdout according to the selected mode.
     ///
     /// Text mode: fixed template `<action> <kind> <project>/<key>\n`
@@ -142,25 +128,32 @@ impl Outcome {
     /// Control characters and bidi characters are excluded from identity
     /// fields by schema validation before this point (SEC-005).
     pub fn write(&self, mode: OutputMode) {
-        match mode {
-            OutputMode::Text => {
-                println!(
-                    "{} {} {}/{}",
-                    self.action.as_str(),
-                    self.kind,
-                    self.project,
-                    self.key_value()
-                );
+        let Some((kind, key)) = self.render_identity() else {
+            return;
+        };
+        let mut renderer = crate::render::Renderer::new(io::stdout(), io::stderr(), mode);
+        let _ = renderer.emit_outcome(self.action, kind, &self.project, &key);
+        let _ = renderer.flush();
+    }
+
+    fn render_identity(&self) -> Option<(crate::render::EntityKind, crate::render::EntityKey)> {
+        let kind = match self.kind.as_str() {
+            "Assistant" => crate::render::EntityKind::Assistant,
+            "Workflow" => crate::render::EntityKind::Workflow,
+            "Skill" => crate::render::EntityKind::Skill,
+            "Datasource" => crate::render::EntityKind::Datasource,
+            _ => return None,
+        };
+        let key = match kind {
+            crate::render::EntityKind::Assistant | crate::render::EntityKind::Workflow => {
+                crate::render::EntityKey::Slug(self.slug.clone()?)
             }
-            OutputMode::Json => {
-                // serde_json serializer ensures control characters are
-                // JSON-escaped and skip_serializing_if keeps only the
-                // applicable key field (SEC-005, outcome.schema.json).
-                let json = serde_json::to_string(self)
-                    .unwrap_or_else(|_| r#"{"error":"serialization failure"}"#.to_owned());
-                println!("{json}");
+            crate::render::EntityKind::Skill => crate::render::EntityKey::Name(self.name.clone()?),
+            crate::render::EntityKind::Datasource => {
+                crate::render::EntityKey::RepoName(self.repo_name.clone()?)
             }
-        }
+        };
+        Some((kind, key))
     }
 }
 

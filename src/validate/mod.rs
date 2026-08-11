@@ -98,37 +98,37 @@ fn validate_workflow_local(decl: &ParsedDeclaration) -> Result<(), AppError> {
         .unwrap_or(&[]);
 
     for (i, state) in states.iter().enumerate() {
-        if let Some(aid) = state.get("assistant_id").and_then(|v| v.as_str()) {
-            if !actor_ids.contains(aid) {
-                return Err(AppError::Schema(format!(
-                    "'{}': workflow state[{i}].assistant_id '{}' does not match \
-                     any id in execution_config.assistants; \
-                     states[].assistant_id must reference a workflow-local actor id \
-                     (FR-035)",
-                    decl.source_path.display(),
-                    aid,
-                )));
-            }
+        if let Some(aid) = state.get("assistant_id").and_then(|v| v.as_str())
+            && !actor_ids.contains(aid)
+        {
+            return Err(AppError::Schema(format!(
+                "'{}': workflow state[{i}].assistant_id '{}' does not match \
+                 any id in execution_config.assistants; \
+                 states[].assistant_id must reference a workflow-local actor id \
+                 (FR-035)",
+                decl.source_path.display(),
+                aid,
+            )));
         }
-        if let Some(nid) = state.get("custom_node_id").and_then(|v| v.as_str()) {
-            if !node_ids.contains(nid) {
-                return Err(AppError::Schema(format!(
-                    "'{}': workflow state[{i}].custom_node_id '{}' does not match \
-                     any id in execution_config.custom_nodes",
-                    decl.source_path.display(),
-                    nid,
-                )));
-            }
+        if let Some(nid) = state.get("custom_node_id").and_then(|v| v.as_str())
+            && !node_ids.contains(nid)
+        {
+            return Err(AppError::Schema(format!(
+                "'{}': workflow state[{i}].custom_node_id '{}' does not match \
+                 any id in execution_config.custom_nodes",
+                decl.source_path.display(),
+                nid,
+            )));
         }
-        if let Some(tid) = state.get("tool_id").and_then(|v| v.as_str()) {
-            if !tool_ids.contains(tid) {
-                return Err(AppError::Schema(format!(
-                    "'{}': workflow state[{i}].tool_id '{}' does not match \
-                     any id in execution_config.tools",
-                    decl.source_path.display(),
-                    tid,
-                )));
-            }
+        if let Some(tid) = state.get("tool_id").and_then(|v| v.as_str())
+            && !tool_ids.contains(tid)
+        {
+            return Err(AppError::Schema(format!(
+                "'{}': workflow state[{i}].tool_id '{}' does not match \
+                 any id in execution_config.tools",
+                decl.source_path.display(),
+                tid,
+            )));
         }
     }
 
@@ -149,15 +149,15 @@ fn collect_unique_ids(
     };
     let mut seen: HashSet<String> = HashSet::new();
     for item in arr {
-        if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
-            if !seen.insert(id.to_owned()) {
-                return Err(AppError::Schema(format!(
-                    "'{}': duplicate actor id '{}' in execution_config.{field}; \
-                     ids must be unique within the workflow (FR-035)",
-                    source_path.display(),
-                    id,
-                )));
-            }
+        if let Some(id) = item.get("id").and_then(|v| v.as_str())
+            && !seen.insert(id.to_owned())
+        {
+            return Err(AppError::Schema(format!(
+                "'{}': duplicate actor id '{}' in execution_config.{field}; \
+                 ids must be unique within the workflow (FR-035)",
+                source_path.display(),
+                id,
+            )));
         }
     }
     Ok(seen)
@@ -366,17 +366,17 @@ fn validate_workflow_refs(
 
     for actor in actors {
         // Persisted actor form: has `assistantRef: {project, slug}`.
-        if let Some(assistant_ref) = actor.get("assistantRef") {
-            if let Some((project, slug)) = ref_pair(assistant_ref, "slug") {
-                resolve_ref(
-                    index,
-                    &project,
-                    GraphKind::Assistant,
-                    &slug,
-                    &decl.source_path,
-                    "Assistant",
-                )?;
-            }
+        if let Some(assistant_ref) = actor.get("assistantRef")
+            && let Some((project, slug)) = ref_pair(assistant_ref, "slug")
+        {
+            resolve_ref(
+                index,
+                &project,
+                GraphKind::Assistant,
+                &slug,
+                &decl.source_path,
+                "Assistant",
+            )?;
         }
 
         // Inline actor form: `skillRefs[]: [{project, name}]`.
@@ -433,17 +433,17 @@ fn validate_assistant_refs(
     // context[].ref → datasourceKey {project, repo_name}
     if let Some(context) = spec.get("context").and_then(|v| v.as_array()) {
         for ctx in context {
-            if let Some(ref_val) = ctx.get("ref") {
-                if let Some((project, repo_name)) = ref_pair(ref_val, "repo_name") {
-                    resolve_ref(
-                        index,
-                        &project,
-                        GraphKind::Datasource,
-                        &repo_name,
-                        &decl.source_path,
-                        "Datasource",
-                    )?;
-                }
+            if let Some(ref_val) = ctx.get("ref")
+                && let Some((project, repo_name)) = ref_pair(ref_val, "repo_name")
+            {
+                resolve_ref(
+                    index,
+                    &project,
+                    GraphKind::Datasource,
+                    &repo_name,
+                    &decl.source_path,
+                    "Datasource",
+                )?;
             }
         }
     }

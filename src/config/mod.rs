@@ -266,8 +266,6 @@ pub struct ResolveConfigArgs {
     pub flag_auth_url: Option<String>,
     /// `--repo-root` flag value, or `None` to auto-detect.
     pub repo_root: Option<PathBuf>,
-    /// Value of `--follow-symlinks`.
-    pub follow_symlinks: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -280,7 +278,7 @@ pub struct ResolveConfigArgs {
 /// - `target_url`:  flag/env (`flag_url`) > config `url`
 /// - `auth_url`:    flag/env (`flag_auth_url`) > config `auth_url`
 /// - `project`:     config `project` only (declaration `metadata.project`
-///                  overrides at apply-time, not here)
+///   overrides at apply-time, not here)
 ///
 /// An invalid higher-precedence value is `E_CONFIGURATION`, exit 2; the
 /// lower-precedence value is NOT consulted as a fallback.
@@ -351,10 +349,7 @@ pub fn find_repo_root(start: &Path) -> Option<PathBuf> {
         if current.join(".git").is_dir() {
             return Some(current);
         }
-        match current.parent() {
-            Some(parent) => current = parent.to_owned(),
-            None => return None,
-        }
+        current = current.parent()?.to_owned();
     }
 }
 
@@ -547,7 +542,7 @@ mod tests {
     fn validated_auth_url_deref_to_validated_url() {
         let auth = ValidatedAuthUrl::try_from("https://auth.example.com/token").unwrap();
         // Deref to &ValidatedUrl
-        let _url: &ValidatedUrl = &*auth;
+        let _url: &ValidatedUrl = &auth;
         assert_eq!(auth.as_str(), "https://auth.example.com/token");
     }
 

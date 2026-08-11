@@ -61,44 +61,6 @@ const RETRY_BASE_JITTER_MS: u64 = 200;
 const RETRY_BASE_JITTER_MS: u64 = 5;
 
 // ---------------------------------------------------------------------------
-// HttpClient scaffold stub (preserved so existing callers continue to compile)
-// ---------------------------------------------------------------------------
-
-/// A wrapper around a configured reqwest HTTP client.
-///
-/// This is the scaffold placeholder from before T-002. For authenticated API
-/// calls use `ApiClient` below. For legacy callers that already hold an
-/// `HttpClient`, `inner()` exposes the reqwest client directly.
-#[derive(Debug)]
-pub struct HttpClient {
-    inner: reqwest::Client,
-}
-
-impl HttpClient {
-    /// Construct a new HTTP client with rustls TLS.
-    ///
-    /// **Superseded by `ApiClient`** — any new code should use `ApiClient`
-    /// instead. `HttpClient` is kept only for backward-compatible callers.
-    ///
-    /// `redirect::Policy::none()` is set here to satisfy ADR-011 §4; any
-    /// future real construction of this client MUST preserve this invariant.
-    pub fn new() -> Result<Self, AppError> {
-        ensure_rustls_provider();
-        let inner = reqwest::Client::builder()
-            .use_rustls_tls()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|e| AppError::Internal(format!("failed to build HTTP client: {e}")))?;
-        Ok(HttpClient { inner })
-    }
-
-    /// Return a reference to the inner reqwest client.
-    pub fn inner(&self) -> &reqwest::Client {
-        &self.inner
-    }
-}
-
-// ---------------------------------------------------------------------------
 // User response for capability preflight (GET /v1/user)
 // ---------------------------------------------------------------------------
 
@@ -250,12 +212,12 @@ impl ApiClient {
     /// the actual byte count after the read (SEC-003).
     async fn bounded_body(resp: reqwest::Response) -> Result<Vec<u8>, AppError> {
         // Early rejection if the server announces a too-large body.
-        if let Some(len) = resp.content_length() {
-            if len as usize > RESPONSE_BODY_LIMIT {
-                return Err(AppError::ApiIncompatible(
-                    "response body exceeds 8 MiB limit".into(),
-                ));
-            }
+        if let Some(len) = resp.content_length()
+            && len as usize > RESPONSE_BODY_LIMIT
+        {
+            return Err(AppError::ApiIncompatible(
+                "response body exceeds 8 MiB limit".into(),
+            ));
         }
         let bytes = resp
             .bytes()
@@ -694,16 +656,6 @@ mod tests {
     fn test_client(base: &str) -> ApiClient {
         ApiClient::new(test_url(base), "test-token".into())
             .expect("ApiClient must construct in tests")
-    }
-
-    // -----------------------------------------------------------------------
-    // HttpClient scaffold
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn http_client_constructs() {
-        let client = HttpClient::new().expect("HTTP client must construct without errors");
-        let _: &reqwest::Client = client.inner();
     }
 
     // -----------------------------------------------------------------------

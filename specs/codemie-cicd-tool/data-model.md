@@ -1,12 +1,14 @@
 # Data model
 
-Source: `specs/codemie-cicd-tool.md` v26. Status: NORMATIVE architecture
+Source: `specs/codemie-cicd-tool.md` v27. Status: NORMATIVE architecture
 model against backend `2.42.0` commit
 `2a481c290c99bf30ef80aadafa03d876a7f5f732`.
 
-Revision: v26 — SEC-001 credential input, SEC-002 ValidatedUrl/TLS/redirect,
+Revision: v27 — SEC-001 credential input, SEC-002 ValidatedUrl/TLS/redirect,
 SEC-003 resource budgets, SEC-005 identifier constraints (architecture
-remediation, 2026-08-10); Mode (c) Keycloak ROPC added (v26, 2026-08-10).
+remediation, 2026-08-10); Mode (c) Keycloak ROPC added (v26, 2026-08-10);
+per-file lint warning scope, ordering, and failure gating clarified (v27,
+2026-08-11).
 
 ## 1. Ownership and lifetime
 
@@ -19,7 +21,8 @@ invocation only:
 - repository and Workflow-local symbol tables;
 - capability/visibility snapshot and ephemeral server-ID maps;
 - typed create or update request plan; and
-- one safe success outcome or safe failure diagnostic.
+- one safe success outcome with zero or more target-declaration warnings, or
+  one safe failure diagnostic.
 
 Tokens, credentials, request/response bodies, payloads, server error text,
 declaration/sidecar values, arbitrary headers, secret-bearing fields, and
@@ -224,6 +227,20 @@ SuccessOutcome = closed {
 integration reference, remote runtime state, payload, or server message is
 eligible. Non-fatal warnings are separate safe stderr records governed by
 `contracts/warning.schema.json` and never enter the success outcome.
+
+```text
+LintResult =
+  Success { outcome: valid, warnings: [TargetDeclarationWarning] }
+| Failure { diagnostic: FailureDiagnostic }
+```
+
+The `Success` variant is constructible only after parsing, schema, semantic,
+and reference validation succeeds for the complete discovered repository
+closure. Its warnings contain suspected-plaintext-secret and deprecated-value
+conditions only from the declaration selected by `--file`, ordered by bytewise
+ascending fixed warning code and then canonical field path. The `Failure`
+variant contains exactly the selected-output-mode diagnostic and no warnings,
+including when a closure-only declaration fails.
 
 [`diagnostic.schema.json`](contracts/diagnostic.schema.json) is the only failure
 stderr type. Its closed union binds each `errorCode` to exactly one category and

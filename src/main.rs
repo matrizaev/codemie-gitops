@@ -7,13 +7,13 @@ mod coordinator;
 mod discovery;
 mod error;
 mod http;
-mod index;
+mod lint;
 mod output;
 mod parse;
 pub mod preflight;
 mod projection;
-mod reference;
 mod render;
+mod repository;
 mod schema;
 pub mod validate;
 

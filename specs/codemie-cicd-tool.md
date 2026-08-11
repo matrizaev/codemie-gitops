@@ -2,7 +2,7 @@
 
   ## 1. Document status
 
-  * **Status:** DRAFT — v26 — **READY FOR IMPLEMENTATION**
+  * **Status:** DRAFT — v27 — **READY FOR IMPLEMENTATION**
   * **Tool name:** `codemie-gitops`
   * **Owner:** Product Specification Owner (pending assignment to a named product owner)
   * **Source request:** User-provided request on 2026-08-06: "create a CI/CD tool for the CodeMie platform that will be able to store assistants, workflows, datasources, and skills in YAML files, lint them, and create/update on the server side."
@@ -12,7 +12,7 @@
     * `https://github.com/codemie-ai/codemie` — server (FastAPI + LangChain/LangGraph + PostgreSQL/SQLModel + Elasticsearch)
     * `https://github.com/codemie-ai/codemie-ui` — UI (out of scope for this tool)
     * `https://github.com/codemie-ai/codemie-code` — **different, existing** local-agent CLI; not to be confused with `codemie-gitops`
-  * **Last reviewed:** 2026-08-10 (v26)
+  * **Last reviewed:** 2026-08-11 (v27)
   * **Revision history:**
     * v1 (2026-08-06 15:27 UTC+3) — initial DRAFT, based on public docs only.
     * v2 (2026-08-06 15:53 UTC+3) — post-repo-analysis: schema, identity, cross-entity refs, auth resolved or narrowed.
@@ -40,6 +40,7 @@
     * v24 (2026-08-09) — Resolved the Keycloak endpoint configuration decision: `login` requires an explicitly configured token endpoint from `--auth-url`, `CODEMIE_AUTH_URL`, or non-secret `.codemie/config.yaml` `auth_url`, in that precedence order. It never derives the endpoint from `CODEMIE_URL`, `url`, a hostname convention, or another value. Missing endpoint configuration is an exit-2 local failure before network access. Pre-implementation verification and the subsequent security review are lifecycle stages rather than product-readiness blockers merely because a future review artifact does not yet exist.
     * v25 (2026-08-10) — SEC-001 remediation: secret-bearing CLI flags (`--token`, `--client-secret`, `--password`) removed from the approved command surface. Bearer token, client secret, and password are now accepted exclusively through environment variables (`CODEMIE_TOKEN`, `CODEMIE_CLIENT_SECRET`, `CODEMIE_PASSWORD`). The non-secret selector `--client-id` (and `--email`) MAY remain flags. Passing a secret value as a flag is an exit-2 local failure before any network access. FR-009, FR-017, FR-024, IR-006, and QR-007 updated; CLI contract, data model, tasks, and adapter manifest updated consistently.
     * v26 (2026-08-10) — Added Mode (c) Keycloak ROPC (`grant_type=password`) to login command: human-user Keycloak auth with `CODEMIE_EMAIL` + `CODEMIE_PASSWORD` + `auth_url`; `CODEMIE_CLIENT_ID` defaults to `codemie-sdk`. Modes (a) `client_credentials` and (b) local-auth unchanged. FR-017, FR-024, IR-006, QR-007, §12 Authentication, §24 Constraints, §29 Handoff updated; SC-020 and AC-FR-024-08 added.
+    * v27 (2026-08-11) — Clarified per-file lint warning scope: after validating the complete repository closure, lint emits secret-like and deprecation warnings only for the declaration selected by `--file`, in deterministic warning-code/canonical-field-path order. Failed lint emits no warnings and uses only the failure diagnostic contract. FR-014 and AC-FR-014-01 updated.
 
   ---
 
@@ -459,7 +460,7 @@
   | **FR-011** | The tool MUST use this exit taxonomy: **0** = success (`valid`, `created`, or `updated`, including warnings); **1** = entity reconciliation or server-side failure reached after the declaration and local inputs have passed local validation; **2** = local CLI usage, file parsing, schema, semantic-validation, repository-reference, sidecar, or configuration failure; authentication/authorization or identity-visibility precondition failure; API compatibility or connectivity failure; or fatal/internal error. Identity ambiguity, invalid server identity metadata, adoption-required outcomes, entity-resolution instability in otherwise compatible server responses, and server rejection after valid local input are exit 1. Missing/expired credentials, insufficient visibility/write permission, response-contract incompatibility, network failure, and unavailable server are exit 2. Successful per-entity outcomes MUST go to stdout. Every failure MUST leave stdout empty and write its safe diagnostic only to stderr, in both text and JSON modes. A successful `login` token line is the sole intentional sensitive stdout exception. | Gives CI one decision-oriented classification and an unambiguous success/failure stream contract. | SC-003, SC-004, SC-006, SC-008, SC-009, SC-011–SC-017, SC-019 |
   | **FR-012** | On a successful `apply`, the tool MUST print the server-accepted operation to stdout as `created` or `updated`. It MUST NOT print `unchanged`. | Provides a CI-readable authoring outcome. | SC-001, SC-005 |
   | **FR-013** | ~~DELETED in v21.~~ The CLI does not emit Git/CI/environment provenance; the prohibition and retained success fields are defined by FR-016, FR-026, DR-006, and PA-004. | Provenance belongs to external Git, CI, and platform logs. | — |
-  | **FR-014** | The linter MUST warn when a field that typically carries credentials contains a value that resembles a plaintext secret (e.g. a high-entropy string). The warning MUST go to stderr and identify only the source location, field path, and fixed warning category; it MUST NOT echo, hash, encode, truncate, or otherwise reproduce the value. No secret interpolation syntax is provided in phase 1. | Discourage accidental credential storage without exposing the suspected value. | SC-007 |
+  | **FR-014** | After `lint --file <target>` has successfully parsed, schema-validated, semantically validated, and reference-validated the complete discovered repository closure, it MUST evaluate and emit non-fatal declaration warnings only for the declaration selected by `--file`. A warning condition in another declaration discovered solely for repository closure MUST NOT produce a warning in that invocation. This scope applies to both suspected-plaintext-secret warnings and deprecated-value warnings. For the target declaration, the linter MUST warn when a field that typically carries credentials contains a value that resembles a plaintext secret (e.g. a high-entropy string). Each warning MUST go to stderr and identify only the target source location, canonical field path, and fixed warning category; it MUST NOT echo, hash, encode, truncate, or otherwise reproduce the value. Multiple target warnings MUST be emitted in bytewise ascending fixed warning-code order, then canonical field-path order. If lint fails anywhere in the repository closure, it MUST emit no warnings and MUST use only the failure diagnostic contract. No secret interpolation syntax is provided in phase 1. | Discourage accidental credential storage without exposing the suspected value while keeping `--file` a predictable per-declaration lint surface with one target outcome. | SC-007 |
   | **FR-015** | Renaming a YAML file MUST NOT cause a duplicate asset on the server. Satisfied by natural-key identity (DR-002). | Refactoring safety. | SC-005 |
   | **FR-016** | The tool MUST synthesize failure diagnostics from an explicit non-sensitive allowlist and write them only to stderr. Allowed diagnostic data is limited to stable tool error code/category, exit code, local source file/line/column/field path, non-sensitive HTTP status and method/route template, locally generated request ID, and a dedicated server correlation/request ID when available and safely representable. Values not explicitly allowlisted MUST be omitted. A failure diagnostic MUST NOT contain raw or full request/response bodies, server-provided error text, declaration/sidecar values, request payloads, tokens, credentials, authorization headers, cookies, secret-classified fields, secret-like values, Git commit SHA, target environment origin, Git author, or CI-run identity. The tool MUST NOT persist those sensitive transport/authentication artifacts. Debug, verbose, trace, panic, and internal-error paths MUST obey the same boundary. | Enables CI diagnosis without attempting unreliable arbitrary-secret discovery, leaking sensitive payloads, or duplicating external provenance. | SC-002, SC-006, SC-008, SC-009, SC-011, SC-012 |
   | **FR-017** | The tool MUST support a version-controllable config file at `.codemie/config.yaml` in the repository root. This file MAY contain only these non-secret connection/default fields: `url` (target CodeMie API URL), `auth_url` (exact Keycloak token endpoint URL), and `project` (default project key). Resolution MUST be deterministic per field: `--url` > `CODEMIE_URL` > config `url`; `--auth-url` > `CODEMIE_AUTH_URL` > config `auth_url`; declaration `metadata.project` > config `project`; bearer token: `CODEMIE_TOKEN` (environment only — no flag); client ID: `--client-id` > `CODEMIE_CLIENT_ID` (non-secret selector, flag permitted; applies to Mode (a) client_credentials and Mode (c) Keycloak ROPC; when not explicitly set in Mode (c) it defaults to `codemie-sdk`); client secret: `CODEMIE_CLIENT_SECRET` (environment only — no flag; Mode (a) only); email: `--email` > `CODEMIE_EMAIL` (applies to Mode (b) local-auth and Mode (c) Keycloak ROPC); and password: `CODEMIE_PASSWORD` (environment only — no flag; applies to Mode (b) local-auth and Mode (c) Keycloak ROPC). Secret credentials (bearer token, client secret, and password) MUST NOT be accepted as CLI flag values and MUST NOT appear in the config file. An attempt to supply a secret credential as a flag MUST fail with exit code 2 before any network access. The non-secret client ID MAY be supplied as a flag. | Reproducibility without repeating non-secret endpoints while keeping secret credentials out of the repository and out of the process argument vector. SEC-001 remediation (v25). | SC-001, SC-011 |
@@ -790,10 +791,25 @@
 
   ### AC-FR-014-01 — Lint warns on suspicious credential field
   ```gherkin
-  Given a YAML contains a high-entropy string in a credential field
+  Given the declaration selected by --file contains one or more warning conditions
+  And another declaration discovered for repository closure contains a warning condition
+  And the complete repository closure is valid
+  When lint is run repeatedly with the same inputs
+  Then each invocation exits code 0
+  And stdout contains exactly one valid outcome for the selected declaration
+  And stderr contains warnings only for warning conditions in the selected declaration
+  And every warning source identifies the selected declaration and its canonical field path
+  And the warnings are in bytewise ascending fixed warning-code order, then canonical field-path order
+  And the warning sequence is identical across invocations
+  And no warning contains a field value or any derivative of that value
+
+  Given the selected declaration or another declaration in its repository closure is invalid
+  And one or more parsed declarations contain warning conditions
   When lint is run
-  Then the tool writes a warning to stderr naming the source location and suspicious field
-  And the warning does not contain the field value or any derivative of that value
+  Then the tool exits code 2
+  And stdout is empty
+  And stderr contains only the failure diagnostic required by the selected output mode
+  And no warning is emitted
   ```
 
   ### AC-QR-007-01 — Failure diagnostics are allowlisted under every verbosity setting

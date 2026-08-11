@@ -50,62 +50,56 @@ struct DatasourceItem {
 // Public adapter entry point
 // ---------------------------------------------------------------------------
 
+pub struct ApplyRequest<'a> {
+    pub declaration: &'a ParsedDeclaration,
+    pub project_name: &'a str,
+    pub repo_name: &'a str,
+    pub index_type: &'a str,
+    pub repo_root: &'a Path,
+    pub follow_symlinks: bool,
+}
+
+/// Apply one Datasource while propagating coordinator cancellation into File
+/// Datasource reads.
 pub async fn apply(
     client: &ApiClient,
     base_url: &ValidatedUrl,
-    decl: &ParsedDeclaration,
-    project_name: &str,
-    repo_name: &str,
-    index_type: &str,
-    repo_root: &Path,
-    follow_symlinks: bool,
-) -> Result<ApplyResult, AppError> {
-    let cancellation = CancellationToken::default();
-    apply_cancellable(
-        client,
-        base_url,
-        decl,
-        project_name,
-        repo_name,
-        index_type,
-        repo_root,
-        follow_symlinks,
-        &cancellation,
-    )
-    .await
-}
-
-/// Coordinator entry point that propagates the invocation deadline into File
-/// Datasource reads.
-pub async fn apply_cancellable(
-    client: &ApiClient,
-    base_url: &ValidatedUrl,
-    decl: &ParsedDeclaration,
-    project_name: &str,
-    repo_name: &str,
-    index_type: &str,
-    repo_root: &Path,
-    follow_symlinks: bool,
+    request: ApplyRequest<'_>,
     cancellation: &CancellationToken,
 ) -> Result<ApplyResult, AppError> {
     // ADR-012 Option A: preflight before any write
     preflight_visibility(client, base_url).await?;
 
-    let matches = enumerate(client, base_url, project_name, repo_name, index_type).await?;
+    let matches = enumerate(
+        client,
+        base_url,
+        request.project_name,
+        request.repo_name,
+        request.index_type,
+    )
+    .await?;
 
     match matches.as_slice() {
         [] => {
-            let plan = project(decl, None, None, repo_root, follow_symlinks)?;
+            let plan = project(
+                request.declaration,
+                None,
+                None,
+                request.repo_root,
+                request.follow_symlinks,
+            )?;
             dispatch(
                 client,
                 base_url,
-                plan,
-                index_type,
-                project_name,
-                repo_name,
-                decl,
-                repo_root,
-                cancellation,
+                DispatchRequest {
+                    plan,
+                    index_type: request.index_type,
+                    project_name: request.project_name,
+                    repo_name: request.repo_name,
+                    declaration: request.declaration,
+                    repo_root: request.repo_root,
+                    cancellation,
+                },
             )
             .await
         }
@@ -114,24 +108,34 @@ pub async fn apply_cancellable(
                 server_id: single.id.clone(),
                 meta_config: None,
             };
-            let plan = project(decl, Some(&existing), None, repo_root, follow_symlinks)?;
+            let plan = project(
+                request.declaration,
+                Some(&existing),
+                None,
+                request.repo_root,
+                request.follow_symlinks,
+            )?;
             dispatch(
                 client,
                 base_url,
-                plan,
-                index_type,
-                project_name,
-                repo_name,
-                decl,
-                repo_root,
-                cancellation,
+                DispatchRequest {
+                    plan,
+                    index_type: request.index_type,
+                    project_name: request.project_name,
+                    repo_name: request.repo_name,
+                    declaration: request.declaration,
+                    repo_root: request.repo_root,
+                    cancellation,
+                },
             )
             .await
         }
         _ => Err(AppError::Reconciliation(format!(
-            "Datasource: {} matches for (repo_name={repo_name:?}, \
-             project={project_name:?}, type={index_type:?}); manual resolution required",
-            matches.len()
+            "Datasource: {} matches for (repo_name={:?}, project={:?}, type={:?}); manual resolution required",
+            matches.len(),
+            request.repo_name,
+            request.project_name,
+            request.index_type
         ))),
     }
 }
@@ -303,22 +307,26 @@ fn update_route(kind: &str, project: &str, repo_name: &str) -> String {
 // Dispatch: JSON or multipart, create or update
 // ---------------------------------------------------------------------------
 
+struct DispatchRequest<'a> {
+    plan: WritePlan,
+    index_type: &'a str,
+    project_name: &'a str,
+    repo_name: &'a str,
+    declaration: &'a ParsedDeclaration,
+    repo_root: &'a Path,
+    cancellation: &'a CancellationToken,
+}
+
 async fn dispatch(
     client: &ApiClient,
     base_url: &ValidatedUrl,
-    plan: WritePlan,
-    kind: &str,
-    project_name: &str,
-    repo_name: &str,
-    decl: &ParsedDeclaration,
-    repo_root: &Path,
-    cancellation: &CancellationToken,
+    request: DispatchRequest<'_>,
 ) -> Result<ApplyResult, AppError> {
-    match plan {
+    match request.plan {
         WritePlan::Create {
             request: RequestBody::Json(body),
         } => {
-            let route = create_route(kind, project_name);
+            let route = create_route(request.index_type, request.project_name);
             let resp: serde_json::Value = client.post(base_url, &route, &body).await?;
             let id = extract_id(&resp)?;
             Ok(ApplyResult {
@@ -330,7 +338,7 @@ async fn dispatch(
             request: RequestBody::Json(body),
             ..
         } => {
-            let route = update_route(kind, project_name, repo_name);
+            let route = update_route(request.index_type, request.project_name, request.repo_name);
             let resp: serde_json::Value = client.put(base_url, &route, &body).await?;
             let id = extract_id(&resp)?;
             Ok(ApplyResult {
@@ -341,8 +349,10 @@ async fn dispatch(
         WritePlan::Create {
             request: RequestBody::FileMultipart { query_params, .. },
         } => {
-            let route = create_route(kind, project_name);
-            let file_parts = read_file_parts_async(decl, repo_root, cancellation).await?;
+            let route = create_route(request.index_type, request.project_name);
+            let file_parts =
+                read_file_parts_async(request.declaration, request.repo_root, request.cancellation)
+                    .await?;
             let resp = client
                 .post_multipart(base_url, &route, &query_params, file_parts)
                 .await?;
@@ -358,13 +368,15 @@ async fn dispatch(
             },
             ..
         } => {
-            let route = update_route(kind, project_name, repo_name);
             // Inject name=repo_name for server identity: knowledge_base file update uses
             // (project_name, name) to locate the datasource (no ID in route path).
             if !query_params.iter().any(|(k, _)| k == "name") {
-                query_params.push(("name".to_owned(), repo_name.to_owned()));
+                query_params.push(("name".to_owned(), request.repo_name.to_owned()));
             }
-            let file_parts = read_file_parts_async(decl, repo_root, cancellation).await?;
+            let route = update_route(request.index_type, request.project_name, request.repo_name);
+            let file_parts =
+                read_file_parts_async(request.declaration, request.repo_root, request.cancellation)
+                    .await?;
             let resp = client
                 .put_multipart(base_url, &route, &query_params, file_parts)
                 .await?;
@@ -397,7 +409,7 @@ fn check_basename_safety(basename: &str) -> Result<(), AppError> {
     for ch in basename.chars() {
         let cp = ch as u32;
         if cp <= 0x1F          // C0 controls (NUL=0x00, CR=0x0D, LF=0x0A)
-            || (cp >= 0x7F && cp <= 0x9F)  // DEL + C1 controls
+            || (0x7F..=0x9F).contains(&cp)  // DEL + C1 controls
             || ch == '/'       // POSIX path separator
             || ch == '\\'
         // Windows path separator
@@ -411,6 +423,7 @@ fn check_basename_safety(basename: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+#[cfg(test)]
 fn read_file_parts(
     decl: &ParsedDeclaration,
     repo_root: &Path,
@@ -571,12 +584,15 @@ mod tests {
         let result = apply(
             &client,
             &url,
-            &decl,
-            "my-project",
-            "my-repo",
-            "git",
-            Path::new("."),
-            false,
+            ApplyRequest {
+                declaration: &decl,
+                project_name: "my-project",
+                repo_name: "my-repo",
+                index_type: "git",
+                repo_root: Path::new("."),
+                follow_symlinks: false,
+            },
+            &CancellationToken::default(),
         )
         .await
         .expect("apply must succeed");
@@ -615,12 +631,15 @@ mod tests {
         let result = apply(
             &client,
             &url,
-            &decl,
-            "my-project",
-            "my-repo",
-            "git",
-            Path::new("."),
-            false,
+            ApplyRequest {
+                declaration: &decl,
+                project_name: "my-project",
+                repo_name: "my-repo",
+                index_type: "git",
+                repo_root: Path::new("."),
+                follow_symlinks: false,
+            },
+            &CancellationToken::default(),
         )
         .await
         .expect("apply must succeed");
@@ -652,12 +671,15 @@ mod tests {
         let err = apply(
             &client,
             &url,
-            &decl,
-            "my-project",
-            "my-repo",
-            "git",
-            Path::new("."),
-            false,
+            ApplyRequest {
+                declaration: &decl,
+                project_name: "my-project",
+                repo_name: "my-repo",
+                index_type: "git",
+                repo_root: Path::new("."),
+                follow_symlinks: false,
+            },
+            &CancellationToken::default(),
         )
         .await
         .expect_err("multiple matches must error");

@@ -35,7 +35,7 @@ use crate::schema::DECLARATION_SCHEMA_JSON;
 // ---------------------------------------------------------------------------
 
 /// Maximum bytes for a single YAML declaration file (1 MiB).
-pub const MAX_YAML_FILE_BYTES: usize = 1 * 1024 * 1024;
+pub const MAX_YAML_FILE_BYTES: usize = 1024 * 1024;
 
 /// Maximum nesting depth in the YAML value tree.
 pub const MAX_YAML_DEPTH: usize = 32;
@@ -109,6 +109,7 @@ pub struct ParsedDeclaration {
 /// - JSON Schema validation failure (unknown fields, missing required fields,
 ///   wrong types, pattern mismatches, etc.).
 /// - `contentFrom` sidecar: file not found, permission error, or budget exceeded.
+#[cfg(test)]
 pub fn parse_and_validate(
     raw_yaml: &str,
     file_path: &Path,
@@ -180,6 +181,8 @@ fn parse_and_validate_inner(
 
     // Step 7 — Extract the entity kind.
     let kind = extract_entity_kind(&json_value, file_path)?;
+    let expands_content_from =
+        kind == EntityKind::Skill && json_value.pointer("/spec/contentFrom").is_some();
 
     // Step 8 — Expand contentFrom sidecar for Skill declarations.
     let json_value = expand_content_from(
@@ -190,6 +193,19 @@ fn parse_and_validate_inner(
         follow_symlinks,
         cancellation,
     )?;
+
+    // `contentFrom` is an authoring-only selector whose sidecar bytes become
+    // `spec.content`. Revalidate the transformed declaration so the exact same
+    // closed-schema invariants (including Skill content length) govern inline
+    // and sidecar-authored content.
+    let json_value = if expands_content_from {
+        if let Some(cancellation) = cancellation {
+            cancellation.checkpoint()?;
+        }
+        validate_against_schema(json_value, file_path)?
+    } else {
+        json_value
+    };
 
     if let Some(cancellation) = cancellation {
         cancellation.checkpoint()?;
@@ -859,6 +875,59 @@ spec:
     }
 
     #[test]
+    fn content_from_below_schema_minimum_is_rejected() {
+        assert_content_from_length_rejected(99, "cf_below_min");
+    }
+
+    #[test]
+    fn content_from_above_schema_maximum_is_rejected() {
+        assert_content_from_length_rejected(30_001, "cf_above_max");
+    }
+
+    #[test]
+    fn content_from_schema_minimum_is_accepted() {
+        assert_content_from_length_accepted(100, "cf_at_min");
+    }
+
+    #[test]
+    fn content_from_schema_maximum_is_accepted() {
+        assert_content_from_length_accepted(30_000, "cf_at_max");
+    }
+
+    fn assert_content_from_length_rejected(length: usize, label: &str) {
+        let (root, _guard) = temp_dir(label);
+        init_git(&root);
+        let sidecar_file = root.join("content.md");
+        fs::write(&sidecar_file, "x".repeat(length)).expect("sidecar must write");
+        let yaml = minimal_skill_yaml_content_from("content.md");
+        let declaration_file = root.join("skill.yaml");
+        fs::write(&declaration_file, &yaml).expect("declaration must write");
+
+        let error = parse_and_validate(&yaml, &declaration_file, &root, false)
+            .expect_err("out-of-schema sidecar content must fail");
+        assert_eq!(error.exit_code(), 2);
+        assert!(matches!(error, AppError::Schema(_)));
+    }
+
+    fn assert_content_from_length_accepted(length: usize, label: &str) {
+        let (root, _guard) = temp_dir(label);
+        init_git(&root);
+        let expected = "x".repeat(length);
+        let sidecar_file = root.join("content.md");
+        fs::write(&sidecar_file, &expected).expect("sidecar must write");
+        let yaml = minimal_skill_yaml_content_from("content.md");
+        let declaration_file = root.join("skill.yaml");
+        fs::write(&declaration_file, &yaml).expect("declaration must write");
+
+        let declaration = parse_and_validate(&yaml, &declaration_file, &root, false)
+            .expect("boundary sidecar content must pass");
+        assert_eq!(
+            declaration.value.pointer("/spec/content"),
+            Some(&JsonValue::String(expected))
+        );
+    }
+
+    #[test]
     fn content_from_aggregate_budget_exceeded_is_schema_error() {
         let (root, _g) = temp_dir("cf_budget");
         init_git(&root);
@@ -996,7 +1065,7 @@ spec:
 
     #[test]
     fn yaml_file_byte_limit_is_1_mib() {
-        assert_eq!(MAX_YAML_FILE_BYTES, 1 * 1024 * 1024);
+        assert_eq!(MAX_YAML_FILE_BYTES, 1024 * 1024);
     }
 
     #[test]

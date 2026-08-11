@@ -138,6 +138,7 @@ fn map_io_to_schema(e: io::Error, path: &Path) -> AppError {
 ///    produce `AppError::Schema`.
 ///
 /// Returns the raw file contents as a `String` without parsing YAML (F-004).
+#[cfg(test)]
 pub fn load_declaration_file(
     file_path: &Path,
     repo_root: &Path,

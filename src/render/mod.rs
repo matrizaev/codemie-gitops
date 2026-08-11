@@ -84,6 +84,11 @@ impl EntityKey {
 ///
 /// Variants are serialized as their exact schema string values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(
+    dead_code,
+    clippy::enum_variant_names,
+    reason = "the complete approved diagnostic.schema.json code set is retained at the typed output boundary"
+)]
 pub enum ErrorCode {
     // reconciliation (exit 1)
     EAmbiguousIdentity,
@@ -290,10 +295,15 @@ pub struct HttpInfo {
 
 /// Closed set of HTTP methods per diagnostic.schema.json.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "UPPERCASE")]
+#[allow(
+    dead_code,
+    reason = "diagnostic.schema.json permits typed HTTP context for all modifying and read methods"
+)]
 pub enum HttpMethod {
-    GET,
-    POST,
-    PUT,
+    Get,
+    Post,
+    Put,
 }
 
 #[derive(Serialize)]
@@ -436,6 +446,7 @@ impl<W: Write, E: Write> Renderer<W, E> {
 
     /// Return the owned output writers. Primarily used by boundary tests to
     /// assert the stdout/stderr split without touching process-global streams.
+    #[cfg(test)]
     pub fn into_writers(self) -> (W, E) {
         (self.stdout, self.stderr)
     }

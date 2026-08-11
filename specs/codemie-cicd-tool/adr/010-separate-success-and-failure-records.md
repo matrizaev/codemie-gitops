@@ -7,9 +7,12 @@ Proposed
 ## Context
 
 Earlier architecture used one outcome type for success and failure and carried
-server error text/body after redaction. Product specification v24 instead
+server error text/body after redaction. Product specification v27 instead
 requires stdout to be empty on every failure and diagnostics to be constructed
-only from an explicit allowlist. Arbitrary-redaction cannot meet that boundary.
+only from an explicit allowlist. It also makes lint warnings part of the
+successful per-file result only after complete repository-closure validation.
+Arbitrary-redaction or streaming warnings during validation cannot meet that
+boundary.
 
 ## Decision drivers
 
@@ -40,6 +43,10 @@ never a warning, error, server UUID, target URL, or request content.
 
 `contracts/warning.schema.json` represents safe non-fatal stderr warnings and
 contains only stable warning code/category plus source coordinates/field path.
+Lint evaluates suspected-plaintext-secret and deprecated-value warnings only
+after the complete discovered repository closure validates, and only for the
+declaration selected by `--file`. It emits them in bytewise ascending fixed
+warning-code order, then canonical-field-path order.
 
 `contracts/diagnostic.schema.json` represents JSON stderr failures only. It is
 closed and binds each stable `errorCode` to exactly one `category` and
@@ -51,7 +58,10 @@ correlation ID.
 Transport/domain errors are classified into safe enums before reaching output.
 Raw bodies, response text, payloads, declaration values, arbitrary headers, and
 exception strings are not inputs to the renderer. Text mode is rendered from
-the same safe structure. Login success is handled by an isolated token writer.
+the same safe structure. If lint fails anywhere in the repository closure, the
+warning sequence is discarded or never constructed and stderr contains exactly
+the selected-output-mode failure diagnostic. Login success is handled by an
+isolated token writer.
 
 ## Consequences
 
@@ -80,6 +90,6 @@ the same safe structure. Login success is handled by an isolated token writer.
 
 ## References
 
-- Product specification v24: FR-011/016/024/026, DR-006/009,
+- Product specification v27: FR-011/014/016/024/026, DR-006/009,
   QR-004/007/011
 - ADR-003

@@ -10,15 +10,12 @@ use std::time::Duration;
 use crate::adapters::{self, ApplyAction, ApplyResult};
 use crate::cancellation::CancellationToken;
 use crate::config::ValidatedUrl;
-use crate::discovery::{discover_yaml_files, load_declaration_file_cancellable};
 use crate::error::AppError;
 use crate::http::{ApiClient, preflight_visibility};
 use crate::output::{Action, Outcome};
-use crate::parse::{
-    EntityKind, MAX_YAML_FILE_BYTES, ParsedDeclaration, parse_and_validate_cancellable,
-};
+use crate::parse::{EntityKind, ParsedDeclaration};
 use crate::preflight::check_compatibility;
-use crate::validate::{validate_graph, validate_natural};
+use crate::repository::{TargetLoadRequest, load_target_declaration};
 
 /// Whole-invocation deadline from the approved resource budget.
 pub const INVOCATION_DEADLINE: Duration = Duration::from_secs(300);
@@ -113,10 +110,12 @@ async fn apply_inner(
     let local_cancellation = cancellation.clone();
     let target = tokio::task::spawn_blocking(move || {
         load_target_declaration(
-            &file,
-            &repo_root,
-            follow_symlinks,
-            default_project.as_deref(),
+            TargetLoadRequest {
+                file: &file,
+                repo_root: &repo_root,
+                default_project: default_project.as_deref(),
+                follow_symlinks,
+            },
             &local_cancellation,
         )
     })
@@ -146,12 +145,14 @@ async fn apply_inner(
     let result = dispatch_adapter(
         &client,
         &command.base_url,
-        &target,
-        &identity,
-        &command.repo_root,
-        command.follow_symlinks,
-        command.adopt_workflow_id.as_deref(),
-        &cancellation,
+        DispatchRequest {
+            declaration: &target,
+            identity: &identity,
+            repo_root: &command.repo_root,
+            follow_symlinks: command.follow_symlinks,
+            adopt_workflow_id: command.adopt_workflow_id.as_deref(),
+            cancellation: &cancellation,
+        },
     )
     .await?;
 
@@ -160,95 +161,6 @@ async fn apply_inner(
         .map_err(classify_verification_failure)?;
 
     Ok(identity.success_outcome(result.action))
-}
-
-fn load_repository_declarations(
-    repo_root: &Path,
-    follow_symlinks: bool,
-    default_project: Option<&str>,
-    cancellation: &CancellationToken,
-) -> Result<Vec<ParsedDeclaration>, AppError> {
-    cancellation.checkpoint()?;
-    let files = discover_yaml_files(repo_root, follow_symlinks)?;
-    let mut declarations = Vec::with_capacity(files.len());
-    for file in files {
-        cancellation.checkpoint()?;
-        if file.byte_len > MAX_YAML_FILE_BYTES as u64 {
-            return Err(AppError::YamlParse(
-                "declaration exceeds the 1 MiB byte limit".into(),
-            ));
-        }
-        let raw = load_declaration_file_cancellable(
-            &file.path,
-            repo_root,
-            follow_symlinks,
-            MAX_YAML_FILE_BYTES as u64,
-            cancellation,
-        )?;
-        let mut declaration = parse_and_validate_cancellable(
-            &raw,
-            &file.path,
-            repo_root,
-            follow_symlinks,
-            cancellation,
-        )?;
-        materialize_effective_project(&mut declaration, default_project)?;
-        validate_natural(&declaration)?;
-        declarations.push(declaration);
-    }
-    cancellation.checkpoint()?;
-    Ok(declarations)
-}
-
-fn load_target_declaration(
-    file: &Path,
-    repo_root: &Path,
-    follow_symlinks: bool,
-    default_project: Option<&str>,
-    cancellation: &CancellationToken,
-) -> Result<ParsedDeclaration, AppError> {
-    cancellation.checkpoint()?;
-    let target_path = std::fs::canonicalize(file)
-        .map_err(|_| AppError::Schema("target declaration file is unavailable".into()))?;
-    let mut declarations =
-        load_repository_declarations(repo_root, follow_symlinks, default_project, cancellation)?;
-    validate_graph(&declarations)?;
-    cancellation.checkpoint()?;
-
-    let target_index = declarations
-        .iter()
-        .position(|declaration| declaration.source_path == target_path)
-        .ok_or_else(|| {
-            AppError::Schema(
-                "target file is not a discovered YAML declaration in the repository".into(),
-            )
-        })?;
-    Ok(declarations.swap_remove(target_index))
-}
-
-fn materialize_effective_project(
-    declaration: &mut ParsedDeclaration,
-    default_project: Option<&str>,
-) -> Result<(), AppError> {
-    let metadata = declaration
-        .value
-        .get_mut("metadata")
-        .and_then(serde_json::Value::as_object_mut)
-        .ok_or_else(|| AppError::Schema("declaration metadata is required".into()))?;
-    if metadata.get("project").is_none() {
-        let project = default_project
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| {
-                AppError::Schema(
-                    "metadata.project is required when repository project is not configured".into(),
-                )
-            })?;
-        metadata.insert(
-            "project".to_owned(),
-            serde_json::Value::String(project.to_owned()),
-        );
-    }
-    Ok(())
 }
 
 fn target_identity(declaration: &ParsedDeclaration) -> Result<TargetIdentity, AppError> {
@@ -315,26 +227,30 @@ fn is_uuid(value: &str) -> bool {
     parts.next().is_none()
 }
 
+struct DispatchRequest<'a> {
+    declaration: &'a ParsedDeclaration,
+    identity: &'a TargetIdentity,
+    repo_root: &'a Path,
+    follow_symlinks: bool,
+    adopt_workflow_id: Option<&'a str>,
+    cancellation: &'a CancellationToken,
+}
+
 async fn dispatch_adapter(
     client: &ApiClient,
     base_url: &ValidatedUrl,
-    declaration: &ParsedDeclaration,
-    identity: &TargetIdentity,
-    repo_root: &Path,
-    follow_symlinks: bool,
-    adopt_workflow_id: Option<&str>,
-    cancellation: &CancellationToken,
+    request: DispatchRequest<'_>,
 ) -> Result<ApplyResult, AppError> {
-    match identity {
+    match request.identity {
         TargetIdentity::Assistant { project, slug } => {
             adapters::assistant::apply(
                 client,
                 base_url,
-                declaration,
+                request.declaration,
                 project,
                 slug,
-                repo_root,
-                follow_symlinks,
+                request.repo_root,
+                request.follow_symlinks,
             )
             .await
         }
@@ -342,12 +258,14 @@ async fn dispatch_adapter(
             adapters::workflow::apply(
                 client,
                 base_url,
-                declaration,
-                project,
-                slug,
-                adopt_workflow_id,
-                repo_root,
-                follow_symlinks,
+                adapters::workflow::ApplyRequest {
+                    declaration: request.declaration,
+                    project_name: project,
+                    slug,
+                    adopt_workflow_id: request.adopt_workflow_id,
+                    repo_root: request.repo_root,
+                    follow_symlinks: request.follow_symlinks,
+                },
             )
             .await
         }
@@ -355,11 +273,11 @@ async fn dispatch_adapter(
             adapters::skill::apply(
                 client,
                 base_url,
-                declaration,
+                request.declaration,
                 project,
                 name,
-                repo_root,
-                follow_symlinks,
+                request.repo_root,
+                request.follow_symlinks,
             )
             .await
         }
@@ -368,16 +286,18 @@ async fn dispatch_adapter(
             repo_name,
             index_type,
         } => {
-            adapters::datasource::apply_cancellable(
+            adapters::datasource::apply(
                 client,
                 base_url,
-                declaration,
-                project,
-                repo_name,
-                index_type,
-                repo_root,
-                follow_symlinks,
-                cancellation,
+                adapters::datasource::ApplyRequest {
+                    declaration: request.declaration,
+                    project_name: project,
+                    repo_name,
+                    index_type,
+                    repo_root: request.repo_root,
+                    follow_symlinks: request.follow_symlinks,
+                },
+                request.cancellation,
             )
             .await
         }

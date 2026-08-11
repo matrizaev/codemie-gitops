@@ -25,6 +25,7 @@ use clap::{Parser, Subcommand};
 use crate::auth::{Credentials, login, select_auth_mode};
 use crate::config::{ResolveConfigArgs, find_repo_root, resolve_config};
 use crate::coordinator::{self, ApplyCommand};
+use crate::lint::{self, LintCommand};
 use crate::output::OutputMode;
 
 /// The top-level CLI structure.
@@ -135,21 +136,47 @@ pub async fn run() -> i32 {
     let cli = Cli::parse();
     match cli.command {
         Command::Lint {
+            file,
             repo_root,
             follow_symlinks,
-            ..
+            output,
         } => {
+            let effective_repo_root = match resolve_repo_root(repo_root.as_deref()) {
+                Ok(root) => root,
+                Err(error) => {
+                    crate::output::write_failure(&error, output);
+                    return error.exit_code();
+                }
+            };
             let args = ResolveConfigArgs {
                 flag_url: None,
                 flag_auth_url: None,
-                repo_root,
-                follow_symlinks,
+                repo_root: Some(effective_repo_root.clone()),
             };
-            if let Err(e) = resolve_config(&args) {
-                eprintln!("error: {e}");
-                return e.exit_code();
+            let config = match resolve_config(&args) {
+                Ok(config) => config,
+                Err(error) => {
+                    crate::output::write_failure(&error, output);
+                    return error.exit_code();
+                }
+            };
+            match lint::lint(LintCommand {
+                file,
+                repo_root: effective_repo_root,
+                default_project: config.project,
+                follow_symlinks,
+            })
+            .await
+            {
+                Ok(result) => {
+                    result.write(output);
+                    0
+                }
+                Err(error) => {
+                    crate::output::write_failure(&error, output);
+                    error.exit_code()
+                }
             }
-            todo!("lint implemented in F-003 through F-005")
         }
 
         Command::Apply {
@@ -171,7 +198,6 @@ pub async fn run() -> i32 {
                 flag_url: url,
                 flag_auth_url: None,
                 repo_root: Some(effective_repo_root.clone()),
-                follow_symlinks,
             };
             let config = match resolve_config(&args) {
                 Ok(config) => config,
@@ -222,7 +248,6 @@ pub async fn run() -> i32 {
                 flag_url: url,
                 flag_auth_url: auth_url,
                 repo_root: None,
-                follow_symlinks: false,
             };
             let config = match resolve_config(&args) {
                 Ok(c) => c,

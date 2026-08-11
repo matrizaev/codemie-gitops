@@ -2,14 +2,15 @@
 
 ## 1. Status
 
-**Architecture status: READY FOR IMPLEMENTATION (v25; Q-006 re-verification passed 2026-08-10; Q-005 security re-review APPROVED 2026-08-10)**
+**Architecture status: READY FOR INDEPENDENT POST-IMPLEMENTATION VERIFICATION
+AND O-001 HANDOFF**
 
-Product specification v25 closes the Keycloak endpoint decision and the
-architecture now pins presence, null, applicability, ownership, and transport
-classes for every admitted field, requires an explicit token endpoint with
-deterministic precedence, and incorporates all architect-owned security
-remediation from the pre-implementation security review
-(`security-review-preimplementation.md`):
+Product specification v27 is the approved source. The architecture now pins
+presence, null, applicability, ownership, and transport classes for every
+admitted field, requires an explicit token endpoint with deterministic
+precedence, incorporates all architect-owned security remediation from the
+pre-implementation security review, and synchronizes the v27 per-file lint
+warning lifecycle (`security-review-preimplementation.md`):
 
 - **ADR-003 handoff**: ADR-003 superseded by ADR-011 (credential input,
   ValidatedUrl, TLS, redirect policy).
@@ -19,19 +20,22 @@ remediation from the pre-implementation security review
   disable for auth POSTs, URL userinfo rejection in all schemas.
 - **SEC-003** (CLOSED): versioned resource budget defaults for all 18 resource
   dimensions in `http-adapter.md` §2.4 and `data-model.md` §11.
-- **SEC-004** (DEFERRED — awaiting product-spec-owner decision): options memo
-  in ADR-012 (PROPOSED); D-001 implementation deferred.
+- **SEC-004** (CLOSED): ADR-012 accepted Option A; a project-admin visibility
+  preflight is required for Datasource reconciliation and D-001 is complete.
 - **SEC-005** (CLOSED): identifier maxLength and control/bidi pattern in all
   schemas; output rendering rules in `cli.md` §10.
 - **SEC-006** (CLOSED): supply-chain and CI controls amendment in ADR-005.
 
-Pre-implementation re-verification remains the next lifecycle check; the
-security reviewer should verify architecture remediation closure before
-implementation.
+The implementation baseline, including D-001, is complete. Independent review
+of the v27 warning-contract delta found only stale lifecycle text in this plan;
+this synchronization resolves that documentation finding. O-001 is the next
+production-enablement handoff. V-001, V-002, and L-001 remain downstream and
+are not complete.
 
 ## 2. Executive summary
 
-Build one self-contained Linux x86_64 Rust executable, `codemie-gitops`, with
+The implementation baseline is one self-contained Linux x86_64 Rust executable,
+`codemie-gitops`, with
 offline `lint`, single-entity `apply`, and stateless `login`. Checked-in closed
 schemas define the authoring surface for exactly four entities: Assistant,
 Workflow, Datasource, and Skill. Direct REST adapters resolve an exact identity,
@@ -49,11 +53,12 @@ surface.
 
 ## 3. Sources consulted
 
-- Approved product source: `specs/codemie-cicd-tool.md` v26, all sections.
+- Approved product source: `specs/codemie-cicd-tool.md` v27, all sections.
 - Security review input: `security-review-preimplementation.md` (read-only;
   findings SEC-001–SEC-006 used as remediation drivers).
-- Verification source: `verification-preimplementation.md` (read-only, stale
-  at v24; a new verification pass is required against v25).
+- Verification sources: `Q-006-verification-report.md` (read-only v26 baseline)
+  and the current-task independent v27 delta result supplied by the verifier
+  (warning behavior passed; this plan cleanup was the remaining finding).
 - Backend reference: tag `2.42.0`, commit
   `2a481c290c99bf30ef80aadafa03d876a7f5f732`.
 - UI reference: tag `2.42.0`, commit
@@ -84,10 +89,15 @@ allowlist output, and deployment contract testing.
 
 ## 5. Current architecture
 
-No CLI implementation exists in the product area. External CodeMie exposes an
-exact Assistant lookup, Workflow full pages/detail/create/update, Skill
-pages/detail/create/update, and ordinary per-kind Datasource CRUD. CodeMie owns
-remote records, authorization, and external integrations.
+The implementation baseline exists in the product area under `src/`, with the
+binary entry point and command dispatch, offline repository loading/lint,
+single-entity apply coordination, per-kind adapters, authentication/HTTP
+boundaries, and typed output rendering. `tests/cli_lint.rs` supplies CLI lint
+integration coverage. D-001's Datasource adapter baseline is implemented in
+`src/adapters/datasource.rs`. External CodeMie remains the remote system of
+record and exposes the Assistant, Workflow, Skill, and ordinary per-kind
+Datasource contracts consumed by the CLI; it owns remote records,
+authorization, and external integrations.
 
 Important limits are: Workflow identity metadata has no database uniqueness
 constraint; Skill uniqueness includes creator; Datasource natural uniqueness is
@@ -103,7 +113,7 @@ deployment tests contain these limits.
 |---|---|
 | FR-001–004, FR-022/023/025/027, VR-016 | closed bundled schema; effective project; source-pinned required/optional-null classes; scalar YAML-relative sidecars; deterministic offline index |
 | FR-005/006/008/012/015/021, DR-012 | resolve identity; POST if absent; PUT if present; optional omission/null to explicit null; bounded applicability/ownership transforms; no delete |
-| FR-009/011/014/016/024/026 | stateless auth; exact exit union; stdout success/stderr failure; allowlist renderer |
+| FR-009/011/014/016/024/026 | stateless auth; exact exit union; stdout success/stderr failure; repository-closure validation before target-only lint warnings; bytewise warning-code/canonical-field-path ordering; no warnings on failure; allowlist renderer |
 | FR-017 | exact per-field precedence; closed non-secret repository config; secret credentials from environment only; non-secret selectors from flag or environment (SEC-001, v25) |
 | FR-019/020 | no generic adoption or ownership marker; Workflow-only identity exception |
 | FR-028–030, FR-032–035 | Workflow reserved record, exhaustive resolver, explicit adoption, exact local actor/reference projection, race visibility |
@@ -113,7 +123,7 @@ deployment tests contain these limits.
 | SEC-001 (v25) | env-only secret credentials; `--token`/`--client-secret`/`--password` flags are E_USAGE, exit 2, before network access; ADR-011 |
 | SEC-002 (v25) | ValidatedUrl type; HTTPS-required auth_url; loopback exception for target_url; userinfo/fragment/control-char rejection in all URL schema patterns; redirect disabled for auth POSTs; ADR-011 |
 | SEC-003 (v25) | 18 versioned resource budget defaults; YAML, file, network, response, pagination, concurrency, deadline dimensions; `http-adapter.md` §2.4; `data-model.md` §11 |
-| SEC-004 (DEFERRED) | datasource visibility options memo in ADR-012 (PROPOSED); D-001 deferred until ADR accepted by product-spec-owner |
+| SEC-004 (closed) | ADR-012 accepted Option A; project-admin complete-visibility preflight; D-001 implementation baseline complete |
 | SEC-005 (v25) | identifier maxLength and control/bidi pattern rejection in all schemas; safe output rendering rules (one line/record, JSON serializer, canonical field paths, multipart basename safety); `cli.md` §10 |
 | SEC-006 (v25) | Cargo.lock committed; --locked builds; RustSec scanning; SHA-pinned CI actions; permissions blocks; secret isolation for fork/PR; protected deployment environments; same-artifact promotion; SBOM; ADR-005 amendment |
 
@@ -201,10 +211,11 @@ selection conflict with the approved portability and identity boundaries.
 | discovery/loader | deterministic YAML and sidecar reads | bounds, containment, source coordinates only |
 | schema/semantic validator | closed v1alpha1, effective project, and field-presence classes | no live schema/default insertion |
 | repository index | offline natural and graph-local reference closure | no server access |
+| lint warning evaluator | after complete repository-closure validation, evaluate only the `--file` declaration and sort by fixed warning code then canonical field path | never emits on a failed lint or for closure-only declarations |
 | request projector | typed create/update requests from authored intent | only approved transforms; no equality branch |
 | resolver/adapters | four entity protocols and peer Datasource mappings | exact identity, visibility, and write proof |
 | auth/transport | bearer/login, TLS/proxy/CA, retries/timeouts/strict decode | secrets isolated; bodies discarded |
-| output boundary | typed stdout outcome and typed stderr diagnostic | no generic message/body API |
+| output boundary | typed stdout outcome, typed stderr warning, and typed stderr diagnostic | warnings only on successful lint; failure is exactly one diagnostic; no generic message/body API |
 
 ```mermaid
 flowchart LR
@@ -310,10 +321,14 @@ releases. See ADR-005 amendment.
 
 Success validates against `outcome.schema.json` and contains only action, kind,
 project, and the kind natural-key member.
-Apply actions are `created` or `updated`; lint uses `valid`. Failure stdout is
-empty. Stderr validates against the closed `diagnostic.schema.json` union.
-Bodies, server text, payloads, declaration/sidecar values, secrets, arbitrary
-headers, raw URLs, and exception strings never enter output or logs.
+Apply actions are `created` or `updated`; lint uses `valid`. A successful lint
+evaluates suspected-plaintext-secret and deprecated-value warnings only for the
+`--file` declaration after the complete repository closure validates, then
+emits them by bytewise fixed warning code and canonical field path. If any
+closure declaration fails, lint emits no warnings: stdout is empty and stderr
+contains exactly the closed `diagnostic.schema.json` failure record. Bodies,
+server text, payloads, declaration/sidecar values, secrets, arbitrary headers,
+raw URLs, and exception strings never enter output or logs.
 
 Architecture-remediation security review items are closed (see §1 status).
 Post-implementation security review (V-002) remains a downstream lifecycle
@@ -335,20 +350,27 @@ new apply; existing remote writes are not automatically reversed.
 
 ## 13. Implementation stages
 
-1. Complete pre-implementation convergence re-verification, then independent
-   security review of the closed architecture.
-2. Scaffold binary, closed repository config, discovery, exact declaration
-   schema, and offline references.
-3. Implement request projection plus typed success/diagnostic boundaries.
-4. Implement auth, safe transport, and source-pinned compatibility preflight.
-5. Implement Assistant, Workflow, Skill, and Datasource adapters/resolvers.
-6. Integrate the write-through coordinator and fault/contract/system tests.
-7. Activate CI serialization, writer governance, target qualification,
-   runbooks, post-implementation reviews, and release evidence.
+1. **Complete** — the pre-implementation architecture convergence and security
+   review that gated baseline implementation; these do not replace V-001 or
+   V-002.
+2. **Complete** — binary, closed repository config, discovery, exact
+   declaration schema, and offline references.
+3. **Complete** — request projection plus typed success/warning/diagnostic
+   boundaries, including the v27 lint-warning contract.
+4. **Complete** — authentication, safe transport, and source-pinned
+   compatibility preflight.
+5. **Complete** — Assistant, Workflow, Skill, and Datasource adapters/resolvers,
+   including D-001.
+6. **Complete** — write-through coordinator and implementation test baseline.
+7. **Next / incomplete** — O-001 serialization and identity-writer governance,
+   followed by O-002 and V-000; V-001, V-002, and L-001 remain downstream in
+   their declared dependency order.
 
 Detailed bounded work and exact dependencies are in `tasks.md`.
 
 ## 14. ADRs
+
+Statuses below mirror the status section in each ADR file.
 
 | ADR | Status | Decision |
 |---|---|---|
@@ -356,14 +378,14 @@ Detailed bounded work and exact dependencies are in `tasks.md`.
 | 002 | Proposed | resolve-project-write reconciliation without default insertion |
 | 003 | Superseded by ADR-011 | stateless auth and safe HTTP (historical; credential input and URL/TLS/redirect policy superseded by ADR-011) |
 | 004 | Proposed | source-pinned manifest compatibility gate |
-| 005 | Proposed (amended v25) | modular single Rust binary; v25 amendment adds supply-chain and CI controls (SEC-006) |
-| 006 | Superseded | derived Workflow UUID rejected |
+| 005 | Proposed | modular single Rust binary; v25 amendment adds supply-chain and CI controls (SEC-006) |
+| 006 | Superseded by ADR-008 | derived Workflow UUID rejected |
 | 007 | Accepted | exhaustive Skill resolver and unconditional existing-entity PUT |
 | 008 | Accepted | Workflow marker, explicit adoption, and unconditional existing-entity PUT |
-| 009 | Proposed | uniform Datasource ordinary write-through CRUD boundary |
+| 009 | Accepted — amended by ADR-012 (visibility precondition) | uniform Datasource ordinary write-through CRUD boundary |
 | 010 | Proposed | separate closed success/failure records |
 | 011 | Proposed | URL validation, credential input (env-only secrets), TLS/HTTPS policy, redirect policy; supersedes ADR-003 on these topics |
-| 012 | Proposed — awaiting product-spec-owner decision | datasource visibility options memo (SEC-004); D-001 deferred until accepted |
+| 012 | Accepted — Option A selected, 2026-08-10 | project-admin complete-visibility preflight; D-001 complete |
 
 ## 15. Risks and open questions
 
@@ -379,10 +401,9 @@ downstream lifecycle work, not missing architecture inputs.
 
 ## 16. Handoff
 
-The verification engineer should first re-run every requirement/schema/
-manifest/task trace against v24 and verify the task graph. After refreshed
-artifact consistency passes, the security reviewer should test the trust,
-output, secret, authentication-endpoint, and transport boundaries. Only then
-may implementation follow the contracts and dependency order in this
-directory, always issuing the identity-selected POST or PUT and never adding a
-write-suppression branch.
+O-001 is the next production-enablement task: activate per-environment
+serialization and identity-writer governance using the completed implementation
+baseline. O-002 and V-000 follow it. V-001 must still perform independent full
+post-implementation specification-to-code convergence verification; V-002 and
+L-001 remain dependent downstream tasks. This plan does not mark O-001, V-001,
+V-002, or L-001 complete.

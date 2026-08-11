@@ -1,10 +1,12 @@
 # Implementation task breakdown
 
-Source: product specification v26 and this architecture set.
+Source: product specification v27 and this architecture set.
 
-Status: **READY FOR IMPLEMENTATION**. Q-006 re-verification passed 2026-08-10.
-Q-005 security re-review APPROVED 2026-08-10. ADR-012 accepted 2026-08-10
-(Option A, project-admin preflight). All tasks authorized.
+Status: **IMPLEMENTATION BASELINE COMPLETE; READY FOR O-001 HANDOFF**. The v27
+warning-contract delta has been independently checked; the remaining stale-plan
+finding is resolved by the synchronized architecture set. ADR-012 is accepted
+and D-001 is complete. O-001 is next; V-001, V-002, and L-001 remain downstream
+and are not complete.
 
 ## 1. Dependency policy
 
@@ -90,7 +92,7 @@ Eligibility:
   consistency evidence rather than requesting a product/platform decision.
 - Objective: verify the closed repository schema, Keycloak endpoint and
   credential-source rules, URL validation policy, redirect policy, and TLS
-  requirements against v26 (ADR-011).
+  requirements against v27 (ADR-011).
 - Requirements: FR-017/024, IR-006; AC-FR-017-01/02,
   AC-FR-024-01/03/07/08.
 - Architecture: ADR-011 (supersedes ADR-003); CLI §2, repository-config schema,
@@ -117,19 +119,23 @@ Eligibility:
 - Completion: the architecture contains no derived/probed endpoint branch,
   credential-bearing repository-config path, or credential-forwarding redirect.
 
-### Q-006 — Pre-implementation convergence re-verification (v25)
+### Q-006 — Pre-implementation convergence re-verification (v27)
 
 - Eligibility: `ARCHITECTURE-REVIEW`.
-- Objective: verify v25, schemas, manifest, ADRs (including ADR-011, ADR-012,
+- Objective: verify v27, schemas, manifest, ADRs (including ADR-011, ADR-012,
   ADR-005 amendment), plan/data-model/research, and tasks converge.
-- Requirements: all active v25 requirements and all acceptance criteria.
+- Requirements: all active v27 requirements and all acceptance criteria.
 - Dependencies: Q-001, Q-002, Q-003, Q-004.
 - Acceptance evidence: independent report with no blocking/high inconsistency;
   task graph IDs exist and are acyclic; protected-source integrity is preserved;
   SEC-001–SEC-006 remediation artifacts are present and internally consistent;
-  ADR-012 (SEC-004) is marked PROPOSED with D-001 deferral clearly noted.
-- Completion: the refreshed artifacts may proceed to Q-005 security review;
-  implementation remains gated on that review.
+  ADR-012 (SEC-004) is accepted with the project-admin preflight and D-001
+  authorization consistently represented; AC-FR-014-01 warning scope, order,
+  and failure behavior converge across specification, contracts, architecture,
+  tasks, code, and tests.
+- Completion: an independent report records v27 convergence and routes any
+  security-impact delta to Q-005; a prior-version report is not reused as v27
+  completion evidence.
 
 ### Q-005 — Security architecture review
 
@@ -137,11 +143,12 @@ Eligibility:
 - Objective: independently review input, authentication, transport, output,
   supply-chain, and privileged-resolution boundaries after convergence passes.
 - Requirements: FR-009/011/014/016/017/024/026, QR-006/007/011,
-  VR-006/011/012; AC-FR-017-01/02 and AC-FR-024-07.
+  VR-006/011/012; AC-FR-014-01, AC-FR-017-01/02, and AC-FR-024-07.
 - Dependencies: Q-006.
 - Acceptance evidence: security report including explicit-endpoint,
-  credential-source, no-network, and no-leak boundaries; critical/high findings
-  closed or routed to the owning upstream role.
+  credential-source, no-network, and no-leak boundaries; successful lint warning
+  scope/order and failed-lint diagnostic exclusivity from AC-FR-014-01;
+  critical/high findings closed or routed to the owning upstream role.
 - Completion: security reviewer approves implementation boundaries.
 
 ## 3. Local foundations
@@ -249,11 +256,14 @@ Eligibility:
 
 - Eligibility: `IMPLEMENTATION`.
 - Objective: exact deterministic repository and Workflow-local reference closure.
-- Requirements: FR-004/025/035, DR-003, VR-005/009/013.
+- Requirements: FR-004/014/025/035, DR-003, VR-005/009/013.
 - Dependencies: F-003, F-004.
 - Acceptance evidence: duplicate/missing/wrong-kind/cross-project, sidecar,
-  actor uniqueness/state-local, and persisted-versus-inline reference tests.
-- Completion: lint validates repository closure with zero server access.
+  actor uniqueness/state-local, and persisted-versus-inline reference tests;
+  target and closure-only invalid-declaration cases prove the complete closure
+  must pass before any declaration warning becomes eligible for emission.
+- Completion: lint validates the complete repository closure with zero server
+  access and exposes a single success gate for target-only warning evaluation.
 
 ### F-006 — Implement operation request projection
 
@@ -274,19 +284,28 @@ Eligibility:
   one creates PUT plan on every invocation.
 - Completion: adapters accept only typed `Create` or `Update` plans.
 
-### F-007 — Implement closed success and diagnostic renderers
+### F-007 — Implement closed success, warning, and diagnostic renderers
 
 - Eligibility: `IMPLEMENTATION`.
-- Objective: enforce the exit taxonomy, stream split, and no-leak boundary.
+- Objective: enforce the exit taxonomy, stream split, deterministic warning
+  contract, and no-leak boundary.
 - Requirements: FR-011/012/014/016/026, QR-004/007/011, VR-011/012.
 - Architecture: ADR-003/010; outcome/warning/diagnostic schemas.
-- Dependencies: F-001.
+- Dependencies: F-001, F-005.
 - Scope: private constructors; text/JSON parity; separate stderr warnings;
   success actions `valid|created|updated`; closed code/category/exit union;
-  fixed warning phrases; no generic message/body/value/raw-URL API.
+  fixed warning phrases; target-declaration warning scope after complete
+  repository-closure validation; bytewise fixed-warning-code then canonical-
+  field-path ordering; no warning records on failure; no generic
+  message/body/value/raw-URL API.
 - Acceptance evidence:
   - Semantic schema probes; forbidden extra success and diagnostic fields
-    rejected; failure stdout empty.
+    rejected; failure stdout empty; every failure produces exactly the selected-
+    output-mode diagnostic and no warnings.
+  - Successful lint emits warnings only for the `--file` declaration after the
+    complete repository closure validates; closure-only warning conditions are
+    ignored, and output is stable in bytewise `warningCode` then canonical
+    `source.fieldPath` order.
   - Canary secrets, bodies, server text, declaration values, and exception
     strings absent in all paths.
   - Each outcome, warning, and diagnostic produces exactly one physical output
@@ -531,8 +550,8 @@ Eligibility:
 ### V-001 — Post-implementation convergence verification
 
 - Eligibility: `PRODUCTION-ENABLEMENT`.
-- Objective: prove code/tests/docs converge on v26 and architecture.
-- Requirements: all active v25 requirements and all acceptance criteria.
+- Objective: prove code/tests/docs converge on v27 and architecture.
+- Requirements: all active v27 requirements and all acceptance criteria.
 - Dependencies: O-002, V-000.
 - Acceptance evidence: full requirement/acceptance trace, request capture,
   schema/stream/no-leak tests, protected/reference-tree integrity proof.
@@ -592,7 +611,7 @@ Eligibility:
 |---|---|---|
 | FR-001–004, FR-022/023/025/027 | F-003/F-004/F-005 | Q-001, V-001 |
 | FR-005/006/008/012/015/021 | F-006, A-001/W-001/S-001/D-001, R-001 | Q-001–Q-003, V-001 |
-| FR-009/011/014/016/024/026 | F-002/F-007/T-001/T-002 | Q-005, V-002 |
+| FR-009/011/014/016/024/026 | F-002/F-004/F-005/F-007/T-001/T-002 | Q-005, V-002 |
 | FR-017/019/020 | F-002 | Q-004/Q-006, V-001 |
 | FR-028–030/032–035 | W-001/W-002/R-001 | Q-002, O-001, V-001 |
 | FR-031–034 | S-001/R-001 | Q-002, O-001, V-001 |
@@ -614,7 +633,7 @@ Eligibility:
 | AC-FR-011-02 | F-002/F-004/F-005/F-007 |
 | AC-FR-011-03 | W-001/S-001/D-001, R-001 |
 | AC-FR-011-04 | T-002/T-003, W-001/S-001 |
-| AC-FR-014-01 | F-004, F-007 |
+| AC-FR-014-01 | F-004, F-005, F-007 |
 | AC-QR-007-01 | F-007, T-002 |
 | AC-FR-015-01 | A-001/W-001/S-001/D-001 |
 | AC-FR-021-01 | F-006, A-001/W-001/S-001/D-001 |

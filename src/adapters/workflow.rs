@@ -54,19 +54,23 @@ struct WorkflowIdResponse {
 // Public adapter entry point
 // ---------------------------------------------------------------------------
 
+pub struct ApplyRequest<'a> {
+    pub declaration: &'a ParsedDeclaration,
+    pub project_name: &'a str,
+    pub slug: &'a str,
+    pub adopt_workflow_id: Option<&'a str>,
+    pub repo_root: &'a Path,
+    pub follow_symlinks: bool,
+}
+
 pub async fn apply(
     client: &ApiClient,
     base_url: &ValidatedUrl,
-    decl: &ParsedDeclaration,
-    project_name: &str,
-    slug: &str,
-    adopt_workflow_id: Option<&str>,
-    repo_root: &Path,
-    follow_symlinks: bool,
+    request: ApplyRequest<'_>,
 ) -> Result<ApplyResult, AppError> {
-    let reference_map = resolve_execution_references(client, base_url, decl).await?;
+    let reference_map = resolve_execution_references(client, base_url, request.declaration).await?;
 
-    let existing_entity = if let Some(adopt_id) = adopt_workflow_id {
+    let existing_entity = if let Some(adopt_id) = request.adopt_workflow_id {
         // Explicit by-ID adoption: fetch current meta_config for merge (W-001)
         let detail = fetch_detail(client, base_url, adopt_id).await?;
         Some(ExistingEntity {
@@ -75,7 +79,7 @@ pub async fn apply(
         })
     } else {
         // Two-pass exhaustive enumeration
-        let matches = enumerate_all(client, base_url, project_name, slug).await?;
+        let matches = enumerate_all(client, base_url, request.project_name, request.slug).await?;
         match matches.as_slice() {
             [] => None,
             [single] => Some(ExistingEntity {
@@ -84,20 +88,22 @@ pub async fn apply(
             }),
             _ => {
                 return Err(AppError::Reconciliation(format!(
-                    "Workflow: {} matches for (project={project_name:?}, slug={slug:?}); \
+                    "Workflow: {} matches for (project={:?}, slug={:?}); \
                      use --adopt-workflow-id to select one",
-                    matches.len()
+                    matches.len(),
+                    request.project_name,
+                    request.slug
                 )));
             }
         }
     };
 
     let plan = project_with_workflow_references(
-        decl,
+        request.declaration,
         existing_entity.as_ref(),
-        adopt_workflow_id,
-        repo_root,
-        follow_symlinks,
+        request.adopt_workflow_id,
+        request.repo_root,
+        request.follow_symlinks,
         Some(&reference_map),
     )?;
 
@@ -481,12 +487,14 @@ mod tests {
         let result = apply(
             &client,
             &url,
-            &decl,
-            "my-project",
-            "my-slug",
-            None,
-            Path::new("."),
-            false,
+            ApplyRequest {
+                declaration: &decl,
+                project_name: "my-project",
+                slug: "my-slug",
+                adopt_workflow_id: None,
+                repo_root: Path::new("."),
+                follow_symlinks: false,
+            },
         )
         .await
         .expect("apply must succeed");
@@ -544,12 +552,14 @@ mod tests {
         let result = apply(
             &client,
             &url,
-            &decl,
-            "my-project",
-            "my-slug",
-            None,
-            Path::new("."),
-            false,
+            ApplyRequest {
+                declaration: &decl,
+                project_name: "my-project",
+                slug: "my-slug",
+                adopt_workflow_id: None,
+                repo_root: Path::new("."),
+                follow_symlinks: false,
+            },
         )
         .await
         .expect("apply must succeed");
@@ -599,12 +609,14 @@ mod tests {
         let err = apply(
             &client,
             &url,
-            &decl,
-            "my-project",
-            "my-slug",
-            None,
-            Path::new("."),
-            false,
+            ApplyRequest {
+                declaration: &decl,
+                project_name: "my-project",
+                slug: "my-slug",
+                adopt_workflow_id: None,
+                repo_root: Path::new("."),
+                follow_symlinks: false,
+            },
         )
         .await
         .expect_err("multiple matches must error");
@@ -647,12 +659,14 @@ mod tests {
         let result = apply(
             &client,
             &url,
-            &decl,
-            "my-project",
-            "my-slug",
-            Some("adopt-wf-id"),
-            Path::new("."),
-            false,
+            ApplyRequest {
+                declaration: &decl,
+                project_name: "my-project",
+                slug: "my-slug",
+                adopt_workflow_id: Some("adopt-wf-id"),
+                repo_root: Path::new("."),
+                follow_symlinks: false,
+            },
         )
         .await
         .expect("adopt-id apply must succeed");

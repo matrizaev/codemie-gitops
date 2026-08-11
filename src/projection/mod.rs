@@ -34,15 +34,6 @@ use crate::parse::{EntityKind, ParsedDeclaration};
 // Public plan types (data-model.md §7)
 // ---------------------------------------------------------------------------
 
-/// A file part for multipart/form-data upload (File Datasource only).
-#[derive(Debug, Clone)]
-pub struct FilePart {
-    /// Filename for the multipart part (basename only, SEC-005).
-    pub filename: String,
-    /// Raw file bytes (never echoed to output or logs).
-    pub content: Vec<u8>,
-}
-
 /// The request payload for a single POST or PUT operation.
 #[derive(Debug, Clone)]
 pub enum RequestBody {
@@ -51,8 +42,6 @@ pub enum RequestBody {
     /// `multipart/form-data` with scalar query parameters.
     /// Used only for File Datasource (data-model.md §6).
     FileMultipart {
-        /// Repeated `files` multipart parts.
-        parts: Vec<FilePart>,
         /// Scalar/JSON query parameters (e.g. `name`, `uploaded_files`,
         /// `guardrail_assignments`).
         query_params: Vec<(String, String)>,
@@ -1075,14 +1064,13 @@ fn project_file_datasource(
     is_update: bool,
 ) -> Result<RequestBody, AppError> {
     // File Datasource: multipart/form-data, all scalar fields as query params.
-    // - `files`: each path → FilePart (bytes read by adapter; here we encode paths)
+    // - `files`: read by the adapter under the invocation cancellation token
     // - `uploaded_files`: update-only, compact JSON array in query param
     // - `guardrail_assignments`: compact JSON array in query param
     // - other scalars: query parameters
     // Source: manifest §entities.Datasource.types.file.transportTransform
 
     let mut query_params: Vec<(String, String)> = Vec::new();
-    let mut parts: Vec<FilePart> = Vec::new();
 
     // Identity injection: project_name and repo_name as query params
     query_params.push(("project_name".to_owned(), project.to_owned()));
@@ -1129,35 +1117,15 @@ fn project_file_datasource(
 
         match *field {
             "files" => {
-                // Each path entry → a FilePart (adapter reads bytes from disk)
-                // The projection layer records the filename; the adapter fills `content`.
-                if let Some(Value::Array(paths)) = spec.get("files") {
-                    for path_val in paths {
-                        if let Some(path_str) = path_val.as_str() {
-                            let filename = std::path::Path::new(path_str)
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or(path_str)
-                                .to_owned();
-                            // Content is empty here; adapter fills before upload.
-                            parts.push(FilePart {
-                                filename,
-                                content: Vec::new(),
-                            });
-                        }
-                    }
-                }
+                // File paths are authoring-only inputs. The Datasource adapter
+                // reads them in bounded chunks immediately before dispatch.
             }
             "uploaded_files" => {
-                if is_update {
-                    if let Some(v) = spec.get("uploaded_files") {
-                        let encoded = serde_json::to_string(v).map_err(|_| {
-                            AppError::Internal(
-                                "file datasource: uploaded_files encode failed".into(),
-                            )
-                        })?;
-                        query_params.push(("uploaded_files".to_owned(), encoded));
-                    }
+                if is_update && let Some(v) = spec.get("uploaded_files") {
+                    let encoded = serde_json::to_string(v).map_err(|_| {
+                        AppError::Internal("file datasource: uploaded_files encode failed".into())
+                    })?;
+                    query_params.push(("uploaded_files".to_owned(), encoded));
                 }
             }
             "guardrail_assignments" => {
@@ -1180,10 +1148,7 @@ fn project_file_datasource(
         }
     }
 
-    Ok(RequestBody::FileMultipart {
-        parts,
-        query_params,
-    })
+    Ok(RequestBody::FileMultipart { query_params })
 }
 
 /// Convert a scalar JSON value to a query-parameter string.
