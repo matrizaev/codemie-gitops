@@ -10,7 +10,6 @@ mod http;
 mod lint;
 mod output;
 mod parse;
-pub mod preflight;
 mod projection;
 mod render;
 mod repository;

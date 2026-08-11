@@ -2,7 +2,8 @@
 ///
 /// Exact `(project, slug)` resolution via `GET /v1/assistants/slug/{slug}?project={project}`.
 /// Absent identity → POST/created; present identity → unconditional PUT/updated.
-/// Preflights (check_compatibility, preflight_visibility) are the caller's responsibility.
+/// Assistant intentionally has no `/v1/user` admin preflight. Its direct lookup
+/// and existing-row write ability are sealed with the projected request.
 ///
 /// ## Source traceability
 ///
@@ -18,20 +19,47 @@ use crate::config::ValidatedUrl;
 use crate::error::AppError;
 use crate::http::{ApiClient, encode_query_value};
 use crate::parse::ParsedDeclaration;
-use crate::projection::{ExistingEntity, RequestBody, WritePlan, project};
+use crate::projection::{ExistingEntity, project};
 
-use super::{ApplyAction, ApplyResult};
+use super::{
+    ApplyAction, ApplyResult, PreparedWrite, ResolutionTarget, WriteAbilityEvidence,
+    decode_write_response, prove_write,
+};
 
 // ---------------------------------------------------------------------------
 // Server response shapes
 // ---------------------------------------------------------------------------
 
-/// Minimal fields consumed from any Assistant server response.
-///
-/// Only `id` is needed for write dispatch; all other fields are discarded.
+/// Fields consumed from the direct Assistant identity response.
 #[derive(Deserialize)]
-struct AssistantIdResponse {
+struct AssistantLookupResponse {
     id: String,
+    user_abilities: Vec<String>,
+}
+
+/// Minimal fields consumed from a successful modifying response.
+#[derive(Deserialize)]
+struct AssistantWriteResponse {
+    id: String,
+}
+
+/// Actual strict direct-lookup evidence required by the Assistant seal.
+#[derive(Debug)]
+pub(super) struct CompletedResolution {
+    effective_project: String,
+    _slug: String,
+    target: ResolutionTarget,
+    _write_ability: Option<WriteAbilityEvidence>,
+}
+
+impl CompletedResolution {
+    pub(super) fn effective_project(&self) -> &str {
+        &self.effective_project
+    }
+
+    pub(super) fn target(&self) -> &ResolutionTarget {
+        &self.target
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -62,8 +90,25 @@ pub async fn apply(
         encode_query_value(slug),
         encode_query_value(project_name)
     );
-    let existing: Option<AssistantIdResponse> =
+    let existing: Option<AssistantLookupResponse> =
         client.get_optional(base_url, &resolve_path).await?;
+
+    let resolution = match &existing {
+        Some(existing) => CompletedResolution {
+            effective_project: project_name.to_owned(),
+            _slug: slug.to_owned(),
+            target: ResolutionTarget::Update {
+                server_id: existing.id.clone(),
+            },
+            _write_ability: Some(prove_write(&existing.user_abilities, "Assistant")?),
+        },
+        None => CompletedResolution {
+            effective_project: project_name.to_owned(),
+            _slug: slug.to_owned(),
+            target: ResolutionTarget::Create,
+            _write_ability: None,
+        },
+    };
 
     let existing_entity = existing.as_ref().map(|e| ExistingEntity {
         server_id: e.id.clone(),
@@ -79,32 +124,29 @@ pub async fn apply(
         follow_symlinks,
     )?;
 
-    // Step 3: Dispatch.
-    match plan {
-        WritePlan::Create {
-            request: RequestBody::Json(body),
-        } => {
-            let resp: AssistantIdResponse = client.post(base_url, "/v1/assistants", &body).await?;
-            Ok(ApplyResult {
-                action: ApplyAction::Created,
-                server_id: resp.id,
-            })
-        }
-        WritePlan::Update {
-            server_id,
-            request: RequestBody::Json(body),
-        } => {
-            let update_path = format!("/v1/assistants/{}", encode_query_value(&server_id));
-            let resp: AssistantIdResponse = client.put(base_url, &update_path, &body).await?;
-            Ok(ApplyResult {
-                action: ApplyAction::Updated,
-                server_id: resp.id,
-            })
-        }
-        _ => Err(AppError::Internal(
-            "Assistant projection produced unexpected body variant".into(),
-        )),
-    }
+    // Step 3: seal the completed direct-lookup evidence with projection. The
+    // modifying dispatcher accepts no raw or partial-evidence `WritePlan`.
+    let prepared = PreparedWrite::assistant(resolution, plan)?;
+    dispatch(client, base_url, prepared).await
+}
+
+async fn dispatch(
+    client: &ApiClient,
+    base_url: &ValidatedUrl,
+    prepared: PreparedWrite,
+) -> Result<ApplyResult, AppError> {
+    let action = match prepared.target() {
+        ResolutionTarget::Create => ApplyAction::Created,
+        ResolutionTarget::Update { .. } => ApplyAction::Updated,
+    };
+    let response = client.dispatch_prepared(base_url, prepared).await?;
+    let response: AssistantWriteResponse = decode_write_response(response)?.ok_or_else(|| {
+        AppError::Internal("Assistant modifying request cannot return a conflict signal".into())
+    })?;
+    Ok(ApplyResult {
+        action,
+        server_id: response.id,
+    })
 }
 
 /// Resolve an Assistant natural reference without writing it (DR-003/W-002).
@@ -120,7 +162,7 @@ pub async fn resolve_reference(
         encode_query_value(project_name)
     );
     client
-        .get_optional::<AssistantIdResponse>(base_url, &path)
+        .get_optional::<AssistantLookupResponse>(base_url, &path)
         .await?
         .map(|item| item.id)
         .ok_or_else(|| {
@@ -248,7 +290,7 @@ mod tests {
             .mock("GET", "/v1/assistants/slug/my-assistant?project=my-project")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"id":"existing-uuid"}"#)
+            .with_body(r#"{"id":"existing-uuid","user_abilities":["read","write"]}"#)
             .create_async()
             .await;
 
@@ -280,6 +322,200 @@ mod tests {
         assert_eq!(result.server_id, "existing-uuid");
         _resolve.assert_async().await;
         _update.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn apply_rejects_missing_lookup_abilities_before_any_write() {
+        let mut server = mockito::Server::new_async().await;
+        let resolve = server
+            .mock("GET", "/v1/assistants/slug/my-assistant?project=my-project")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"id":"existing-uuid"}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let post = server
+            .mock("POST", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+        let put = server
+            .mock("PUT", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+
+        let url = test_url(&server.url());
+        let client = test_client(&server.url());
+        let error = apply(
+            &client,
+            &url,
+            &assistant_decl("my-project", "my-assistant"),
+            "my-project",
+            "my-assistant",
+            Path::new("."),
+            false,
+        )
+        .await
+        .expect_err("missing direct-lookup ability evidence must fail");
+
+        assert!(matches!(error, AppError::ApiIncompatible(_)));
+        resolve.assert_async().await;
+        post.assert_async().await;
+        put.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn lookup_field_type_matrix_fails_before_every_modifying_route() {
+        for response in [
+            r#"{"user_abilities":["write"]}"#,
+            r#"{"id":1,"user_abilities":["write"]}"#,
+            r#"{"id":null,"user_abilities":["write"]}"#,
+            r#"{"id":"assistant"}"#,
+            r#"{"id":"assistant","user_abilities":"write"}"#,
+            r#"{"id":"assistant","user_abilities":[1]}"#,
+        ] {
+            let mut server = mockito::Server::new_async().await;
+            let lookup = server
+                .mock("GET", "/v1/assistants/slug/my-assistant?project=my-project")
+                .with_status(200)
+                .with_header("content-type", "application/json")
+                .with_body(response)
+                .expect(1)
+                .create_async()
+                .await;
+            let post = server
+                .mock("POST", mockito::Matcher::Any)
+                .expect(0)
+                .create_async()
+                .await;
+            let put = server
+                .mock("PUT", mockito::Matcher::Any)
+                .expect(0)
+                .create_async()
+                .await;
+            let patch = server
+                .mock("PATCH", mockito::Matcher::Any)
+                .expect(0)
+                .create_async()
+                .await;
+            let delete = server
+                .mock("DELETE", mockito::Matcher::Any)
+                .expect(0)
+                .create_async()
+                .await;
+
+            let url = test_url(&server.url());
+            let client = test_client(&server.url());
+            let error = apply(
+                &client,
+                &url,
+                &assistant_decl("my-project", "my-assistant"),
+                "my-project",
+                "my-assistant",
+                Path::new("."),
+                false,
+            )
+            .await
+            .expect_err("invalid direct-lookup field must fail compatibility");
+
+            assert!(matches!(error, AppError::ApiIncompatible(_)));
+            lookup.assert_async().await;
+            post.assert_async().await;
+            put.assert_async().await;
+            patch.assert_async().await;
+            delete.assert_async().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_rejects_nonwriting_lookup_abilities_before_put() {
+        let mut server = mockito::Server::new_async().await;
+        let resolve = server
+            .mock("GET", "/v1/assistants/slug/my-assistant?project=my-project")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"id":"existing-uuid","user_abilities":["read"]}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let put = server
+            .mock("PUT", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+
+        let url = test_url(&server.url());
+        let client = test_client(&server.url());
+        let error = apply(
+            &client,
+            &url,
+            &assistant_decl("my-project", "my-assistant"),
+            "my-project",
+            "my-assistant",
+            Path::new("."),
+            false,
+        )
+        .await
+        .expect_err("a valid non-writing ability list must stop before PUT");
+
+        assert!(matches!(error, AppError::Authorization(_)));
+        resolve.assert_async().await;
+        put.assert_async().await;
+    }
+
+    #[test]
+    fn assistant_lookup_requires_consumed_fields_and_allows_additions() {
+        let baseline = serde_json::from_value::<AssistantLookupResponse>(json!({
+            "id":"assistant",
+            "user_abilities":["write"]
+        }))
+        .expect("baseline lookup must decode");
+        let additive = serde_json::from_value::<AssistantLookupResponse>(json!({
+            "id":"assistant",
+            "user_abilities":["write"],
+            "future_field":{"nested":true}
+        }))
+        .expect("additive unconsumed field must decode");
+        let decl = assistant_decl("my-project", "my-assistant");
+        let projected = |lookup: &AssistantLookupResponse| {
+            project(
+                &decl,
+                Some(&ExistingEntity {
+                    server_id: lookup.id.clone(),
+                    meta_config: None,
+                }),
+                None,
+                Path::new("."),
+                false,
+            )
+            .expect("lookup must project")
+        };
+        let crate::projection::WritePlan::Update {
+            request: crate::projection::RequestBody::Json(baseline_body),
+            ..
+        } = projected(&baseline)
+        else {
+            panic!("existing Assistant must project an update JSON body")
+        };
+        let crate::projection::WritePlan::Update {
+            request: crate::projection::RequestBody::Json(additive_body),
+            ..
+        } = projected(&additive)
+        else {
+            panic!("existing Assistant must project an update JSON body")
+        };
+        assert_eq!(baseline_body, additive_body);
+
+        for response in [
+            json!({"user_abilities":["write"]}),
+            json!({"id":"assistant"}),
+            json!({"id":1,"user_abilities":["write"]}),
+            json!({"id":"assistant","user_abilities":[1]}),
+        ] {
+            assert!(serde_json::from_value::<AssistantLookupResponse>(response).is_err());
+        }
     }
 
     // -----------------------------------------------------------------------

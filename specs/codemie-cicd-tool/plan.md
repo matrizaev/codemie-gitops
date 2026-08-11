@@ -2,9 +2,9 @@
 
 ## 1. Status
 
-**Architecture status: READY FOR O-001 REMOTE ACTIVATION**
+**Architecture status: READY FOR PRE-IMPLEMENTATION VERIFICATION**
 
-Product specification v27 is the approved source. The architecture now pins
+Product specification v28 is the approved source. The architecture now pins
 presence, null, applicability, ownership, and transport classes for every
 admitted field, requires an explicit token endpoint with deterministic
 precedence, incorporates all architect-owned security remediation from the
@@ -19,22 +19,22 @@ warning lifecycle (`security-review-preimplementation.md`):
   disable for auth POSTs, URL userinfo rejection in all schemas.
 - **SEC-003** (CLOSED): versioned resource budget defaults for all 18 resource
   dimensions in `http-adapter.md` §2.4 and `data-model.md` §11.
-- **SEC-004** (CLOSED): ADR-012 accepted Option A; a project-admin visibility
-  preflight is required for Datasource reconciliation and D-001 is complete.
+- **SEC-004** (REOPENED FOR V28 CORRECTION): ADR-012 Option A applies to
+  Workflow, Skill, and Datasource, and project-admin evidence must name the
+  exact effective project; current any-project-admin behavior is insufficient.
 - **SEC-005** (CLOSED): identifier maxLength and control/bidi pattern in all
   schemas; output rendering rules in `cli.md` §10.
 - **SEC-006** (CLOSED): supply-chain and CI controls amendment in ADR-005.
 
-The implementation baseline, including D-001, is complete. Independent review
-of the v27 warning-contract delta found only stale lifecycle text in this plan;
-that documentation finding is resolved. The checked-in/local O-001 controls
-are now implemented, independently verified, and security-approved, and are
-ready for remote activation. O-001 is not operationally complete: completion
-is blocked on external provider and runner activation evidence, per-environment
-mutex drills, the complete-visibility identity inventory, the identity-writer
-freeze, and checksum evidence from the first remote apply. O-002 and V-000
-remain downstream of this activation gate; V-001 follows both. V-002 and L-001
-also remain downstream and are not complete.
+The implementation baseline is not converged on v28: `src/preflight/mod.rs`
+currently compares `GET /v1/info.version` with the pinned Git commit, and
+`src/coordinator/mod.rs` makes that comparison an unconditional write gate.
+That behavior rejects the exact pinned backend because it reports semantic
+`APP_VERSION=0.16.0`. Q-007 must verify this bounded architecture delta, after
+which T-003 and R-001 must remove the semantic-version gate while retaining
+strict, operation-applicable non-mutating evidence before every write. O-001
+remote activation and all downstream deployment/release work remain paused
+until the correction has passed implementation and convergence verification.
 
 ## 2. Executive summary
 
@@ -57,7 +57,8 @@ surface.
 
 ## 3. Sources consulted
 
-- Approved product source: `specs/codemie-cicd-tool.md` v27, all sections.
+- Approved product source: `specs/codemie-cicd-tool.md` v28, all sections,
+  especially SC-021, IR-011/012, AC-IR-011-01, and AC-IR-012-01.
 - Security review input: `security-review-preimplementation.md` (read-only;
   findings SEC-001–SEC-006 used as remediation drivers).
 - Verification sources: `Q-006-verification-report.md` (read-only v26 baseline)
@@ -111,6 +112,34 @@ compatibility. Exact exhaustive reads, privilege proof, serialized writers,
 post-write identity verification, manual ambiguity remediation, and pinned
 deployment tests contain these limits.
 
+Current implementation gap: the runtime compatibility function decodes
+`/v1/info.version` as a supposed source commit and rejects `0.16.0`; coordinator
+tests likewise substitute the pinned SHA into that semantic field. Conversely,
+operation-applicable evidence already comes from `GET /v1/user` for Workflow,
+Skill, and Datasource plus each adapter's strict identity/reference/detail/
+pagination reads before its POST or PUT. Assistant relies on its direct exact
+lookup rather than admin visibility. The correction removes `/v1/info` from
+acceptance/rejection and preserves those strict read boundaries and their
+no-write failure behavior.
+
+The current `GET /v1/user` implementation also accepts project-admin status for
+any project and silently defaults missing consumed role fields. The v28 gate
+instead binds `projects[].name` and `projects[].is_project_admin` from the same
+entry to the exact effective project for Workflow, Datasource, and Skill.
+Assistant remains on its PA-003 least-privilege direct exact lookup and does not
+require admin preflight. A modifying transport call is reachable only through a
+sealed prepared write created after all operation-applicable non-mutating reads
+and projection have completed.
+
+A live contract test against the exact pinned clone exposed a second
+implementation gap: Workflow and Skill scanners start at page 1, but both
+pinned routers default to page 0 and both query paths use
+`offset(page * per_page)`. This skips the first result page and breaks
+post-write verification. The statement in
+`Q-007-post-implementation-verification.md` that Workflow and Skill are one-
+indexed is disproved source evidence and must not be reused; Q-008 will produce
+superseding verification evidence after the zero-based correction.
+
 ## 6. Requirements-to-architecture map
 
 | Requirements | Architecture response |
@@ -123,11 +152,13 @@ deployment tests contain these limits.
 | FR-028–030, FR-032–035 | Workflow reserved record, exhaustive resolver, explicit adoption, exact local actor/reference projection, race visibility |
 | FR-031–034 | exhaustive Skill resolver, privileged visibility/write proof, bounded 409 recovery, no tie-break/delete |
 | FR-036, IR-008 | one Datasource adapter, peer exact create/update mappings, ordinary write-through CRUD, no dedicated lifecycle surface |
+| IR-011/012, SC-021 | pinned source-derived contract; `/v1/info.version` is observability only; Workflow/Skill/Datasource require exact-effective-project visibility while Assistant uses strict direct lookup; all operation-applicable evidence is sealed with the prepared write before POST/PUT |
+| FR-029/031/034, IR-012 | Workflow and Skill enumeration starts at page 0; initial, post-write, and Skill create-409 scans validate zero-based page echo/count invariants before write or success |
 | PA-005/006, QR-009–011 | privileged resolver identity, serialized CI, writer governance, inventory/remediation |
 | SEC-001 (v25) | env-only secret credentials; `--token`/`--client-secret`/`--password` flags are E_USAGE, exit 2, before network access; ADR-011 |
 | SEC-002 (v25) | ValidatedUrl type; HTTPS-required auth_url; loopback exception for target_url; userinfo/fragment/control-char rejection in all URL schema patterns; redirect disabled for auth POSTs; ADR-011 |
 | SEC-003 (v25) | 18 versioned resource budget defaults; YAML, file, network, response, pagination, concurrency, deadline dimensions; `http-adapter.md` §2.4; `data-model.md` §11 |
-| SEC-004 (closed) | ADR-012 accepted Option A; project-admin complete-visibility preflight; D-001 implementation baseline complete |
+| SEC-004 (v28 correction) | ADR-012 Option A; global admin/maintainer or exact-effective-project admin predicate for Workflow/Skill/Datasource; Assistant excluded under PA-003; missing fields incompatible; false predicate visibility-unproven |
 | SEC-005 (v25) | identifier maxLength and control/bidi pattern rejection in all schemas; safe output rendering rules (one line/record, JSON serializer, canonical field paths, multipart basename safety); `cli.md` §10 |
 | SEC-006 (v25) | Cargo.lock committed; --locked builds; RustSec scanning; SHA-pinned CI actions; permissions blocks; secret isolation for fork/PR; protected deployment environments; same-artifact promotion; SBOM; ADR-005 amendment |
 
@@ -265,9 +296,30 @@ failure and requires re-resolution on a later invocation.
 
 The checked-in adapter manifest is authoritative for exact routes, operation
 fields, pagination, response fields consumed by resolution, and representation
-transforms. Runtime preflight strictly decodes fields it consumes and fails
-incompatible before writes where detectable. Live OpenAPI and `/v1/info` cannot
-expand the contract.
+transforms. `/v1/info.version` is not source/API identity, is not required
+operation evidence, is never compared with the manifest Git SHA, and cannot
+accept or reject `apply`. The pre-write gate instead consists of every
+non-mutating response needed by the selected operation: capability/visibility,
+identity and reference resolution, detail/preservation reads, and exhaustive
+pagination where applicable. Each consumed field and shape is strictly decoded;
+missing or invalid evidence is `E_API_INCOMPATIBLE`, exit 2, before POST/PUT.
+Additional unconsumed fields are ignored and cannot widen declarations or
+requests. Live OpenAPI and `/v1/info` cannot expand the contract.
+
+Workflow and Skill list pagination is zero-indexed, matching Datasource. Each
+scan requests page 0 first and then `1..pages-1`; an empty scan still requests
+page 0 once. Page 1 is never the origin. The same scanner is reused for initial
+resolution, post-write verification, and Skill create-409 re-resolution.
+
+For Workflow, Skill, and Datasource, capability evidence is global
+admin/maintainer or an exact match on both
+`projects[].name == effective_project` and
+`projects[].is_project_admin == true`, from the same entry. Assistant uses its
+strict direct `(project, slug)` lookup without `/v1/user`. After all applicable
+reads and request projection, the coordinator seals the kind-specific evidence
+with the prepared write. The modifying HTTP boundary accepts only that sealed
+type, making the no-write-before-evidence ordering enforceable rather than
+conventional.
 
 Datasource uses one exhaustive resolver and peer per-kind create/update
 projections. File, source, content, scheduling, and configuration fields in the
@@ -370,11 +422,14 @@ remains operationally incomplete.
    declaration schema, and offline references.
 3. **Complete** — request projection plus typed success/warning/diagnostic
    boundaries, including the v27 lint-warning contract.
-4. **Complete** — authentication, safe transport, and source-pinned
-   compatibility preflight.
-5. **Complete** — Assistant, Workflow, Skill, and Datasource adapters/resolvers,
-   including D-001.
-6. **Complete** — write-through coordinator and implementation test baseline.
+4. **Reopened for v28 correction** — authentication and safe transport remain
+   complete; T-003 must remove the `/v1/info.version`/Git-SHA runtime comparison
+   and prove strict operation-applicable pre-write evidence.
+5. **Reopened for zero-based pagination correction** — Assistant and Datasource
+   remain complete; W-001 and S-001 must make Workflow/Skill initial and
+   verification scans start at page 0, with Skill 409 re-resolution included.
+6. **Reopened for v28 correction** — R-001 must stop invoking the semantic
+   version gate and add coordinator-level positive and no-write evidence tests.
 7. **Implemented locally / operationally incomplete** — O-001 checked-in
    serialization and identity-writer governance controls are independently
    verified, security-approved, and ready for remote activation. O-001 remains
@@ -397,8 +452,8 @@ Statuses below mirror the status section in each ADR file.
 | 004 | Proposed | source-pinned manifest compatibility gate |
 | 005 | Proposed | modular single Rust binary; v25 amendment adds supply-chain and CI controls (SEC-006) |
 | 006 | Superseded by ADR-008 | derived Workflow UUID rejected |
-| 007 | Accepted | exhaustive Skill resolver and unconditional existing-entity PUT |
-| 008 | Accepted | Workflow marker, explicit adoption, and unconditional existing-entity PUT |
+| 007 | Accepted — amended 2026-08-11 | exhaustive Skill resolver, zero-based pagination, and unconditional existing-entity PUT |
+| 008 | Accepted — amended 2026-08-11 | Workflow marker, zero-based pagination, explicit adoption, and unconditional existing-entity PUT |
 | 009 | Accepted — amended by ADR-012 (visibility precondition) | uniform Datasource ordinary write-through CRUD boundary |
 | 010 | Proposed | separate closed success/failure records |
 | 011 | Proposed | URL validation, credential input (env-only secrets), TLS/HTTPS policy, redirect policy; supersedes ADR-003 on these topics |
@@ -420,12 +475,10 @@ not complete either task.
 
 ## 16. Handoff
 
-O-001 is ready for its remote production-enablement step: activate the
-independently verified and security-approved checked-in controls, then capture
-provider/runner configuration, per-environment mutex drills, complete-visibility
-identity inventory, identity-writer freeze, and first-apply checksum evidence.
-Those external records block O-001 operational completion. O-002 and V-000
-follow O-001. V-001 must then perform independent full post-implementation
-specification-to-code convergence verification; V-002 and L-001 remain
-dependent downstream tasks. This plan does not mark O-001, O-002, V-000,
-V-001, V-002, or L-001 complete.
+Q-008 must verify the authoritative Workflow/Skill page-base correction and
+explicitly supersede the stale one-indexed statement in the Q-007 post-
+implementation report. Implementation then owns the bounded W-001/S-001 scan
+fix plus R-001 end-to-end no-write/success evidence. After independent post-
+change convergence verification, O-001 may resume remote activation and the
+existing O-002/V-000/V-001/V-002/L-001 dependency chain. This plan does not mark
+those downstream tasks complete.

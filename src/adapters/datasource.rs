@@ -15,9 +15,12 @@ use crate::discovery::{MAX_SIDECAR_FILE_BYTES, load_sidecar_file_cancellable};
 use crate::error::AppError;
 use crate::http::{ApiClient, encode_query_value, preflight_visibility};
 use crate::parse::ParsedDeclaration;
-use crate::projection::{ExistingEntity, RequestBody, WritePlan, project};
+use crate::projection::{ExistingEntity, RequestBody, project};
 
-use super::{ApplyAction, ApplyResult};
+use super::{
+    ApplyAction, ApplyResult, PreparedWrite, PreparedWriteResponse, ResolutionTarget,
+    WriteAbilityEvidence, prove_write,
+};
 
 const MAX_PAGES: u32 = 1_000;
 const MAX_ITEMS: u32 = 100_000;
@@ -35,6 +38,9 @@ struct DatasourcePage {
 
 #[derive(Deserialize)]
 struct DatasourcePagination {
+    page: u32,
+    per_page: u32,
+    total: u32,
     pages: u32,
 }
 
@@ -44,6 +50,53 @@ struct DatasourceItem {
     repo_name: String,
     project_name: String,
     index_type: String,
+    user_abilities: Vec<String>,
+}
+
+#[derive(Debug)]
+struct ScanEvidence {
+    _pages_requested: u32,
+    _items_seen: u32,
+    _advertised_total: u32,
+}
+
+struct ProjectEnumeration {
+    items: Vec<DatasourceItem>,
+    evidence: ScanEvidence,
+}
+
+struct Enumeration {
+    matches: Vec<DatasourceItem>,
+    evidence: ScanEvidence,
+}
+
+/// Concrete exhaustive Datasource resolution evidence owned by `PreparedWrite`.
+#[derive(Debug)]
+pub(super) struct CompletedResolution {
+    effective_project: String,
+    repo_name: String,
+    index_type: String,
+    target: ResolutionTarget,
+    _scan: ScanEvidence,
+    _write_ability: Option<WriteAbilityEvidence>,
+}
+
+impl CompletedResolution {
+    pub(super) fn effective_project(&self) -> &str {
+        &self.effective_project
+    }
+
+    pub(super) fn repo_name(&self) -> &str {
+        &self.repo_name
+    }
+
+    pub(super) fn index_type(&self) -> &str {
+        &self.index_type
+    }
+
+    pub(super) fn target(&self) -> &ResolutionTarget {
+        &self.target
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -67,10 +120,10 @@ pub async fn apply(
     request: ApplyRequest<'_>,
     cancellation: &CancellationToken,
 ) -> Result<ApplyResult, AppError> {
-    // ADR-012 Option A: preflight before any write
-    preflight_visibility(client, base_url).await?;
+    // ADR-012 Option A: exact-effective-project preflight before any write.
+    let visibility = preflight_visibility(client, base_url, request.project_name).await?;
 
-    let matches = enumerate(
+    let enumeration = enumerate(
         client,
         base_url,
         request.project_name,
@@ -79,65 +132,60 @@ pub async fn apply(
     )
     .await?;
 
-    match matches.as_slice() {
-        [] => {
-            let plan = project(
-                request.declaration,
-                None,
-                None,
-                request.repo_root,
-                request.follow_symlinks,
-            )?;
-            dispatch(
-                client,
-                base_url,
-                DispatchRequest {
-                    plan,
-                    index_type: request.index_type,
-                    project_name: request.project_name,
-                    repo_name: request.repo_name,
-                    declaration: request.declaration,
-                    repo_root: request.repo_root,
-                    cancellation,
-                },
-            )
-            .await
-        }
+    let (existing, target, write_ability) = match enumeration.matches.as_slice() {
+        [] => (None, ResolutionTarget::Create, None),
         [single] => {
-            let existing = ExistingEntity {
-                server_id: single.id.clone(),
-                meta_config: None,
-            };
-            let plan = project(
-                request.declaration,
-                Some(&existing),
-                None,
-                request.repo_root,
-                request.follow_symlinks,
-            )?;
-            dispatch(
-                client,
-                base_url,
-                DispatchRequest {
-                    plan,
-                    index_type: request.index_type,
-                    project_name: request.project_name,
-                    repo_name: request.repo_name,
-                    declaration: request.declaration,
-                    repo_root: request.repo_root,
-                    cancellation,
+            let write_ability = prove_write(&single.user_abilities, "Datasource")?;
+            (
+                Some(ExistingEntity {
+                    server_id: single.id.clone(),
+                    meta_config: None,
+                }),
+                ResolutionTarget::Update {
+                    server_id: single.id.clone(),
                 },
+                Some(write_ability),
             )
-            .await
         }
         _ => Err(AppError::Reconciliation(format!(
             "Datasource: {} matches for (repo_name={:?}, project={:?}, type={:?}); manual resolution required",
-            matches.len(),
+            enumeration.matches.len(),
             request.repo_name,
             request.project_name,
             request.index_type
-        ))),
-    }
+        )))?,
+    };
+
+    let plan = project(
+        request.declaration,
+        existing.as_ref(),
+        None,
+        request.repo_root,
+        request.follow_symlinks,
+    )?;
+    let file_parts = if matches!(
+        &plan,
+        crate::projection::WritePlan::Create {
+            request: RequestBody::FileMultipart { .. }
+        } | crate::projection::WritePlan::Update {
+            request: RequestBody::FileMultipart { .. },
+            ..
+        }
+    ) {
+        Some(read_file_parts_async(request.declaration, request.repo_root, cancellation).await?)
+    } else {
+        None
+    };
+    let resolution = CompletedResolution {
+        effective_project: request.project_name.to_owned(),
+        repo_name: request.repo_name.to_owned(),
+        index_type: request.index_type.to_owned(),
+        target,
+        _scan: enumeration.evidence,
+        _write_ability: write_ability,
+    };
+    let prepared = PreparedWrite::datasource(visibility, resolution, plan, file_parts)?;
+    dispatch(client, base_url, prepared).await
 }
 
 /// Resolve a Datasource natural reference without requiring the target
@@ -152,44 +200,13 @@ pub async fn resolve_reference(
     project_name: &str,
     repo_name: &str,
 ) -> Result<String, AppError> {
-    let filter = serde_json::to_string(&serde_json::json!({ "project_name": project_name }))
-        .map_err(|_| AppError::Internal("datasource: failed to encode filter JSON".into()))?;
-    let mut matches = Vec::new();
-    let mut page = 0u32;
-    let mut total_seen = 0u32;
-
-    loop {
-        let path = format!(
-            "/v1/index?full_response=true&page={}&per_page=100&filters={}",
-            page,
-            encode_query_value(&filter)
-        );
-        let resp: DatasourcePage = client.get(base_url, &path).await?;
-        let total_pages = resp.pagination.pages;
-        if total_pages > MAX_PAGES {
-            return Err(AppError::ApiIncompatible(
-                "datasource enumeration exceeded 1,000-page cap".into(),
-            ));
-        }
-
-        for item in resp.data {
-            total_seen += 1;
-            if total_seen > MAX_ITEMS {
-                return Err(AppError::ApiIncompatible(
-                    "datasource enumeration exceeded 100,000-item cap".into(),
-                ));
-            }
-            if item.repo_name == repo_name && item.project_name == project_name {
-                matches.push(item.id);
-            }
-        }
-
-        let next = page + 1;
-        if next >= total_pages {
-            break;
-        }
-        page = next;
-    }
+    let matches: Vec<String> = enumerate_project(client, base_url, project_name)
+        .await?
+        .items
+        .into_iter()
+        .filter(|item| item.repo_name == repo_name && item.project_name == project_name)
+        .map(|item| item.id)
+        .collect();
 
     match matches.as_slice() {
         [single] => Ok(single.clone()),
@@ -211,8 +228,8 @@ pub async fn verify_identity(
     index_type: &str,
     expected_server_id: &str,
 ) -> Result<(), AppError> {
-    let matches = enumerate(client, base_url, project_name, repo_name, index_type).await?;
-    match matches.as_slice() {
+    let enumeration = enumerate(client, base_url, project_name, repo_name, index_type).await?;
+    match enumeration.matches.as_slice() {
         [single] if single.id == expected_server_id => Ok(()),
         _ => Err(AppError::Reconciliation(
             "Datasource write may have committed but identity verification did not match exactly once"
@@ -231,13 +248,36 @@ async fn enumerate(
     project_name: &str,
     repo_name: &str,
     index_type: &str,
-) -> Result<Vec<DatasourceItem>, AppError> {
+) -> Result<Enumeration, AppError> {
+    let project = enumerate_project(client, base_url, project_name).await?;
+    Ok(Enumeration {
+        matches: project
+            .items
+            .into_iter()
+            .filter(|item| {
+                item.repo_name == repo_name
+                    && item.project_name == project_name
+                    && item.index_type == index_type
+            })
+            .collect(),
+        evidence: project.evidence,
+    })
+}
+
+async fn enumerate_project(
+    client: &ApiClient,
+    base_url: &ValidatedUrl,
+    project_name: &str,
+) -> Result<ProjectEnumeration, AppError> {
     let filter = serde_json::to_string(&serde_json::json!({ "project_name": project_name }))
         .map_err(|_| AppError::Internal("datasource: failed to encode filter JSON".into()))?;
 
-    let mut all_matches = Vec::new();
+    let mut all_items = Vec::new();
     let mut page = 0u32;
+    let mut pages_requested = 0u32;
     let mut total_seen = 0u32;
+    let mut fingerprint: Option<(u32, u32, u32)> = None;
+    let mut seen_ids = std::collections::HashSet::new();
 
     loop {
         let path = format!(
@@ -246,6 +286,13 @@ async fn enumerate(
             encode_query_value(&filter)
         );
         let resp: DatasourcePage = client.get(base_url, &path).await?;
+        pages_requested += 1;
+        validate_pagination(page, &resp.pagination, fingerprint)?;
+        fingerprint = Some((
+            resp.pagination.pages,
+            resp.pagination.total,
+            resp.pagination.per_page,
+        ));
         let total_pages = resp.pagination.pages;
 
         for item in resp.data {
@@ -255,138 +302,98 @@ async fn enumerate(
                     "datasource enumeration exceeded 100,000-item cap".into(),
                 ));
             }
-            if item.repo_name == repo_name
-                && item.project_name == project_name
-                && item.index_type == index_type
-            {
-                all_matches.push(item);
+            if !seen_ids.insert(item.id.clone()) {
+                return Err(AppError::Reconciliation(
+                    "datasource enumeration repeated an entity id".into(),
+                ));
             }
+            all_items.push(item);
         }
 
         // Zero-indexed: stop when we've seen all pages (pages=N means indices 0..N-1)
         let next = page + 1;
-        if next >= total_pages || next > MAX_PAGES {
+        if next >= total_pages {
             break;
         }
         page = next;
     }
 
-    Ok(all_matches)
-}
-
-// ---------------------------------------------------------------------------
-// Route helpers (per-kind)
-// ---------------------------------------------------------------------------
-
-fn create_route(kind: &str, project: &str) -> String {
-    match kind {
-        "git" => format!("/v1/application/{}/index", encode_query_value(project)),
-        "svn" => format!("/v1/application/{}/index/svn", encode_query_value(project)),
-        _ => format!("/v1/index/knowledge_base/{}", encode_query_value(kind)),
+    let expected_total = fingerprint.map_or(0, |(_, total, _)| total);
+    if total_seen != expected_total {
+        return Err(AppError::Reconciliation(
+            "datasource enumeration ended before the advertised total".into(),
+        ));
     }
+
+    Ok(ProjectEnumeration {
+        items: all_items,
+        evidence: ScanEvidence {
+            _pages_requested: pages_requested,
+            _items_seen: total_seen,
+            _advertised_total: expected_total,
+        },
+    })
 }
 
-fn update_route(kind: &str, project: &str, repo_name: &str) -> String {
-    match kind {
-        "git" => format!(
-            "/v1/application/{}/index/{}",
-            encode_query_value(project),
-            encode_query_value(repo_name)
-        ),
-        "svn" => format!(
-            "/v1/application/{}/index/svn/{}",
-            encode_query_value(project),
-            encode_query_value(repo_name)
-        ),
-        // knowledge_base types identify by project_name + name in query params
-        _ => format!("/v1/index/knowledge_base/{}", encode_query_value(kind)),
+fn validate_pagination(
+    requested_page: u32,
+    pagination: &DatasourcePagination,
+    fingerprint: Option<(u32, u32, u32)>,
+) -> Result<(), AppError> {
+    if pagination.page != requested_page || pagination.per_page != 100 {
+        return Err(AppError::ApiIncompatible(
+            "datasource pagination origin or page size changed".into(),
+        ));
     }
+    if pagination.pages > MAX_PAGES {
+        return Err(AppError::ApiIncompatible(
+            "datasource enumeration exceeded 1,000-page cap".into(),
+        ));
+    }
+    if (pagination.pages == 0) != (pagination.total == 0) {
+        return Err(AppError::ApiIncompatible(
+            "datasource zero page count does not match zero total".into(),
+        ));
+    }
+    if pagination.pages != pagination.total.div_ceil(pagination.per_page) {
+        return Err(AppError::ApiIncompatible(
+            "datasource pagination total and page count disagree".into(),
+        ));
+    }
+    if let Some(expected) = fingerprint
+        && expected != (pagination.pages, pagination.total, pagination.per_page)
+    {
+        return Err(AppError::Reconciliation(
+            "datasource pagination changed during enumeration".into(),
+        ));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
-// Dispatch: JSON or multipart, create or update
+// Dispatch: the HTTP client accepts only the evidence-bearing aggregate
 // ---------------------------------------------------------------------------
-
-struct DispatchRequest<'a> {
-    plan: WritePlan,
-    index_type: &'a str,
-    project_name: &'a str,
-    repo_name: &'a str,
-    declaration: &'a ParsedDeclaration,
-    repo_root: &'a Path,
-    cancellation: &'a CancellationToken,
-}
 
 async fn dispatch(
     client: &ApiClient,
     base_url: &ValidatedUrl,
-    request: DispatchRequest<'_>,
+    prepared: PreparedWrite,
 ) -> Result<ApplyResult, AppError> {
-    match request.plan {
-        WritePlan::Create {
-            request: RequestBody::Json(body),
-        } => {
-            let route = create_route(request.index_type, request.project_name);
-            let resp: serde_json::Value = client.post(base_url, &route, &body).await?;
-            let id = extract_id(&resp)?;
-            Ok(ApplyResult {
-                action: ApplyAction::Created,
-                server_id: id,
-            })
-        }
-        WritePlan::Update {
-            request: RequestBody::Json(body),
-            ..
-        } => {
-            let route = update_route(request.index_type, request.project_name, request.repo_name);
-            let resp: serde_json::Value = client.put(base_url, &route, &body).await?;
-            let id = extract_id(&resp)?;
-            Ok(ApplyResult {
-                action: ApplyAction::Updated,
-                server_id: id,
-            })
-        }
-        WritePlan::Create {
-            request: RequestBody::FileMultipart { query_params, .. },
-        } => {
-            let route = create_route(request.index_type, request.project_name);
-            let file_parts =
-                read_file_parts_async(request.declaration, request.repo_root, request.cancellation)
-                    .await?;
-            let resp = client
-                .post_multipart(base_url, &route, &query_params, file_parts)
-                .await?;
-            let id = extract_id(&resp)?;
-            Ok(ApplyResult {
-                action: ApplyAction::Created,
-                server_id: id,
-            })
-        }
-        WritePlan::Update {
-            request: RequestBody::FileMultipart {
-                mut query_params, ..
-            },
-            ..
-        } => {
-            // Inject name=repo_name for server identity: knowledge_base file update uses
-            // (project_name, name) to locate the datasource (no ID in route path).
-            if !query_params.iter().any(|(k, _)| k == "name") {
-                query_params.push(("name".to_owned(), request.repo_name.to_owned()));
-            }
-            let route = update_route(request.index_type, request.project_name, request.repo_name);
-            let file_parts =
-                read_file_parts_async(request.declaration, request.repo_root, request.cancellation)
-                    .await?;
-            let resp = client
-                .put_multipart(base_url, &route, &query_params, file_parts)
-                .await?;
-            let id = extract_id(&resp)?;
-            Ok(ApplyResult {
-                action: ApplyAction::Updated,
-                server_id: id,
-            })
-        }
-    }
+    let action = match prepared.target() {
+        ResolutionTarget::Create => ApplyAction::Created,
+        ResolutionTarget::Update { .. } => ApplyAction::Updated,
+    };
+    let response = client.dispatch_prepared(base_url, prepared).await?;
+    let PreparedWriteResponse::Success(response) = response else {
+        return Err(AppError::Internal(
+            "Datasource modifying request cannot return a conflict signal".into(),
+        ));
+    };
+    let id = extract_id(&response)?;
+    Ok(ApplyResult {
+        action,
+        server_id: id,
+    })
 }
 
 fn extract_id(resp: &serde_json::Value) -> Result<String, AppError> {
@@ -522,7 +529,9 @@ mod tests {
             .mock("GET", "/v1/user")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"is_admin":true}"#)
+            .with_body(
+                r#"{"is_admin":false,"is_maintainer":false,"projects":[{"name":"my-project","is_project_admin":true}]}"#,
+            )
             .create_async()
     }
 
@@ -547,13 +556,13 @@ mod tests {
 
     fn one_match_page(id: &str, repo: &str, project: &str, kind: &str) -> String {
         format!(
-            r#"{{"data":[{{"id":"{id}","repo_name":"{repo}","project_name":"{project}","index_type":"{kind}"}}],"pagination":{{"page":0,"per_page":100,"total":1,"pages":1}}}}"#
+            r#"{{"data":[{{"id":"{id}","repo_name":"{repo}","project_name":"{project}","index_type":"{kind}","user_abilities":["read","write"]}}],"pagination":{{"page":0,"per_page":100,"total":1,"pages":1}}}}"#
         )
     }
 
     fn two_match_page(repo: &str, project: &str, kind: &str) -> String {
         format!(
-            r#"{{"data":[{{"id":"id-1","repo_name":"{repo}","project_name":"{project}","index_type":"{kind}"}},{{"id":"id-2","repo_name":"{repo}","project_name":"{project}","index_type":"{kind}"}}],"pagination":{{"page":0,"per_page":100,"total":2,"pages":1}}}}"#
+            r#"{{"data":[{{"id":"id-1","repo_name":"{repo}","project_name":"{project}","index_type":"{kind}","user_abilities":["write"]}},{{"id":"id-2","repo_name":"{repo}","project_name":"{project}","index_type":"{kind}","user_abilities":["write"]}}],"pagination":{{"page":0,"per_page":100,"total":2,"pages":1}}}}"#
         )
     }
 
@@ -652,6 +661,374 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn apply_rejects_other_project_admin_before_any_write() {
+        let mut server = mockito::Server::new_async().await;
+        let user = server
+            .mock("GET", "/v1/user")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"is_admin":false,"is_maintainer":false,"projects":[{"name":"other-project","is_project_admin":true}]}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        let post = server
+            .mock("POST", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+        let put = server
+            .mock("PUT", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+        let patch = server
+            .mock("PATCH", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+        let delete = server
+            .mock("DELETE", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+
+        let url = test_url(&server.url());
+        let client = test_client(&server.url());
+        let declaration = git_decl("my-project", "my-repo");
+        let error = apply(
+            &client,
+            &url,
+            ApplyRequest {
+                declaration: &declaration,
+                project_name: "my-project",
+                repo_name: "my-repo",
+                index_type: "git",
+                repo_root: Path::new("."),
+                follow_symlinks: false,
+            },
+            &CancellationToken::default(),
+        )
+        .await
+        .expect_err("another project's admin entry is insufficient");
+        assert!(matches!(error, AppError::VisibilityUnproven(_)));
+        user.assert_async().await;
+        post.assert_async().await;
+        put.assert_async().await;
+        patch.assert_async().await;
+        delete.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn apply_rejects_nonwriting_row_before_put() {
+        let mut server = mockito::Server::new_async().await;
+        let _user = user_ok_mock(&mut server).await;
+        let page = one_match_page("ds-exist", "my-repo", "my-project", "git")
+            .replace(r#"["read","write"]"#, r#"["read"]"#);
+        let _enum = server
+            .mock("GET", mockito::Matcher::Regex(r"^/v1/index\?".to_string()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(page)
+            .create_async()
+            .await;
+        let put = server
+            .mock("PUT", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+        let post = server
+            .mock("POST", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+        let patch = server
+            .mock("PATCH", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+        let delete = server
+            .mock("DELETE", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+
+        let url = test_url(&server.url());
+        let client = test_client(&server.url());
+        let declaration = git_decl("my-project", "my-repo");
+        let error = apply(
+            &client,
+            &url,
+            ApplyRequest {
+                declaration: &declaration,
+                project_name: "my-project",
+                repo_name: "my-repo",
+                index_type: "git",
+                repo_root: Path::new("."),
+                follow_symlinks: false,
+            },
+            &CancellationToken::default(),
+        )
+        .await
+        .expect_err("non-writing Datasource row must stop before PUT");
+        assert!(matches!(error, AppError::Authorization(_)));
+        post.assert_async().await;
+        put.assert_async().await;
+        patch.assert_async().await;
+        delete.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn apply_rejects_pagination_drift_before_any_write() {
+        let mut server = mockito::Server::new_async().await;
+        let _user = user_ok_mock(&mut server).await;
+        let page = server
+            .mock("GET", mockito::Matcher::Regex(r"^/v1/index\?".to_string()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"data":[],"pagination":{"page":1,"per_page":100,"total":0,"pages":0}}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let post = server
+            .mock("POST", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+        let put = server
+            .mock("PUT", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+        let patch = server
+            .mock("PATCH", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+        let delete = server
+            .mock("DELETE", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+
+        let url = test_url(&server.url());
+        let client = test_client(&server.url());
+        let declaration = git_decl("my-project", "my-repo");
+        let error = apply(
+            &client,
+            &url,
+            ApplyRequest {
+                declaration: &declaration,
+                project_name: "my-project",
+                repo_name: "my-repo",
+                index_type: "git",
+                repo_root: Path::new("."),
+                follow_symlinks: false,
+            },
+            &CancellationToken::default(),
+        )
+        .await
+        .expect_err("wrong zero-indexed page must fail compatibility");
+        assert!(matches!(error, AppError::ApiIncompatible(_)));
+        page.assert_async().await;
+        post.assert_async().await;
+        put.assert_async().await;
+        patch.assert_async().await;
+        delete.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn apply_rejects_repeated_datasource_ids_before_any_write() {
+        let mut server = mockito::Server::new_async().await;
+        let _user = user_ok_mock(&mut server).await;
+        let repeated = server
+            .mock("GET", mockito::Matcher::Regex(r"^/v1/index\?".to_owned()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"data":[{"id":"same","repo_name":"other-a","project_name":"my-project","index_type":"git","user_abilities":["read"]},{"id":"same","repo_name":"other-b","project_name":"my-project","index_type":"git","user_abilities":["read"]}],"pagination":{"page":0,"per_page":100,"total":2,"pages":1}}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        let post = server
+            .mock("POST", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+        let put = server
+            .mock("PUT", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+        let patch = server
+            .mock("PATCH", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+        let delete = server
+            .mock("DELETE", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+
+        let url = test_url(&server.url());
+        let client = test_client(&server.url());
+        let declaration = git_decl("my-project", "my-repo");
+        let error = apply(
+            &client,
+            &url,
+            ApplyRequest {
+                declaration: &declaration,
+                project_name: "my-project",
+                repo_name: "my-repo",
+                index_type: "git",
+                repo_root: Path::new("."),
+                follow_symlinks: false,
+            },
+            &CancellationToken::default(),
+        )
+        .await
+        .expect_err("repeated IDs indicate snapshot instability");
+
+        assert!(matches!(error, AppError::Reconciliation(_)));
+        repeated.assert_async().await;
+        post.assert_async().await;
+        put.assert_async().await;
+        patch.assert_async().await;
+        delete.assert_async().await;
+    }
+
+    #[test]
+    fn datasource_response_requires_consumed_fields_and_allows_additions() {
+        let baseline = json!({
+            "data":[{
+                "id":"ds",
+                "repo_name":"repo",
+                "project_name":"project",
+                "index_type":"git",
+                "user_abilities":["write"]
+            }],
+            "pagination":{"page":0,"per_page":100,"total":1,"pages":1}
+        });
+        let additive = json!({
+            "data":[{
+                "id":"ds",
+                "repo_name":"repo",
+                "project_name":"project",
+                "index_type":"git",
+                "user_abilities":["write"],
+                "future_entity":true
+            }],
+            "pagination":{"page":0,"per_page":100,"total":1,"pages":1,"future_page":true},
+            "future_top":true
+        });
+        let baseline_page = serde_json::from_value::<DatasourcePage>(baseline.clone())
+            .expect("baseline must decode");
+        let additive_page =
+            serde_json::from_value::<DatasourcePage>(additive).expect("additions must decode");
+
+        crate::adapters::assert_consumed_field_mutations::<DatasourcePage>(
+            &baseline,
+            &[
+                "/data",
+                "/data/0/id",
+                "/data/0/repo_name",
+                "/data/0/project_name",
+                "/data/0/index_type",
+                "/data/0/user_abilities",
+                "/pagination",
+                "/pagination/page",
+                "/pagination/per_page",
+                "/pagination/total",
+                "/pagination/pages",
+            ],
+        );
+
+        let project_response = |page: DatasourcePage| {
+            let existing = ExistingEntity {
+                server_id: page.data[0].id.clone(),
+                meta_config: None,
+            };
+            project(
+                &git_decl("project", "repo"),
+                Some(&existing),
+                None,
+                Path::new("."),
+                false,
+            )
+            .expect("decoded response must project")
+        };
+        let crate::projection::WritePlan::Update {
+            request: RequestBody::Json(baseline_body),
+            ..
+        } = project_response(baseline_page)
+        else {
+            panic!("Datasource projection must be JSON");
+        };
+        let crate::projection::WritePlan::Update {
+            request: RequestBody::Json(additive_body),
+            ..
+        } = project_response(additive_page)
+        else {
+            panic!("Datasource projection must be JSON");
+        };
+        assert_eq!(baseline_body, additive_body);
+    }
+
+    #[test]
+    fn datasource_pagination_invariant_matrix() {
+        let empty = || DatasourcePagination {
+            page: 0,
+            per_page: 100,
+            total: 0,
+            pages: 0,
+        };
+        assert!(validate_pagination(0, &empty(), None).is_ok());
+
+        for invalid in [
+            DatasourcePagination { page: 1, ..empty() },
+            DatasourcePagination {
+                per_page: 99,
+                ..empty()
+            },
+            DatasourcePagination {
+                total: 1,
+                pages: 0,
+                ..empty()
+            },
+            DatasourcePagination {
+                total: 101,
+                pages: 1,
+                ..empty()
+            },
+            DatasourcePagination {
+                total: 100_001,
+                pages: 1_001,
+                ..empty()
+            },
+        ] {
+            assert!(matches!(
+                validate_pagination(0, &invalid, None),
+                Err(AppError::ApiIncompatible(_))
+            ));
+        }
+
+        let stable_page = DatasourcePagination {
+            page: 1,
+            per_page: 100,
+            total: 101,
+            pages: 2,
+        };
+        assert!(validate_pagination(1, &stable_page, Some((2, 101, 100))).is_ok());
+        assert!(matches!(
+            validate_pagination(1, &stable_page, Some((2, 100, 100))),
+            Err(AppError::Reconciliation(_))
+        ));
+    }
+
+    #[tokio::test]
     async fn apply_reconciliation_on_multiple_matches() {
         let mut server = mockito::Server::new_async().await;
 
@@ -661,6 +1038,26 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(two_match_page("my-repo", "my-project", "git"))
+            .create_async()
+            .await;
+        let post = server
+            .mock("POST", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+        let put = server
+            .mock("PUT", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+        let patch = server
+            .mock("PATCH", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+        let delete = server
+            .mock("DELETE", mockito::Matcher::Any)
+            .expect(0)
             .create_async()
             .await;
 
@@ -686,6 +1083,10 @@ mod tests {
 
         assert!(matches!(err, AppError::Reconciliation(_)));
         assert_eq!(err.exit_code(), 1);
+        post.assert_async().await;
+        put.assert_async().await;
+        patch.assert_async().await;
+        delete.assert_async().await;
     }
 
     // -----------------------------------------------------------------------

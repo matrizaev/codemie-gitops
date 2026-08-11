@@ -1,8 +1,8 @@
 /// Single-entity write-through coordinator (R-001).
 ///
 /// One invocation follows the approved state machine:
-/// local load/validation -> authentication -> compatibility/visibility
-/// preflight -> kind adapter resolve/project/write -> post-write identity
+/// local load/validation -> authentication -> kind-specific operation preflight
+/// -> adapter resolve/project/sealed-write -> post-write identity
 /// verification -> typed success outcome.
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -11,10 +11,9 @@ use crate::adapters::{self, ApplyAction, ApplyResult};
 use crate::cancellation::CancellationToken;
 use crate::config::ValidatedUrl;
 use crate::error::AppError;
-use crate::http::{ApiClient, preflight_visibility};
+use crate::http::ApiClient;
 use crate::output::{Action, Outcome};
 use crate::parse::{EntityKind, ParsedDeclaration};
-use crate::preflight::check_compatibility;
 use crate::repository::{TargetLoadRequest, load_target_declaration};
 
 /// Whole-invocation deadline from the approved resource budget.
@@ -134,14 +133,9 @@ async fn apply_inner(
     }
     let client = ApiClient::new(command.base_url.clone(), command.token)?;
 
-    // CompatibilityChecked: target identity version check plus the principal
-    // capability proof required before resolution/write. Datasource owns the
-    // same preflight inside its adapter, so avoid issuing it twice there.
-    check_compatibility(&client, &command.base_url).await?;
-    if !matches!(identity, TargetIdentity::Datasource { .. }) {
-        preflight_visibility(&client, &command.base_url).await?;
-    }
-
+    // Each adapter establishes its operation-applicable non-mutating evidence
+    // and seals it with the projected request before its modifying dispatcher
+    // is reachable. `/v1/info` is observability only and is never an apply gate.
     let result = dispatch_adapter(
         &client,
         &command.base_url,
@@ -395,6 +389,64 @@ spec:
 "#
     }
 
+    fn workflow_yaml() -> &'static str {
+        r#"apiVersion: codemie.epam.com/v1alpha1
+kind: Workflow
+metadata:
+  project: project-a
+  slug: workflow-a
+spec:
+  name: Workflow A
+  description: A valid coordinator workflow
+  mode: Sequential
+  shared: false
+  execution_config:
+    messages_limit_before_summarization: 10
+    tokens_limit_before_summarization: 1000
+    type: default
+    enable_summarization_node: false
+    recursion_limit: 10
+    max_concurrency: 1
+    verbose: false
+    max_iteration_key_output_limit: 100
+    assistants: []
+    tools: []
+    custom_nodes: []
+    states: []
+    retry_policy:
+      initial_interval: 1000
+      backoff_factor: 2
+      max_interval: 60000
+      max_attempts: 3
+"#
+    }
+
+    fn workflow_page(page: u32) -> String {
+        let marker = serde_json::json!({
+            "codemie.epam.com/gitops/workflow-identity": {
+                "version": 1,
+                "project": "project-a",
+                "slug": "workflow-a"
+            }
+        })
+        .to_string();
+        serde_json::json!({
+            "data": [{
+                "id": "workflow-server-id",
+                "project": "project-a",
+                "name": "Workflow A",
+                "meta_config": marker,
+                "user_abilities": ["read", "write"]
+            }],
+            "pagination": {"page": page, "per_page": 100, "total": 1, "pages": 1}
+        })
+        .to_string()
+    }
+
+    fn empty_workflow_page() -> &'static str {
+        r#"{"data":[],"pagination":{"page":0,"per_page":100,"total":0,"pages":0}}"#
+    }
+
     fn command(root: &Path, file: &Path, base_url: &str) -> ApplyCommand {
         ApplyCommand {
             file: file.to_owned(),
@@ -478,11 +530,8 @@ spec:
             .mock("GET", "/v1/info")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(format!(
-                r#"{{"version":"{}"}}"#,
-                crate::preflight::EXPECTED_BACKEND_COMMIT
-            ))
-            .expect(1)
+            .with_body(r#"{"version":"0.16.0"}"#)
+            .expect(0)
             .create_async()
             .await;
         let visibility = server
@@ -490,14 +539,16 @@ spec:
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"is_admin":false,"is_maintainer":false,"projects":[{"name":"project-a","is_project_admin":true}]}"#)
-            .expect(1)
+            .expect(0)
             .create_async()
             .await;
         let resolve = server
             .mock("GET", "/v1/assistants/slug/assistant-a?project=project-a")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"id":"assistant-server-id"}"#)
+            .with_body(
+                r#"{"id":"assistant-server-id","user_abilities":["read","write"],"future_field":true}"#,
+            )
             .expect(2)
             .create_async()
             .await;
@@ -540,11 +591,8 @@ spec:
             .mock("GET", "/v1/info")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(format!(
-                r#"{{"version":"{}"}}"#,
-                crate::preflight::EXPECTED_BACKEND_COMMIT
-            ))
-            .expect(1)
+            .with_body(r#"{"version":"0.16.0"}"#)
+            .expect(0)
             .create_async()
             .await;
         let visibility = server
@@ -552,7 +600,7 @@ spec:
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"is_admin":false,"is_maintainer":false,"projects":[{"name":"project-a","is_project_admin":true}]}"#)
-            .expect(1)
+            .expect(0)
             .create_async()
             .await;
         let resolve_absent = server
@@ -565,7 +613,7 @@ spec:
             .mock("POST", "/v1/assistants")
             .with_status(201)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"id":"assistant-server-id"}"#)
+            .with_body(r#"{"id":"assistant-server-id","user_abilities":["write"]}"#)
             .expect(1)
             .create_async()
             .await;
@@ -573,7 +621,7 @@ spec:
             .mock("GET", "/v1/assistants/slug/assistant-a?project=project-a")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"id":"assistant-server-id"}"#)
+            .with_body(r#"{"id":"assistant-server-id","user_abilities":["write"]}"#)
             .expect(1)
             .create_async()
             .await;
@@ -610,6 +658,267 @@ spec:
     }
 
     #[tokio::test]
+    async fn workflow_update_uses_page_zero_twice_without_info_contact() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join(".git")).unwrap();
+        let file = root.path().join("workflow.yaml");
+        fs::write(&file, workflow_yaml()).unwrap();
+
+        let mut server = mockito::Server::new_async().await;
+        let info = server
+            .mock("GET", "/v1/info")
+            .expect(0)
+            .create_async()
+            .await;
+        let user = server
+            .mock("GET", "/v1/user")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"is_admin":false,"is_maintainer":false,"projects":[{"name":"project-a","is_project_admin":true}]}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let project_page_zero = server
+            .mock(
+                "GET",
+                mockito::Matcher::Regex(
+                    r"^/v1/workflows\?minimal_response=false&page=0&per_page=100$".to_owned(),
+                ),
+            )
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(workflow_page(0))
+            .expect(2)
+            .create_async()
+            .await;
+        let marketplace_page_zero = server
+            .mock(
+                "GET",
+                mockito::Matcher::Regex(
+                    r"^/v1/workflows\?minimal_response=false&page=0&per_page=100&scope=marketplace$"
+                        .to_owned(),
+                ),
+            )
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(empty_workflow_page())
+            .expect(2)
+            .create_async()
+            .await;
+        let page_one = server
+            .mock(
+                "GET",
+                mockito::Matcher::Regex(r"^/v1/workflows\?.*page=1.*$".to_owned()),
+            )
+            .expect(0)
+            .create_async()
+            .await;
+        let detail = server
+            .mock("GET", "/v1/workflows/id/workflow-server-id")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                serde_json::json!({
+                    "id": "workflow-server-id",
+                    "project": "project-a",
+                    "name": "Workflow A",
+                    "meta_config": serde_json::json!({
+                        "codemie.epam.com/gitops/workflow-identity": {
+                            "version": 1,
+                            "project": "project-a",
+                            "slug": "workflow-a"
+                        }
+                    }).to_string(),
+                    "user_abilities": ["read", "write"]
+                })
+                .to_string(),
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        let update = server
+            .mock("PUT", "/v1/workflows/workflow-server-id")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"id":"workflow-server-id"}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let post = server
+            .mock("POST", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+        let patch = server
+            .mock("PATCH", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+        let delete = server
+            .mock("DELETE", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+
+        let outcome = apply(command(root.path(), &file, &server.url()))
+            .await
+            .expect("Workflow coordinator update and post-write scan must succeed");
+        assert_eq!(
+            serde_json::to_value(outcome).unwrap(),
+            serde_json::json!({
+                "action": "updated",
+                "kind": "Workflow",
+                "project": "project-a",
+                "slug": "workflow-a"
+            })
+        );
+        info.assert_async().await;
+        user.assert_async().await;
+        project_page_zero.assert_async().await;
+        marketplace_page_zero.assert_async().await;
+        page_one.assert_async().await;
+        detail.assert_async().await;
+        update.assert_async().await;
+        post.assert_async().await;
+        patch.assert_async().await;
+        delete.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn workflow_postwrite_bad_origin_is_classified_without_info_or_second_write() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join(".git")).unwrap();
+        let file = root.path().join("workflow.yaml");
+        fs::write(&file, workflow_yaml()).unwrap();
+
+        let mut server = mockito::Server::new_async().await;
+        let info = server
+            .mock("GET", "/v1/info")
+            .expect(0)
+            .create_async()
+            .await;
+        let user = server
+            .mock("GET", "/v1/user")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"is_admin":false,"is_maintainer":false,"projects":[{"name":"project-a","is_project_admin":true}]}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let initial_project = server
+            .mock(
+                "GET",
+                mockito::Matcher::Regex(
+                    r"^/v1/workflows\?minimal_response=false&page=0&per_page=100$".to_owned(),
+                ),
+            )
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(workflow_page(0))
+            .expect(1)
+            .create_async()
+            .await;
+        let initial_marketplace = server
+            .mock(
+                "GET",
+                mockito::Matcher::Regex(
+                    r"^/v1/workflows\?minimal_response=false&page=0&per_page=100&scope=marketplace$"
+                        .to_owned(),
+                ),
+            )
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(empty_workflow_page())
+            .expect(1)
+            .create_async()
+            .await;
+        let postwrite_project = server
+            .mock(
+                "GET",
+                mockito::Matcher::Regex(
+                    r"^/v1/workflows\?minimal_response=false&page=0&per_page=100$".to_owned(),
+                ),
+            )
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(workflow_page(1))
+            .expect(1)
+            .create_async()
+            .await;
+        let postwrite_marketplace = server
+            .mock(
+                "GET",
+                mockito::Matcher::Regex(r"^/v1/workflows\?.*scope=marketplace$".to_owned()),
+            )
+            .expect(0)
+            .create_async()
+            .await;
+        let detail_ok = server
+            .mock("GET", "/v1/workflows/id/workflow-server-id")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                serde_json::json!({
+                    "id": "workflow-server-id",
+                    "project": "project-a",
+                    "name": "Workflow A",
+                    "meta_config": serde_json::json!({
+                        "codemie.epam.com/gitops/workflow-identity": {
+                            "version": 1,
+                            "project": "project-a",
+                            "slug": "workflow-a"
+                        }
+                    }).to_string(),
+                    "user_abilities": ["write"]
+                })
+                .to_string(),
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        let update = server
+            .mock("PUT", "/v1/workflows/workflow-server-id")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"id":"workflow-server-id"}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let post = server
+            .mock("POST", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+        let patch = server
+            .mock("PATCH", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+        let delete = server
+            .mock("DELETE", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+
+        let error = apply(command(root.path(), &file, &server.url()))
+            .await
+            .expect_err("bad post-write page origin must preserve may-have-committed class");
+        assert!(matches!(error, AppError::WriteVerificationIncompatible(_)));
+
+        info.assert_async().await;
+        user.assert_async().await;
+        initial_project.assert_async().await;
+        initial_marketplace.assert_async().await;
+        postwrite_project.assert_async().await;
+        postwrite_marketplace.assert_async().await;
+        detail_ok.assert_async().await;
+        update.assert_async().await;
+        post.assert_async().await;
+        patch.assert_async().await;
+        delete.assert_async().await;
+    }
+
+    #[tokio::test]
     async fn local_graph_failure_stops_before_any_server_call() {
         let root = tempfile::tempdir().unwrap();
         fs::create_dir(root.path().join(".git")).unwrap();
@@ -640,7 +949,7 @@ spec:
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"version":"wrong-version"}"#)
-            .expect(1)
+            .expect(0)
             .create_async()
             .await;
         let visibility = server
@@ -650,18 +959,36 @@ spec:
             .await;
         let resolve = server
             .mock("GET", "/v1/assistants/slug/assistant-a?project=project-a")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"id":"assistant-server-id"}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let post = server
+            .mock("POST", mockito::Matcher::Any)
             .expect(0)
             .create_async()
             .await;
-        let update = server
-            .mock("PUT", "/v1/assistants/assistant-server-id")
+        let put = server
+            .mock("PUT", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+        let patch = server
+            .mock("PATCH", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+        let delete = server
+            .mock("DELETE", mockito::Matcher::Any)
             .expect(0)
             .create_async()
             .await;
 
         let error = apply(command(root.path(), &file, &server.url()))
             .await
-            .expect_err("compatibility mismatch must stop before resolution/write");
+            .expect_err("invalid direct-lookup evidence must stop before write");
         assert!(matches!(error, AppError::ApiIncompatible(_)));
 
         let mut renderer = Renderer::new(Vec::<u8>::new(), Vec::<u8>::new(), OutputMode::Json);
@@ -675,6 +1002,9 @@ spec:
         info.assert_async().await;
         visibility.assert_async().await;
         resolve.assert_async().await;
-        update.assert_async().await;
+        post.assert_async().await;
+        put.assert_async().await;
+        patch.assert_async().await;
+        delete.assert_async().await;
     }
 }

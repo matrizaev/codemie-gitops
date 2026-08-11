@@ -24,6 +24,15 @@ is viable at project-admin scope.
 D-001 implementation is authorized once all A-001/W-001/S-001 peers are
 complete (see tasks.md D-001 dependencies).
 
+**Security clarification (2026-08-11, v28):** project-admin evidence is scoped,
+not global. The accepted predicate is global admin, global maintainer, or one
+`projects[]` entry whose `name` equals the declaration's exact effective project
+and whose `is_project_admin` value is true. An admin entry for another project
+does not authorize visibility for the target project. This predicate applies to
+Datasource, Workflow, and Skill pre-write resolution. Assistant is excluded:
+its source-pinned exact `(project, slug)` lookup follows PA-003 least privilege
+and does not require complete-list visibility proof.
+
 ## Context
 
 The pre-implementation security review (SEC-004) found that the Datasource
@@ -73,8 +82,11 @@ becomes ambiguous and requires manual repair.
 
 **Description**: Before any Datasource apply, verify that the invoking
 principal holds global-admin, global-maintainer, or project-admin status via
-`GET /v1/user`, the same preflight already used for Workflow and Skill. If the
-check fails, exit `E_VISIBILITY_UNPROVEN`, exit 2, before any Datasource write.
+`GET /v1/user`, the same preflight used for Workflow and Skill. Project-admin
+status qualifies only when the same response entry names the exact effective
+project. If the valid response fails that predicate, exit
+`E_VISIBILITY_UNPROVEN`, exit 2, before any Datasource write; missing or invalid
+consumed response fields are `E_API_INCOMPATIBLE`, exit 2, before write.
 
 **Server evidence gap**: The pinned source (`index_service.py:162-218`) shows
 that `is_project_admin` grants access to project-visible rows plus project-admin
@@ -224,6 +236,7 @@ Until this ADR is accepted:
 
 - SEC-004 finding
 - ADR-009 (extends; not superseded until this ADR is accepted)
-- Product specification v25: FR-005/033/036, PA-003/005, QR-009-011
+- Product specification v28: FR-005/033/036, IR-011/012, PA-003/005,
+  QR-009-011
 - Pinned server: `codemie/src/codemie/service/index/index_service.py:162-218,275-282`
 - Tasks: D-001, O-001, O-002

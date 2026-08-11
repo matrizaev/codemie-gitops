@@ -57,6 +57,11 @@ source-pinned adapter manifest, not live OpenAPI, controls authoring.
 This proves reserved-marker resolution/adoption and the need for exhaustion,
 serialization, governance, and post-write fail-closed identity checks.
 
+Workflow pagination is zero-indexed. The pinned router defaults `page` to `0`,
+and the index service uses `offset(page * per_page)`. Each project/marketplace
+pass and post-write scan must request page 0 first; starting at page 1 skips the
+first result page.
+
 ### 2.3 Skill
 
 - `GET /v1/skills` supports `per_page <= 100`, project,
@@ -73,6 +78,11 @@ serialization, governance, and post-write fail-closed identity checks.
 Every page must therefore be exact-filtered and duplicates must never be
 tie-broken. Cross-principal duplicates remain possible; the approved operational
 response is serialized CI, governed writers, inventory, and manual remediation.
+
+Skill pagination is zero-indexed. The pinned router declares
+`page: Query(0, ge=0)`, the service/repository defaults are `0`, and repository
+queries use `offset(page * per_page)`. Exhaustive, post-write, and create-409
+scans must request page 0 first; starting at page 1 skips the first result page.
 
 ### 2.4 Datasource
 

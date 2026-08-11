@@ -1,15 +1,17 @@
 # HTTP adapter contract
 
-Source: product specification v26, IR-001–010, FR-005/006/011/016/017/021/022/024,
-FR-028–036, DR-003–012, and VR-016.
+Source: product specification v28, IR-001–012,
+FR-005/006/011/016/017/021/022/024, FR-028–036, DR-003–012, and VR-016.
 
 Status: NORMATIVE against backend tag `2.42.0`, commit
 `2a481c290c99bf30ef80aadafa03d876a7f5f732`. Exact consumed routes and field
 projections are in
 [`adapter-manifest-v2.42.0.json`](adapter-manifest-v2.42.0.json).
 
-Version: v26 (SEC-001/SEC-002/SEC-003 remediation; Mode (c) Keycloak ROPC added). See ADR-011 for
-credential input, ValidatedUrl, TLS, and redirect policy.
+Version: v28 (source-derived compatibility and exact-effective-project pre-write
+evidence clarification; prior SEC-001/SEC-002/SEC-003 remediation and Mode (c)
+Keycloak ROPC retained). See ADR-004/012 for compatibility/visibility and
+ADR-011 for credential input, ValidatedUrl, TLS, and redirect policy.
 
 ## 1. Boundary and protocol
 
@@ -20,9 +22,10 @@ requests, and safe output. It owns no state database.
 Every adapter implements the same closed protocol:
 
 ```text
-preflight -> enumerate/resolve_exact
--> zero: project_create -> POST -> verify_identity -> created
--> one: prove_write/read_required_detail -> project_update
+operation_preflight -> enumerate/resolve_exact
+-> resolve_references/read_required_detail/validate_pagination (as applicable)
+-> zero: project_create -> establish_prewrite_evidence -> POST -> verify_identity -> created
+-> one: prove_write -> project_update -> establish_prewrite_evidence
         -> PUT -> verify_identity -> updated
 ```
 
@@ -32,6 +35,16 @@ product entities. Existing-state reads serve identity, authorization,
 Workflow metadata preservation/adoption, source-pinned representation needs,
 reference mapping, or post-write identity verification. They never create a
 branch that suppresses the selected write.
+
+The transport write entry point accepts only a prepared write carrying a sealed
+`PrewriteEvidence` value for the same entity kind and effective project. That
+value is constructible only after the operation-applicable preflight and every
+operation-applicable identity, reference, detail/preservation, response-shape,
+and pagination check have succeeded. Workflow, Skill, and Datasource require
+the exact-project capability predicate. Assistant instead requires its strict
+direct `(project, slug)` lookup result and does not call `GET /v1/user`. No
+adapter may call POST/PUT while evidence is partial or directly from a
+resolve/read error branch.
 
 ## 2. Transport and compatibility
 
@@ -146,8 +159,10 @@ between the check and the read.
 - Treat `GET /v1/info` as observability, not API identity. Strictly decode all
   consumed response fields against the pinned manifest. A missing or invalid
   consumed field is `E_API_INCOMPATIBLE`, exit 2, before a write when preflight
-  can discover it. Additional unused response fields do not expand requests or
-  declaration schemas
+  can discover it. Only additive fields that no selected operation consumes are
+  ignored; an unknown field that replaces, changes, or is used instead of a
+  required consumed field is incompatible. Additive unconsumed fields do not
+  expand requests or declaration schemas
 
 Deployment/source drift is tested during verification and release; it never
 authorizes runtime adaptation or silent contract widening.
@@ -239,8 +254,15 @@ Assistant always receives PUT.
 ### 5.1 Exhaustive marker resolution
 
 Exhaust every page of the full Workflow list across the required project and
-marketplace-inclusive scopes. Scope parameters are hints; exact client
-filtering uses effective project plus:
+marketplace-inclusive scopes. Each pass is zero-indexed: always request page 0
+first; for `pages > 0` request exactly `0..pages-1`; for `pages == 0` stop after
+page 0. Every response must echo the requested `pagination.page`, return
+`pagination.per_page=100`, satisfy
+`pagination.pages=ceil(pagination.total/pagination.per_page)`, and report zero
+pages iff total is zero. Wrong origin/echo/size/count formula is
+`E_API_INCOMPATIBLE`, exit 2 before write. Stable-schema snapshot churn within
+a pass is entity-resolution instability, exit 1 before write. Scope parameters
+are hints; exact client filtering uses effective project plus:
 
 ```json
 "codemie.epam.com/gitops/workflow-identity": {
@@ -297,7 +319,9 @@ reference fields are removed from the request.
 ## 6. Skill
 
 1. Enumerate every `GET /v1/skills` page with `per_page=100`, project,
-   marketplace-inclusive, and search hints where compatible.
+   marketplace-inclusive, and search hints where compatible. Skill pagination
+   is zero-indexed: always request page 0 first; for `pages > 0` request exactly
+   `0..pages-1`; for `pages == 0` stop after page 0.
 2. Client-filter exact decoded `(project,name)` over the complete visible set.
 3. Zero creates once. One requires write proof and required detail, then always
    updates by returned ID. More than one is `E_AMBIGUOUS_IDENTITY`, exit 1,
@@ -305,6 +329,15 @@ reference fields are removed from the request.
 4. Never select current-principal, newest, first, or list-order duplicate.
 5. A same-principal create 409 permits one full re-resolution and never a
    second POST. Post-write resolution must find exactly one identity.
+
+Every Skill page must echo the requested zero-based `page`, return
+`perPage=100`, satisfy `pages=ceil(total/perPage)`, and report `pages==0` iff
+`total==0`. A page-1 initial request/response, wrong echo/size, or inconsistent
+page-count formula is `E_API_INCOMPATIBLE`, exit 2 before write. Across otherwise
+compatible responses, changing `(pages,total,perPage)`, repeated IDs, or a final
+accumulated count different from `total` is entity-resolution instability,
+exit 1 before write. Initial, post-write, and create-409 re-resolution use this
+same scan.
 
 The server uniqueness tuple is creator-scoped, so complete manager/admin
 visibility, serialized per-environment CI, governed concurrent writers, and a
@@ -362,10 +395,22 @@ encoded parameters for non-ASCII basenames, that behavior must be verified and
 documented as a pinned library feature. If the library does not provide this
 guarantee, restrict basenames to printable ASCII only.
 
-Before Workflow or Skill resolution, `GET /v1/user` must prove either global
-admin/maintainer status or `projects[].is_project_admin=true` for the exact
-project. Per-row `user_abilities` must additionally contain write for an
-existing target. These capability checks cannot widen visibility by themselves.
+Before Workflow, Skill, or Datasource resolution, `GET /v1/user` must prove
+either global admin/maintainer status or an entry where
+`projects[].name` equals the declaration's exact effective project and that same
+entry has `projects[].is_project_admin=true`. Project-admin status for any other
+project is insufficient. Per-row `user_abilities` must additionally contain
+write for an existing target where the pinned entity contract consumes that
+field. Missing or invalid consumed role/project fields are
+`E_API_INCOMPATIBLE`; a valid response that fails the predicate is
+`E_VISIBILITY_UNPROVEN`. Both are exit 2 before any modifying request. These
+capability checks cannot widen visibility by themselves.
+
+Assistant is not subject to this complete-visibility admin prerequisite. Its
+operation-applicable evidence is the strictly decoded direct
+`GET /v1/assistants/slug/{slug}?project={effective_project}` result plus any
+required write evidence from that response. This preserves PA-003 least
+privilege while retaining the same sealed `PreparedWrite` boundary.
 
 The CLI has no dedicated Datasource lifecycle command, flag, or endpoint.
 

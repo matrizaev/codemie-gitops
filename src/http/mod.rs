@@ -20,6 +20,7 @@ use std::{sync::OnceLock, time::Duration};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+use crate::adapters::{ModificationMethod, PreparedRequest, PreparedWrite, PreparedWriteResponse};
 use crate::config::ValidatedUrl;
 use crate::error::AppError;
 
@@ -72,22 +73,32 @@ const RETRY_BASE_JITTER_MS: u64 = 5;
 #[derive(serde::Deserialize)]
 struct UserResponse {
     /// Global admin status.
-    #[serde(default)]
     is_admin: bool,
     /// Global maintainer status.
-    #[serde(default)]
     is_maintainer: bool,
     /// Per-project membership list.
-    #[serde(default)]
     projects: Vec<UserProject>,
 }
 
 /// Per-project membership entry.
 #[derive(serde::Deserialize)]
 struct UserProject {
+    /// Exact project identifier attached to this membership entry.
+    name: String,
     /// True when the principal has project-admin role for this project.
-    #[serde(default)]
     is_project_admin: bool,
+}
+
+/// Sealed proof that the principal can exhaustively resolve one exact project.
+#[derive(Debug, Clone)]
+pub(crate) struct ExactProjectVisibility {
+    effective_project: String,
+}
+
+impl ExactProjectVisibility {
+    pub(crate) fn matches(&self, effective_project: &str) -> bool {
+        self.effective_project == effective_project
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -304,7 +315,7 @@ impl ApiClient {
     ///
     /// POST may commit server-side state; a blind retry could cause duplicate
     /// writes (ADR-011). The request body is serialized as JSON.
-    pub async fn post<B, T>(&self, url: &ValidatedUrl, path: &str, body: &B) -> Result<T, AppError>
+    async fn post<B, T>(&self, url: &ValidatedUrl, path: &str, body: &B) -> Result<T, AppError>
     where
         B: Serialize,
         T: DeserializeOwned,
@@ -331,7 +342,7 @@ impl ApiClient {
     ///
     /// PUT may commit server-side state; a blind retry could cause duplicate
     /// writes. The request body is serialized as JSON.
-    pub async fn put<B, T>(&self, url: &ValidatedUrl, path: &str, body: &B) -> Result<T, AppError>
+    async fn put<B, T>(&self, url: &ValidatedUrl, path: &str, body: &B) -> Result<T, AppError>
     where
         B: Serialize,
         T: DeserializeOwned,
@@ -358,7 +369,8 @@ impl ApiClient {
     ///
     /// The response body is drained (bounded) to release the underlying
     /// TCP connection cleanly, even when the body is not otherwise consumed.
-    pub async fn delete(&self, url: &ValidatedUrl, path: &str) -> Result<(), AppError> {
+    #[cfg(test)]
+    async fn delete(&self, url: &ValidatedUrl, path: &str) -> Result<(), AppError> {
         let full_url = Self::join_url(url, path);
         let resp = self
             .client
@@ -433,7 +445,7 @@ impl ApiClient {
     ///
     /// Used by the Skill adapter for the single bounded create-409 re-resolution
     /// path (S-001). All other non-2xx statuses propagate normally.
-    pub async fn post_or_conflict<B, T>(
+    async fn post_or_conflict<B, T>(
         &self,
         url: &ValidatedUrl,
         path: &str,
@@ -470,7 +482,7 @@ impl ApiClient {
     ///
     /// `query_params` are appended to the URL as percent-encoded `key=value` pairs.
     /// `file_parts` become repeated `files` multipart parts. Not retried.
-    pub async fn post_multipart(
+    async fn post_multipart(
         &self,
         url: &ValidatedUrl,
         path: &str,
@@ -497,7 +509,7 @@ impl ApiClient {
     }
 
     /// PUT `multipart/form-data` with scalar query parameters. Not retried.
-    pub async fn put_multipart(
+    async fn put_multipart(
         &self,
         url: &ValidatedUrl,
         path: &str,
@@ -521,6 +533,69 @@ impl ApiClient {
         }
         let body_bytes = Self::bounded_body(resp).await?;
         Self::deserialize_json(&body_bytes)
+    }
+
+    /// The sole production modifying boundary.
+    ///
+    /// A caller cannot supply a raw method/path/body. Those values are released
+    /// only by consuming an adapter-owned `PreparedWrite` whose private seal
+    /// contains completed, kind-specific read evidence and the linked projected
+    /// request (R-001 / SEC-Q007-002).
+    pub(crate) async fn dispatch_prepared(
+        &self,
+        url: &ValidatedUrl,
+        prepared: PreparedWrite,
+    ) -> Result<PreparedWriteResponse, AppError> {
+        match prepared.into_request()? {
+            PreparedRequest::Json {
+                method: ModificationMethod::Post,
+                path,
+                body,
+                conflict_is_resolution_signal: true,
+            } => self
+                .post_or_conflict::<_, serde_json::Value>(url, &path, &body)
+                .await
+                .map(|response| match response {
+                    Some(value) => PreparedWriteResponse::Success(value),
+                    None => PreparedWriteResponse::Conflict,
+                }),
+            PreparedRequest::Json {
+                method: ModificationMethod::Post,
+                path,
+                body,
+                conflict_is_resolution_signal: false,
+            } => self
+                .post::<_, serde_json::Value>(url, &path, &body)
+                .await
+                .map(PreparedWriteResponse::Success),
+            PreparedRequest::Json {
+                method: ModificationMethod::Put,
+                path,
+                body,
+                conflict_is_resolution_signal: _,
+            } => self
+                .put::<_, serde_json::Value>(url, &path, &body)
+                .await
+                .map(PreparedWriteResponse::Success),
+            PreparedRequest::Multipart {
+                method: ModificationMethod::Post,
+                path,
+                query_params,
+                file_parts,
+            } => self
+                .post_multipart(url, &path, &query_params, file_parts)
+                .await
+                .map(PreparedWriteResponse::Success),
+            PreparedRequest::Multipart {
+                method: ModificationMethod::Put,
+                path,
+                query_params,
+                file_parts,
+            } => self
+                .put_multipart(url, &path, &query_params, file_parts)
+                .await
+                .map(PreparedWriteResponse::Success),
+        }
     }
 
     /// Append percent-encoded query parameters to a base path.
@@ -610,22 +685,35 @@ pub fn encode_query_value(value: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// Verify that the authenticated principal has sufficient privilege for
-/// Datasource exhaustive enumeration and write operations (ADR-012 Option A).
+/// Workflow, Skill, or Datasource exhaustive resolution (ADR-012 Option A).
 ///
 /// Calls `GET {url}/v1/user` (route from `adapter-manifest-v2.42.0.json`
 /// §capabilityPreflight) and checks:
 /// - `is_admin == true` (global admin), OR
 /// - `is_maintainer == true` (global maintainer), OR
-/// - Any entry in `projects[]` where `is_project_admin == true`
+/// - One `projects[]` entry whose `name` equals `effective_project` and whose
+///   `is_project_admin` member is true
 ///
-/// Returns `Ok(())` when any condition holds; otherwise returns
+/// Returns a project-bound proof when any condition holds; otherwise returns
 /// `AppError::VisibilityUnproven`. Response body and role values are discarded
 /// after the check and are never forwarded to logs or output (SEC-005).
-pub async fn preflight_visibility(client: &ApiClient, url: &ValidatedUrl) -> Result<(), AppError> {
+pub async fn preflight_visibility(
+    client: &ApiClient,
+    url: &ValidatedUrl,
+    effective_project: &str,
+) -> Result<ExactProjectVisibility, AppError> {
     let user: UserResponse = client.get(url, "/v1/user").await?;
 
-    if user.is_admin || user.is_maintainer || user.projects.iter().any(|p| p.is_project_admin) {
-        return Ok(());
+    if user.is_admin
+        || user.is_maintainer
+        || user
+            .projects
+            .iter()
+            .any(|project| project.name == effective_project && project.is_project_admin)
+    {
+        return Ok(ExactProjectVisibility {
+            effective_project: effective_project.to_owned(),
+        });
     }
 
     Err(AppError::VisibilityUnproven(
@@ -1006,7 +1094,7 @@ mod tests {
 
         let url = test_url(&server.url());
         let client = test_client(&server.url());
-        preflight_visibility(&client, &url)
+        preflight_visibility(&client, &url, "my-proj")
             .await
             .expect("global admin must pass preflight");
         _mock.assert_async().await;
@@ -1029,7 +1117,7 @@ mod tests {
 
         let url = test_url(&server.url());
         let client = test_client(&server.url());
-        preflight_visibility(&client, &url)
+        preflight_visibility(&client, &url, "my-proj")
             .await
             .expect("global maintainer must pass preflight");
         _mock.assert_async().await;
@@ -1054,10 +1142,83 @@ mod tests {
 
         let url = test_url(&server.url());
         let client = test_client(&server.url());
-        preflight_visibility(&client, &url)
+        preflight_visibility(&client, &url, "my-proj")
             .await
             .expect("project-admin must pass preflight");
         _mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn preflight_visibility_other_project_admin_is_visibility_unproven() {
+        let mut server = mockito::Server::new_async().await;
+        let visibility = server
+            .mock("GET", "/v1/user")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"is_admin":false,"is_maintainer":false,"projects":[{"name":"other-project","is_project_admin":true}]}"#,
+            )
+            .create_async()
+            .await;
+
+        let url = test_url(&server.url());
+        let client = test_client(&server.url());
+        let error = preflight_visibility(&client, &url, "my-project")
+            .await
+            .expect_err("another project's admin role is not sufficient evidence");
+        assert!(matches!(error, AppError::VisibilityUnproven(_)));
+        visibility.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn preflight_visibility_strictly_decodes_every_consumed_field() {
+        let invalid_responses = [
+            r#"{"is_maintainer":false,"projects":[]}"#,
+            r#"{"is_admin":false,"projects":[]}"#,
+            r#"{"is_admin":false,"is_maintainer":false}"#,
+            r#"{"is_admin":false,"is_maintainer":false,"projects":[{"is_project_admin":true}]}"#,
+            r#"{"is_admin":false,"is_maintainer":false,"projects":[{"name":"my-project"}]}"#,
+            r#"{"is_admin":"false","is_maintainer":false,"projects":[]}"#,
+            r#"{"is_admin":false,"is_maintainer":false,"projects":[{"name":"my-project","is_project_admin":"true"}]}"#,
+        ];
+
+        for response in invalid_responses {
+            let mut server = mockito::Server::new_async().await;
+            let visibility = server
+                .mock("GET", "/v1/user")
+                .with_status(200)
+                .with_header("content-type", "application/json")
+                .with_body(response)
+                .create_async()
+                .await;
+            let url = test_url(&server.url());
+            let client = test_client(&server.url());
+            let error = preflight_visibility(&client, &url, "my-project")
+                .await
+                .expect_err("invalid consumed field must fail compatibility");
+            assert!(matches!(error, AppError::ApiIncompatible(_)));
+            visibility.assert_async().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn preflight_visibility_ignores_additive_unconsumed_fields() {
+        let mut server = mockito::Server::new_async().await;
+        let visibility = server
+            .mock("GET", "/v1/user")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"is_admin":false,"is_maintainer":false,"projects":[{"name":"my-project","is_project_admin":true,"future_project_field":42}],"future_top_level":{"nested":true}}"#,
+            )
+            .create_async()
+            .await;
+        let url = test_url(&server.url());
+        let client = test_client(&server.url());
+        preflight_visibility(&client, &url, "my-project")
+            .await
+            .expect("additive unconsumed fields must remain compatible");
+        visibility.assert_async().await;
     }
 
     // -----------------------------------------------------------------------
@@ -1079,7 +1240,9 @@ mod tests {
 
         let url = test_url(&server.url());
         let client = test_client(&server.url());
-        let err = preflight_visibility(&client, &url).await.unwrap_err();
+        let err = preflight_visibility(&client, &url, "proj")
+            .await
+            .unwrap_err();
         assert!(
             matches!(err, AppError::VisibilityUnproven(_)),
             "no qualifying role must produce AppError::VisibilityUnproven, got {err:?}"
@@ -1105,7 +1268,9 @@ mod tests {
 
         let url = test_url(&server.url());
         let client = test_client(&server.url());
-        let err = preflight_visibility(&client, &url).await.unwrap_err();
+        let err = preflight_visibility(&client, &url, "proj")
+            .await
+            .unwrap_err();
         assert!(
             matches!(err, AppError::VisibilityUnproven(_)),
             "empty projects + no global roles must produce VisibilityUnproven, got {err:?}"
@@ -1114,27 +1279,28 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // T-002 AC: preflight_visibility — missing role fields default to false
+    // T-003/IR-012: missing consumed role fields are incompatible
     // -----------------------------------------------------------------------
 
     #[tokio::test]
-    async fn preflight_visibility_missing_role_fields_default_to_unprivileged() {
+    async fn preflight_visibility_missing_role_fields_are_api_incompatible() {
         let mut server = mockito::Server::new_async().await;
         let _mock = server
             .mock("GET", "/v1/user")
             .with_status(200)
             .with_header("content-type", "application/json")
-            // Minimal response: no role fields present; all default to false.
             .with_body(r#"{"login":"alice"}"#)
             .create_async()
             .await;
 
         let url = test_url(&server.url());
         let client = test_client(&server.url());
-        let err = preflight_visibility(&client, &url).await.unwrap_err();
+        let err = preflight_visibility(&client, &url, "proj")
+            .await
+            .unwrap_err();
         assert!(
-            matches!(err, AppError::VisibilityUnproven(_)),
-            "missing role fields must default to false → VisibilityUnproven, got {err:?}"
+            matches!(err, AppError::ApiIncompatible(_)),
+            "missing role fields must fail compatibility, got {err:?}"
         );
         _mock.assert_async().await;
     }

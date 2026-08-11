@@ -43,13 +43,18 @@ unsupported.
 | Entity | Evidence-backed resolution and write boundary |
 |---|---|
 | Assistant | direct slug/project read, POST, PUT-by-ID; partial unique project/slug persistence constraint |
-| Workflow | exhaustive full list pages expose editable persisted string `meta_config`, project, ID and abilities; POST/PUT preserve identity record; no record uniqueness/conditional write |
-| Skill | `per_page=100` list/detail/POST/PUT; uniqueness is `(name, creator, project)`, so global natural-key resolution is exhaustive and ambiguity-refusing |
+| Workflow | zero-indexed full-list pagination starts at `page=0` and uses `offset=page*per_page`; exhaustive pages expose editable persisted string `meta_config`, project, ID and abilities; POST/PUT preserve identity record; no record uniqueness/conditional write |
+| Skill | zero-indexed list pagination starts at `page=0` and uses `offset=page*per_page`; the CLI pins `per_page=100`; list/detail/POST/PUT plus creator-scoped uniqueness `(name, creator, project)` require exhaustive, ambiguity-refusing resolution |
 | Datasource | zero-indexed `GET /v1/index` pages return `data` plus `pagination`; detail and ordinary per-kind create/update exist; no database natural-key uniqueness evidenced and `find_id` returns a first row, so exhaustive resolution is required |
 
 Capability preflight is `GET /v1/user`, whose pinned response exposes
 `is_admin`, `is_maintainer`, and `projects[].{name,is_project_admin}`. Existing
-entity write proof additionally consumes per-row `user_abilities`.
+entity write proof additionally consumes per-row `user_abilities`. For
+Workflow, Skill, and Datasource, project-admin evidence qualifies only when `projects[].name`
+equals the declaration's exact effective project and that same entry has
+`is_project_admin=true`; an admin entry for another project is not evidence for
+the requested operation. Assistant uses its exact `(project, slug)` read and
+does not require `GET /v1/user` admin evidence.
 
 The Keycloak token endpoint is not inferred from this source baseline,
 `GET /v1/info`, or an API hostname. Product specification v24 requires one

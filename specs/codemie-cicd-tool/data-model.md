@@ -1,14 +1,15 @@
 # Data model
 
-Source: `specs/codemie-cicd-tool.md` v27. Status: NORMATIVE architecture
+Source: `specs/codemie-cicd-tool.md` v28. Status: NORMATIVE architecture
 model against backend `2.42.0` commit
 `2a481c290c99bf30ef80aadafa03d876a7f5f732`.
 
-Revision: v27 — SEC-001 credential input, SEC-002 ValidatedUrl/TLS/redirect,
+Revision: v28 — SEC-001 credential input, SEC-002 ValidatedUrl/TLS/redirect,
 SEC-003 resource budgets, SEC-005 identifier constraints (architecture
 remediation, 2026-08-10); Mode (c) Keycloak ROPC added (v26, 2026-08-10);
 per-file lint warning scope, ordering, and failure gating clarified (v27,
-2026-08-11).
+2026-08-11); source-derived compatibility identity and pre-write evidence
+clarified (v28, 2026-08-11).
 
 ## 1. Ownership and lifetime
 
@@ -107,11 +108,23 @@ Explicit adoption selects only its UUID. Another unmarked same-display-name row
 has no selection or veto role. Without explicit adoption, display-name evidence
 can only yield `AdoptionRequired`.
 
+Each required Workflow enumeration pass has `page_base: 0`,
+`per_page: 100`, and requests `[0]` when `pages == 0` or `0..pages-1`
+otherwise. Initial resolution and post-write verification share the same
+zero-based scanner and validate the manifest page echo/count invariants before
+their evidence can be sealed.
+
 ## 5. Skill identity model
 
 ```text
 SkillCandidate = {server_id, project, name, created_by, abilities, detail?}
-SkillSnapshot  = {all_pages, pagination_fingerprint, exact_candidates}
+SkillSnapshot  = {
+  page_base: 0,
+  requested_pages: 0..pages-1 | [0] when pages == 0,
+  pagination_fingerprint: {pages,total,perPage:100},
+  all_pages,
+  exact_candidates
+}
 SkillResolution = Zero | Unique | Ambiguous | Unstable | IncompleteVisibility
 ```
 
@@ -120,6 +133,11 @@ Every page and required visibility scope must be complete. One returned ID is a
 transient route selector. More than one exact candidate is ambiguous. A
 creator-scoped server uniqueness constraint does not change the authored
 `(project,name)` key.
+
+The first Skill request is always page 0. Each response must echo the requested
+page and satisfy the manifest page-count invariants. Initial resolution,
+post-write verification, and create-409 re-resolution share this zero-based
+scanner; no state may substitute page 1 as the origin.
 
 ## 6. Datasource union
 
@@ -197,9 +215,10 @@ and post-write identity verification.
 ApplyState =
   LocalValidated
   -> Authenticated
-  -> CompatibilityChecked
-  -> IdentityResolved
+  -> OperationPreflightComplete
+  -> NonMutatingResolutionComplete
   -> CreateProjected | UpdateProjected
+  -> PrewriteEvidenceEstablished(PreparedWrite)
   -> WriteAttempted
   -> IdentityVerified
   -> Succeeded(created | updated)
@@ -207,6 +226,46 @@ ApplyState =
 
 Any failure transitions directly to `Failed(SafeDiagnostic)`. A write-attempt
 failure may be uncertain; the CLI performs no automatic delete or rollback.
+
+`OperationPreflightComplete` is a kind-specific union:
+
+```text
+OperationPreflight =
+  AssistantAdminPreflightNotRequired
+| ExactProjectVisibility {kind: Workflow | Datasource | Skill}
+```
+
+`ExactProjectVisibility` requires global admin/maintainer or a single
+`GET /v1/user.projects[]` entry whose `name` equals the exact effective project
+and whose `is_project_admin` value is true. An admin entry for another project
+is not evidence. Assistant does not require `/v1/user`; its direct exact
+`(project, slug)` response is validated during the following non-mutating
+resolution state and becomes part of the sealed evidence.
+
+`NonMutatingResolutionComplete` means every operation-applicable identity,
+reference, detail/preservation, response-shape, and pagination read has been
+strictly validated. Only then may projection select create or update.
+`PrewriteEvidenceEstablished` is the final pre-write seal, not a semantic-
+version comparison:
+
+```text
+PrewriteEvidence = closed {
+  kind,
+  effective_project,
+  operation_preflight,
+  non_mutating_resolution_complete,
+  prepared_write: CreateRequest | UpdateRequest
+}
+```
+
+The HTTP modifying-request boundary accepts only `PreparedWrite` carrying this
+sealed evidence; there is no POST/PUT transition from any earlier state. A
+missing or invalid consumed field transitions to
+`Failed(E_API_INCOMPATIBLE)`; a valid capability response that fails the exact-
+project predicate transitions to `Failed(E_VISIBILITY_UNPROVEN)`. Both happen
+before a modifying request. `GET /v1/info.version` is not part of the evidence.
+Only additive, unconsumed response members are ignored; they neither satisfy
+required evidence nor expand a request.
 
 ## 8. Success and failure models
 

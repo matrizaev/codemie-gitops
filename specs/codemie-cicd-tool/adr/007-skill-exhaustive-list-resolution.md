@@ -4,6 +4,10 @@
 
 Accepted
 
+Amended 2026-08-11 for the pinned Skill pagination origin: page numbering is
+zero-based. The router accepts `page >= 0` with default `0`, the service and
+repository default to `0`, and repository offsets are `page * per_page`.
+
 ## Context
 
 The approved identity is `(project, name)`. The inspected server's persisted ID
@@ -52,11 +56,20 @@ For exact `(project,name)`:
 
 1. Preflight proves the CI principal has project-manager/admin visibility and
    write capability for the target project. Failure is exit 2 before write.
-2. Enumerate every page of `GET /v1/skills` with `per_page=100`, using exact
-   `project`, `project_with_marketplace`, and `search` hints where compatible.
-   Hints do not replace client filtering.
+2. Enumerate every page of `GET /v1/skills` with `per_page=100`, starting at
+   `page=0`, using exact `project`, `project_with_marketplace`, and `search`
+   hints where compatible. Always request page 0 once. If the response reports
+   `pages > 0`, request exactly pages `0..pages-1`; if it reports `pages == 0`,
+   stop after the empty page-0 response. Hints do not replace client filtering.
 3. Detect pagination cycles, repeated row IDs, changing totals/cursors, or
-   inconsistent snapshots. Compatible but unstable resolution is exit 1.
+   inconsistent snapshots. Each response must echo the requested page, return
+   `perPage=100`, and satisfy `pages=ceil(total/perPage)` with `pages==0` iff
+   `total==0`. An invalid origin, page echo, page size, page-count formula, or
+   request sequence is `E_API_INCOMPATIBLE`, exit 2 before write. Across
+   individually compatible responses, the `(pages,total,perPage)` fingerprint
+   must remain stable and the accumulated unique item count must equal `total`;
+   churn, repeated IDs, or totals that change during the scan remain entity-
+   resolution instability, exit 1 before write.
 4. Client-filter the complete visible set by exact project and exact name.
 5. Zero matches: POST once. One: prove write ability, GET any detail required by
    the pinned request mapping, and PUT by returned ID on every valid apply. More than one:
@@ -112,11 +125,16 @@ duplicate and never deletes one.
   detail/update routes, and authorization behavior.
 - Establish named owners for serialization, writer governance, inventory, and
   duplicate remediation.
-- Test 0/1/>1, >100 items, marketplace collisions, pagination drift, 409
-  recovery, forbidden detail/update, and post-write ambiguity.
+- Test empty page 0, one result on page 0, 101+ results over pages 0 and 1,
+  rejection of a first request/response at page 1, marketplace collisions,
+  pagination drift, 409 re-resolution, forbidden detail/update, and post-write
+  ambiguity. Create/update verification must reuse the same zero-based scan.
 
 ## References
 
-- Product specification v24: FR-005/006/011/021/022/031–034, DR-012,
+- Product specification v28: FR-005/006/011/021/022/031–034, IR-012, DR-012,
   PA-005, VR-009/010/016
+- Pinned source: `rest_api/routers/skill.py:198-316`,
+  `service/skill_service.py:295-370`, and
+  `repository/skill_repository.py:432-631`
 - `contracts/http-adapter.md` section 6

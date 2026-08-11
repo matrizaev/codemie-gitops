@@ -2,7 +2,7 @@
 
   ## 1. Document status
 
-  * **Status:** DRAFT — v27 — **READY FOR IMPLEMENTATION**
+  * **Status:** DRAFT — v28 — **READY FOR IMPLEMENTATION**
   * **Tool name:** `codemie-gitops`
   * **Owner:** Product Specification Owner (pending assignment to a named product owner)
   * **Source request:** User-provided request on 2026-08-06: "create a CI/CD tool for the CodeMie platform that will be able to store assistants, workflows, datasources, and skills in YAML files, lint them, and create/update on the server side."
@@ -12,7 +12,7 @@
     * `https://github.com/codemie-ai/codemie` — server (FastAPI + LangChain/LangGraph + PostgreSQL/SQLModel + Elasticsearch)
     * `https://github.com/codemie-ai/codemie-ui` — UI (out of scope for this tool)
     * `https://github.com/codemie-ai/codemie-code` — **different, existing** local-agent CLI; not to be confused with `codemie-gitops`
-  * **Last reviewed:** 2026-08-11 (v27)
+  * **Last reviewed:** 2026-08-11 (v28)
   * **Revision history:**
     * v1 (2026-08-06 15:27 UTC+3) — initial DRAFT, based on public docs only.
     * v2 (2026-08-06 15:53 UTC+3) — post-repo-analysis: schema, identity, cross-entity refs, auth resolved or narrowed.
@@ -22,7 +22,7 @@
     * v6 (2026-08-06 20:46 UTC+3) — OQ-8 initially resolved strict declarative behavior; its completeness rule was later superseded by v23 while retaining YAML as the source of authored request values.
     * v7 (2026-08-07) — Grilling session rounds 1 & 2: one entity per invocation; `plan` command removed; then-current mandatory-completeness behavior (superseded by v23); no secret interpolation in phase 1; multi-environment support deferred; GitHub Actions + GitLab CI named first-class; `codemie` assistant type only in phase 1; `codemie-gitops login` command added; Kubernetes-style envelope (`apiVersion`/`kind`/`metadata`/`spec`) confirmed; config file model defined; traceable management marker format defined; FR-018 removed; FR-021/022/023 revised; FR-024 added; OQ-10/12/13/19/21 resolved.
     * v8 (2026-08-07) — Grilling session round 3: file naming free-form (Q19); directory structure free-form, `kind` read from inside YAML (Q20); config file renamed to `.codemie/config.yaml` (Q21); `metadata.project` omittable when config provides default (Q22); `contentFrom` sidecar for skills in phase 1 (Q23); `--output json` flag added (Q24), QR-004 resolved; FR-017 updated; FR-025/026/027 added; §30 round 3 closed.
-    * v9 (2026-08-07) — Source code analysis: OQ-2 resolved (`GET /v1/info` returns server version); OQ-17 resolved (`WorkflowMode` confirmed `"Sequential"` default / `"Autonomous"` deprecated); VR-004 resolved (full enum inventory from models); OQ-16 upgraded to code-evidence-available; A-3 confirmed (local-auth only); C-6 corrected (`custom_metadata` on Assistant only, not Skill); FR-020 corrected accordingly; §3 evidence updated.
+    * v9 (2026-08-07) — Source code analysis: OQ-2 found that `GET /v1/info` returns the semantic application version (its compatibility meaning was later clarified by v28); OQ-17 resolved (`WorkflowMode` confirmed `"Sequential"` default / `"Autonomous"` deprecated); VR-004 resolved (full enum inventory from models); OQ-16 upgraded to code-evidence-available; A-3 confirmed (local-auth only); C-6 corrected (`custom_metadata` on Assistant only, not Skill); FR-020 corrected accordingly; §3 evidence updated.
     * v10 (2026-08-07) — Product decision: no management marker in v1; FR-019 and FR-020 deleted; `--adopt-existing` flag removed; `apply` now unconditionally creates or updates by natural key; `refused-existing` and `adopted` action labels removed; managed/unmanaged terminology removed; C-6 and OQ-20 closed as N/A.
     * v11 (2026-08-07) — OQ-16 recorded an early Datasource interpretation that was later superseded; v22 is authoritative.
     * v12 (2026-08-07) — A-3 fully resolved (platform team response): authentication MUST use Keycloak OIDC `client_credentials` grant only. `POST /v1/local-auth/login` dropped as a supported CI path. FR-024 `login` command revised to wrap the OIDC token endpoint. New operational constraint: service-account credentials access Project integrations only (personal integrations ignored). `CODEMIE_CLIENT_ID`, `CODEMIE_CLIENT_SECRET`, `CODEMIE_AUTH_URL` env vars added. v24 later made the exact endpoint an explicit configuration prerequisite.
@@ -41,6 +41,7 @@
     * v25 (2026-08-10) — SEC-001 remediation: secret-bearing CLI flags (`--token`, `--client-secret`, `--password`) removed from the approved command surface. Bearer token, client secret, and password are now accepted exclusively through environment variables (`CODEMIE_TOKEN`, `CODEMIE_CLIENT_SECRET`, `CODEMIE_PASSWORD`). The non-secret selector `--client-id` (and `--email`) MAY remain flags. Passing a secret value as a flag is an exit-2 local failure before any network access. FR-009, FR-017, FR-024, IR-006, and QR-007 updated; CLI contract, data model, tasks, and adapter manifest updated consistently.
     * v26 (2026-08-10) — Added Mode (c) Keycloak ROPC (`grant_type=password`) to login command: human-user Keycloak auth with `CODEMIE_EMAIL` + `CODEMIE_PASSWORD` + `auth_url`; `CODEMIE_CLIENT_ID` defaults to `codemie-sdk`. Modes (a) `client_credentials` and (b) local-auth unchanged. FR-017, FR-024, IR-006, QR-007, §12 Authentication, §24 Constraints, §29 Handoff updated; SC-020 and AC-FR-024-08 added.
     * v27 (2026-08-11) — Clarified per-file lint warning scope: after validating the complete repository closure, lint emits secret-like and deprecation warnings only for the declaration selected by `--file`, in deterministic warning-code/canonical-field-path order. Failed lint emits no warnings and uses only the failure diagnostic contract. FR-014 and AC-FR-014-01 updated.
+    * v28 (2026-08-11) — Resolved the target-compatibility identity conflict: the source-derived contract pinned to backend tag `2.42.0`, commit `2a481c290c99bf30ef80aadafa03d876a7f5f732`, is the compatibility baseline. `GET /v1/info.version` is semantic application-version observability, not source/API identity, and MUST NOT be compared with the pinned Git SHA or independently accept/reject `apply`. The exact pinned clone remains compatible when its operation-applicable pre-write contract evidence passes even though it reports `APP_VERSION=0.16.0`. Missing or invalid required consumed-contract evidence still fails as `E_API_INCOMPATIBLE`, exit 2, before any modifying request. Added SC-021, IR-011/012, AC-IR-011-01, and AC-IR-012-01.
 
   ---
 
@@ -58,10 +59,11 @@
   * **No secret interpolation.** Platform integrations handle external credentials; credentials are not stored in YAML.
   * **Non-interactive and CI-first:** `lint` (offline), `apply` (online), `login` (token acquisition).
   * **Stable exit taxonomy:** 0 = success; 1 = entity reconciliation or server-side failure after valid local input; 2 = local parsing/schema/validation/configuration failure, authentication/authorization precondition, connectivity/compatibility failure, or fatal error. (FR-011)
+  * **Source-derived target compatibility:** the exact pinned CodeMie backend source is the phase-1 compatibility baseline. Its semantic `APP_VERSION=0.16.0` is not a Git/API identity and cannot by itself reject the target. Before any modifying request, `apply` must still establish every operation-applicable compatibility fact available from the required non-mutating contract evidence; missing or invalid required evidence fails closed. (IR-011, IR-012)
   * **Safe output boundary:** successful outcomes go to stdout; all failure/error diagnostics go to stderr and leave stdout empty. Raw bodies, payloads, credentials, tokens, authorization/cookie data, secret fields, and secret-like values are never logged or persisted. Diagnostics use only explicitly allowlisted non-sensitive fields. Successful `login` token stdout is the sole intentional exception. (FR-011, FR-016, FR-024, FR-026, QR-007)
   * **No deletes** in phase 1. (FR-008)
 
-  **Status:** `READY FOR ARCHITECTURE PLANNING`. Workflow/Skill identity, always-write apply behavior, omission-to-null payload semantics, exit codes, safe diagnostics, Workflow reference shapes, inline assistants, and generic Datasource authoring are product-approved. Every authorable Datasource kind uses its ordinary existing create/update format with field requiredness/nullability pinned under DR-012. Implementation remains gated on a pinned target API contract and proof of the required visibility, pagination, metadata-preservation, and authorization behavior.
+  **Status:** `READY FOR ARCHITECTURE PLANNING`. Workflow/Skill identity, always-write apply behavior, omission-to-null payload semantics, target compatibility identity, exit codes, safe diagnostics, Workflow reference shapes, inline assistants, and generic Datasource authoring are product-approved. Every authorable Datasource kind uses its ordinary existing create/update format with field requiredness/nullability pinned under DR-012. Implementation remains gated on the pinned source-derived target contract and proof of the required pre-write response, visibility, pagination, metadata-preservation, and authorization behavior.
 
   ---
 
@@ -90,7 +92,7 @@
   * `src/codemie/workflows/config_yaml_validation.py` and `config_resources_validation.py` — the server's own workflow YAML validators.
   * `src/codemie/service/kata_import_service.py` — SHA-256 content checksum pattern, kebab-case IDs, semver version, staged validation. Strongest existing pattern to reuse.
   * `src/codemie/rest_api/routers/local_auth_router.py` — `POST /v1/local-auth/login` requires **both** `config.ENABLE_USER_MANAGEMENT == True` **and** `config.IDP_PROVIDER == "local"`; returns 400 otherwise. Rate-limited 5/15 min.
-  * `src/codemie/rest_api/routers/common.py` — `GET /v1/info` returns `{message, version, description}` where `version = APP_VERSION` (current: `"0.16.0"`). This is the server-side version indicator.
+  * `src/codemie/rest_api/routers/common.py` — `GET /v1/info` returns `{message, version, description}` where `version = APP_VERSION` (current: `"0.16.0"`). This is semantic application-version observability, not a source commit or API-contract identity.
   * `src/codemie/rest_api/security/authentication.py` — standard auth delegates to `IdpFactory.create()`. Internal service-to-service auth uses HMAC `X-Bind-Key` (not for external use). **No static API key mechanism in base package.**
   * `src/codemie/rest_api/security/idp/factory.py` — `IdpFactory` registry: base package registers `LocalIdp` only. Enterprise providers (Keycloak, OIDC) registered at startup via `IdpFactory.register()`. In enterprise deployments, `POST /v1/local-auth/login` returns 400.
   * `src/codemie/core/constants.py` — `IdentityProvider.LOCAL = "local"` only in base. `APP_VERSION = "0.16.0"` in config.
@@ -104,6 +106,7 @@
 
   * `specs/codemie-cicd-tool/adr/007-skill-exhaustive-list-resolution.md` — the server does not enforce Skill uniqueness at `(project, name)`; exhaustive client resolution, ambiguity refusal, privileged visibility, and residual create races are required for a no-server-change solution.
   * `specs/codemie-cicd-tool/adr/008-workflow-meta-config-identity-and-adoption.md` — the current Workflow API has no persisted slug lookup; a reserved Workflow `meta_config` identity record and explicit in-place legacy adoption preserve natural-key authoring without server modification.
+  * `specs/codemie-cicd-tool/adr/004-openapi-subset-compatibility-gate.md`, `contracts/source-baseline.md`, and `contracts/http-adapter.md` — pin backend tag `2.42.0`, commit `2a481c290c99bf30ef80aadafa03d876a7f5f732`, as the source-derived consumed-contract baseline; record that its package, tag, and default `APP_VERSION=0.16.0` disagree; treat `/v1/info` as observability only; and retain strict non-mutating compatibility evidence before writes.
   * `specs/codemie-cicd-tool/plan.md`, `data-model.md`, `research.md`, `tasks.md`, and `contracts/{cli,declaration-v1alpha1,http-adapter}.md` — trace the identity decisions to visibility, pagination, failure, concurrency, output, and operational prerequisites.
   * `specs/codemie-cicd-tool/contracts/outcome.schema.json` — Workflow and Skill outcomes use authored natural keys and omit server IDs.
 
@@ -122,6 +125,7 @@
   * **Always-write apply (product decision, 2026-08-09, v22; resolves ARCH-B01):** every valid invocation creates a safely missing entity or updates an exactly resolved existing entity. The tool does not compare desired/current state to skip the request and reports only `created` or `updated`.
   * **Optional-field materialization (product decision, 2026-08-09, v23; resolves VER-012):** an optional authorable server-request field may be omitted from YAML; the CLI emits it as explicit JSON null in every applicable create or update request rather than allowing the server to select a default. Explicit YAML null produces the same payload value where null is accepted. A field that is required by structure or whose pinned applicable request rejects null remains authoring-required and omission fails locally with exit code 2.
   * **Explicit Keycloak endpoint (product decision, 2026-08-09, v24):** Keycloak `login` requires a token endpoint supplied through `--auth-url`, `CODEMIE_AUTH_URL`, or `.codemie/config.yaml` `auth_url`. The CLI never derives this URL from the CodeMie API URL or a domain/path convention. The endpoint is non-secret; client IDs, client secrets, bearer tokens, email addresses, and passwords remain flag/environment inputs only and are prohibited from repository configuration.
+  * **Pinned-source compatibility (user decision, 2026-08-11, v28):** the CLI is built against the currently pinned reference-only backend source at tag `2.42.0`, commit `2a481c290c99bf30ef80aadafa03d876a7f5f732`. That exact source baseline MUST be treated as compatible even though its `/v1/info` response reports semantic `APP_VERSION=0.16.0` rather than the Git SHA. The semantic version MUST NOT independently gate `apply`; all operation-applicable, source-derived non-mutating contract evidence remains required before a modifying request.
 
   ---
 
@@ -441,6 +445,14 @@
     * `auth_url` is missing and email+password are present but no CodeMie API URL is configured either → exit code 2 before network access with missing-configuration diagnostic.
     * Every failure leaves stdout empty and writes only a safe synthesized diagnostic to stderr.
 
+  ### SC-021 — Apply to the exact pinned backend source
+  * **Actor:** CI runner or local developer.
+  * **Trigger:** The actor applies a valid declaration to a deployment built from backend tag `2.42.0`, commit `2a481c290c99bf30ef80aadafa03d876a7f5f732`.
+  * **Preconditions:** The deployment reports `APP_VERSION=0.16.0` through `GET /v1/info`; authentication and the requested operation's other preconditions are satisfied.
+  * **Main flow:** The tool treats the semantic application version as observability only, establishes the requested operation's required source-derived contract evidence through non-mutating reads, and proceeds to ordinary identity resolution and the selected create or update only after that evidence passes.
+  * **Failure flow:** If a required consumed response field or other operation-applicable contract behavior is missing or invalid, the tool exits code 2 with `E_API_INCOMPATIBLE`, leaves stdout empty, emits only an FR-016-safe diagnostic to stderr, and makes no modifying request.
+  * **Expected outcome:** The exact pinned source is not rejected because `0.16.0` differs from the pinned Git SHA. The semantic value neither overrides nor substitutes for the required pre-write contract evidence.
+
   ---
 
   ## 14. Functional requirements
@@ -592,7 +604,7 @@
   ## 16. Integration requirements
 
   * **IR-001** — The tool MUST integrate with the CodeMie platform via its REST API (`/openapi.json`, `/docs`) directly. No SDK wrapper in phase 1. The tool MUST NOT hard-depend on the `codemie` server package (the Rust binary cannot import Python packages). (OQ-4 resolved.)
-  * **IR-002** — The tool MUST include `apiVersion` in every YAML and reject files with an unrecognised version. Mismatch between tool schema version and target server: fail fast. Server-side version indicator: `GET /v1/info` → `{"version": "..."}` (OQ-2 resolved). Enforcement policy (whether to gate `apply` on server version) is an architect decision; per-entity output remains limited to FR-026.
+  * **IR-002** — The tool MUST include `apiVersion` in every YAML and reject files with an unrecognised version before network access. Declaration `apiVersion` compatibility is determined by the bundled authoring schema and MUST NOT be inferred from `GET /v1/info.version`.
   * **IR-003** — The tool MUST support HTTPS and respect environment-provided CA bundles / proxies.
   * **IR-004** — Network failures (connection error, timeout, 5xx) during apply SHOULD be retried with bounded exponential backoff. **Concrete policy: implementation decision — see §29.**
   * **IR-005** — The tool MUST NOT require write access to entity types outside the four in-scope kinds.
@@ -606,6 +618,8 @@
   * **IR-008** — Every Datasource write MUST use the selected kind's compatible ordinary create/update route and operation-specific request format. Optional authorable request properties MUST be present as explicit null under FR-021/DR-012 rather than omitted to select a server default.
   * **IR-009** — The target CodeMie deployment MUST expose list/read responses sufficient for the tool to prove complete Workflow and Skill visibility, enumerate every result page, exact-filter the approved natural key, verify write permission, and detect post-write ambiguity. If the compatible API cannot supply that evidence, Workflow or Skill apply MUST fail before the affected write.
   * **IR-010** — The target Workflow API MUST preserve the reserved Workflow identity record and unrelated `meta_config` members on create/update and return them on every response used for exhaustive identity resolution. The target Skill API MUST return stable pagination, exact project/name values, permissions, and server IDs for exhaustive resolution. These are compatibility prerequisites, not permissions to modify the server implementation from this repository.
+  * **IR-011** — The source-derived consumed contract pinned to CodeMie backend tag `2.42.0`, commit `2a481c290c99bf30ef80aadafa03d876a7f5f732`, MUST be the phase-1 target compatibility baseline. A deployment built from that exact source MUST NOT fail compatibility solely because `GET /v1/info.version` reports semantic `APP_VERSION=0.16.0` rather than the pinned Git SHA. The tool MUST treat `/v1/info.version` as observability only: it MUST NOT compare that value with the Git SHA or use that value alone to accept or reject `apply`.
+  * **IR-012** — Before any POST, PUT, or other modifying request, `apply` MUST establish every compatibility fact for the requested operation that the pinned consumed contract requires and that can be checked through non-mutating target responses, including required consumed response fields, response shapes, and pagination behavior. A missing or invalid required fact MUST produce `E_API_INCOMPATIBLE`, exit code 2, empty stdout, an FR-016-safe stderr diagnostic, and no modifying request. Additional unconsumed response fields and `/v1/info.version` variation alone MUST NOT fail compatibility or expand the declaration/request contract.
 
   ---
 
@@ -787,6 +801,37 @@
   Then the tool exits code 2
   And stdout is empty
   And stderr contains a safe precondition, compatibility, connectivity, or availability diagnostic as applicable
+  ```
+
+  ### AC-IR-011-01 — The exact pinned clone is not rejected by its semantic APP_VERSION
+  ```gherkin
+  Given the tool's consumed target contract is pinned to backend tag 2.42.0 and commit 2a481c290c99bf30ef80aadafa03d876a7f5f732
+  And the target is built from that exact source
+  And GET /v1/info reports version 0.16.0
+  And every operation-applicable non-mutating contract check passes
+  When apply is invoked with valid input and valid credentials
+  Then the tool does not compare 0.16.0 with the pinned Git SHA
+  And the tool does not emit E_API_INCOMPATIBLE solely because those values differ
+  And the tool proceeds to the ordinary identity, authorization, and write flow
+  And no modifying request occurs before all required pre-write evidence has passed
+  ```
+
+  ### AC-IR-012-01 — Missing required contract evidence fails before write
+  ```gherkin
+  Given local input and credentials are valid
+  And a non-mutating response required by the requested operation omits or invalidates a consumed field, response shape, or pagination behavior from the pinned contract
+  When apply is invoked
+  Then the tool exits code 2 with E_API_INCOMPATIBLE
+  And stdout is empty
+  And stderr contains only an FR-016-safe compatibility diagnostic
+  And no POST, PUT, or other modifying request is made
+  And a matching or non-matching GET /v1/info.version does not override the failure
+
+  Given all required consumed contract evidence is valid
+  And a target response contains only additional unconsumed fields
+  When apply is invoked
+  Then those additional fields alone do not cause E_API_INCOMPATIBLE
+  And they do not expand accepted declarations or outbound request fields
   ```
 
   ### AC-FR-014-01 — Lint warns on suspicious credential field
@@ -1230,6 +1275,8 @@
   * Empty YAML or YAML with only comments → lint fails with exit code 2: "no entity declared."
   * `kind` not in the allowed set → lint fails with exit code 2 (VR-001).
   * Unknown `apiVersion` → lint and apply fail, exit code 2.
+  * **Exact pinned backend reports `APP_VERSION=0.16.0`** → this semantic value is expected observability and does not cause `E_API_INCOMPATIBLE` merely because it differs from the pinned Git SHA; applicable pre-write contract checks still run.
+  * **Required consumed target response field, shape, or pagination behavior is missing or invalid** → apply fails with `E_API_INCOMPATIBLE`, exit code 2, before any modifying request; `/v1/info.version` cannot override the failure.
   * **Unknown/extra fields in YAML** → lint and apply fail with exit code 2 before network access; offending field name and location reported (FR-023).
   * **Missing authoring-required field** → lint fails with exit code 2, reports the field path, and makes no server call (FR-022).
   * **Optional authorable field omitted** → lint accepts it; create and update include the applicable request property as explicit JSON null (FR-021/022).
@@ -1332,6 +1379,7 @@
   * **C-10 — Datasource authoring surface: RESOLVED in v22/v23, superseding the v17–v19 interpretations.** The tool uses ordinary create/update formats, including supported source/content/file fields, and applies DR-012 to optional authorable properties. No product behavior is defined for server-internal processing.
   * **C-11 — Datasource integrations vs. managed-asset natural references: RESOLVED generically in v20.** Opaque integration identifiers exposed by an existing per-kind Datasource request are ordinary configuration values, not one of the four managed entities and not cross-entity references. The tool sends the exact non-secret per-kind value without inventing an alias/resolver. Integration provisioning, access grants, and credential acquisition remain uniformly out of scope.
   * **C-12 — Explicit versus derived Keycloak endpoint: RESOLVED in v24.** The explicit-only alternative is approved. Keycloak `login` uses `--auth-url`, then `CODEMIE_AUTH_URL`, then config `auth_url`; it never derives or probes an endpoint from the CodeMie API URL or a convention. Architecture language that retains a possible future derivation branch is superseded and requires refresh, not another product decision.
+  * **C-13 — Semantic APP_VERSION versus pinned source identity: RESOLVED in v28.** The exact pinned backend source reports `APP_VERSION=0.16.0` while its Git identity is tag `2.42.0`, commit `2a481c290c99bf30ef80aadafa03d876a7f5f732`. `/v1/info.version` is observability only and MUST NOT be compared with the Git SHA or independently gate `apply`. Compatibility is established from the requested operation's required source-derived contract evidence; missing or invalid required evidence still fails before write under IR-012.
 
   ---
 
@@ -1340,7 +1388,7 @@
   | ID | Question | Status | Resolution | Affects | Owner |
   |---|---|---|---|---|---|
   | OQ-1 | Field schema per entity? | ✅ RESOLVED | See §15. | §15 | — |
-  | OQ-2 | Schema versioning? | ✅ RESOLVED | Tool uses `apiVersion: codemie.epam.com/v1alpha1`. Server exposes version via `GET /v1/info` → `{"version": "APP_VERSION"}` (current: `"0.16.0"`). Compatibility gating is an architecture decision; per-entity output remains limited to FR-026. | DR-002, IR-002 | — |
+  | OQ-2 | Schema and target compatibility versioning? | ✅ RESOLVED (refined v28) | Tool declarations use `apiVersion: codemie.epam.com/v1alpha1`, validated against the bundled authoring schema. The target's `GET /v1/info.version` is semantic observability only, not declaration-schema, source-commit, or API-contract identity. The exact pinned backend clone reporting `0.16.0` is not rejected for differing from its Git SHA; operation-applicable source-derived contract evidence governs target compatibility and must pass before writes. | DR-002, IR-002, IR-011/012 | — |
   | OQ-3 | Identity model? | ✅ RESOLVED | Authored/reported natural keys per entity; no client state file. Workflow persists `(project, slug)` in its reserved server `meta_config` identity record. Skill uses exhaustive exact client resolution. Returned server IDs are internal. | FR-015, FR-028–032, DR-003/005/007/008 | — |
   | OQ-4 | REST directly or wrap SDK? | ✅ RESOLVED | REST direct. No SDK wrapper in phase 1. Rust rules out Python SDK reuse regardless. | IR-001 | — |
   | OQ-5 | Partial-failure behavior? | ✅ RESOLVED (superseded) | One entity per invocation. No batch. FR-018 deleted. | FR-005 | — |
@@ -1388,6 +1436,7 @@
   | Product decision v22 (ARCH-B01) | SC-005 | FR-005/006/012/029/031/036; DR-011; QR-002 | AC-FR-005-02, AC-FR-006-01, AC-DR-011-01, AC-IR-008-01 |
   | Derived (safety) | — | FR-008 | AC-FR-008-01 |
   | Derived (CI ergonomics) | SC-009 | FR-009, FR-011 | AC-FR-009-01 |
+  | User decision v28 plus pinned source/contract evidence | SC-021 | IR-002, IR-011/012 | AC-IR-011-01, AC-IR-012-01 |
   | Product decision Q3/Q12 | SC-011 | FR-024, IR-006 | AC-FR-024-01 |
   | Product decision v24 (explicit Keycloak endpoint) | SC-011 | FR-017/024; IR-006 | AC-FR-017-01/02, AC-FR-024-01/03/07 |
   | Product decision v26 (Keycloak ROPC Mode (c)) | SC-020 | FR-017/024; IR-006; QR-007 | AC-FR-024-08 |
@@ -1412,6 +1461,7 @@
   * Non-destructive, always-write apply: create when safely missing; update on every valid invocation when safely present; no desired/current comparison, skipped write, or `unchanged` outcome.
   * Offline `lint` + online `apply` + `login` token acquisition. No `plan` in phase 1.
   * Per-environment targeting via `CODEMIE_URL` + `CODEMIE_TOKEN`. No overlay/templating in phase 1.
+  * Target compatibility is derived from the pinned consumed source contract, not semantic `GET /v1/info.version`. The exact pinned backend clone reporting `0.16.0` is compatible when required operation-specific pre-write evidence passes; missing or invalid required evidence remains a fail-before-write `E_API_INCOMPATIBLE` outcome.
   * Explicit authored desired-state values are preserved. Required/null-rejecting fields must be authored; optional authorable request fields may be omitted and then materialize as explicit JSON null in every applicable create/update payload. Explicit YAML null is equivalent where the pinned request accepts it. The bounded transformations and mixed-ownership Workflow `meta_config` rule in FR-021/DR-012 still apply.
   * Phase 1: `codemie` assistant type only. CI docs: GitHub Actions + GitLab CI.
   * Kubernetes-style envelope: `apiVersion` / `kind` / `metadata` (identity) / `spec` (config).
@@ -1445,13 +1495,14 @@
   * MUST NOT discover, copy, or invoke server defaults for omitted optional authorable fields; those fields become explicit JSON null under FR-021/DR-012. Fields whose pinned applicable request rejects null remain authoring-required.
   * MUST keep Workflow/Skill server IDs out of declarations, persistent client state, and normal outcomes.
   * MUST fail safely on incomplete visibility, invalid/duplicate Workflow records, and ambiguous Skill identity.
+  * MUST NOT compare `GET /v1/info.version` with the pinned Git SHA or use it alone to accept or reject `apply`; it is semantic observability only.
 
   **Decisions the architect must make:**
   * Concrete schema representation in Rust (JSON Schema embedded, generated Rust types, etc.).
   * Retry/backoff policy (IR-004).
   * `apiVersion`/`metadata` envelope treatment — client-side strip before API call vs. server-aware (OQ-18).
   * Strategy for keeping bundled Rust schema in sync with server Pydantic model changes.
-  * Whether and how to use `GET /v1/info` for compatibility checks without adding fields to per-entity output.
+  * The exact composition and scheduling of non-mutating, operation-specific contract probes that satisfy IR-012. `GET /v1/info.version` is not eligible as source/API identity or as an independent compatibility gate.
   * **Token caching in CI:** The tool itself MUST NOT cache tokens across invocations (stateless binary). The recommended pattern is a shell variable assigned once per job. The architect should include this pattern prominently in CI integration examples.
   * Pin and contract-test requiredness, nullability, operation applicability, and the ordinary create/update/read request, response, discriminator, validation, integration-reference, and mutability shape for every entity and authorable Datasource kind. Do not infer a format for a provider-defined or import/read-only kind.
 
@@ -1473,6 +1524,7 @@
   * Adding A2A/Bedrock Assistant types without product decision.
   * Introducing secret interpolation syntax.
   * Deriving or probing a Keycloak token endpoint from the CodeMie API URL, hostname, realm convention, or another value; Keycloak login requires one of the explicit FR-017 endpoint sources.
+  * Rejecting the exact pinned backend clone because `/v1/info.version` reports `0.16.0` rather than its Git SHA, using that semantic value alone to approve another target, or weakening IR-012's pre-write contract evidence.
 
   **v26 addition (Keycloak ROPC Mode (c)):** the architect must design the three-mode selection logic in FR-024 — specifically the `auth_url`-presence discriminator that distinguishes Mode (c) from Mode (b) when `CODEMIE_CLIENT_SECRET` is absent. The `codemie-sdk` default for `CODEMIE_CLIENT_ID` in Mode (c) must be a named constant, not a hardcoded string. The ROPC token request MUST NOT include a `client_secret` field. No architecture change is required for Modes (a) and (b).
 
@@ -1486,7 +1538,7 @@
   Specification status: READY FOR ARCHITECTURE PLANNING
   ```
 
-  Product behavior is now bounded and testable: the four-entity model, Workflow/Skill identity, always-write apply semantics, omission-to-null payload semantics, explicit Keycloak endpoint configuration, adoption, ambiguity, visibility, serialization, governance, residual races, exit codes, safe non-provenance output, Workflow resource-reference shapes, inline assistants, per-kind ordinary Datasource CRUD, and the three-mode login command including Mode (c) Keycloak ROPC are approved. PRODUCT-OQ-01/VER-011, ARCH-B01, VER-012, and OQ-36 are resolved, and no open product question blocks architecture planning. The pinned target contract and deployment evidence in §23 remain implementation/verification gates. Pre-implementation verification next assesses the refreshed artifact set, followed by the required security review; a future review artifact is not required to exist before product readiness or architecture planning. Architecture must preserve operation-specific field nullability, explicit non-derived authentication endpoint resolution, and each Datasource kind's existing format while keeping integration provisioning outside the tool.
+  Product behavior is now bounded and testable: the four-entity model, Workflow/Skill identity, always-write apply semantics, omission-to-null payload semantics, source-derived target compatibility, explicit Keycloak endpoint configuration, adoption, ambiguity, visibility, serialization, governance, residual races, exit codes, safe non-provenance output, Workflow resource-reference shapes, inline assistants, per-kind ordinary Datasource CRUD, and the three-mode login command including Mode (c) Keycloak ROPC are approved. PRODUCT-OQ-01/VER-011, ARCH-B01, VER-012, OQ-36, and C-13 are resolved, and no open product question blocks architecture planning. The pinned target contract and deployment evidence in §23 remain implementation/verification gates. Pre-implementation verification next assesses the refreshed artifact set, followed by the required security review; a future review artifact is not required to exist before product readiness or architecture planning. Architecture must preserve operation-specific field nullability, explicit non-derived authentication endpoint resolution, source-derived pre-write compatibility evidence, and each Datasource kind's existing format while keeping integration provisioning outside the tool.
 
   ### Closed product decisions
 
@@ -1529,7 +1581,7 @@
   * Generic management/ownership markers and generic `--adopt-existing` were removed. This remains authoritative for Assistant, Skill, Datasource, and generic ownership behavior. It is narrowly supplemented—not generally reversed—by the v14 Workflow identity decision below.
 
   **Source code analysis (2026-08-07, v9):**
-  * OQ-2 RESOLVED: `GET /v1/info` returns `{"version": "APP_VERSION"}` — server version indicator confirmed.
+  * OQ-2 SOURCE FINDING: `GET /v1/info` returns `{"version": "APP_VERSION"}` — semantic application-version observability confirmed; v28 establishes that it is not source/API identity and does not independently gate `apply`.
   * OQ-17 RESOLVED: `WorkflowMode` enum confirmed: `"Sequential"` (default, non-deprecated), `"Autonomous"` (deprecated).
   * VR-004 RESOLVED: full enum inventory confirmed from model inspection (WorkflowMode, AgentMode, AssistantType, SkillVisibility).
   * A-3 (code finding): `POST /v1/local-auth/login` gated on `ENABLE_USER_MANAGEMENT=True` AND `IDP_PROVIDER="local"`. Enterprise SSO cannot use it. **Superseded by v12 platform team response: Keycloak client_credentials is the only supported CI auth path.**
@@ -1579,8 +1631,12 @@
   * Keycloak token endpoints are explicit configuration, never derived values. Endpoint precedence is `--auth-url` > `CODEMIE_AUTH_URL` > `.codemie/config.yaml` `auth_url`; absence is an exit-2 local configuration failure before network access. `auth_url` is non-secret, while client IDs, client secrets, tokens, email addresses, and passwords remain flag/environment inputs only.
   * Pre-implementation verification evaluates consistency of the refreshed specification-driven artifacts. The required security review follows it in the lifecycle; the absence of a not-yet-due security-review artifact is not a product-readiness blocker.
 
+  **Product decision (2026-08-11, v28):**
+  * The source-derived consumed contract pinned to backend tag `2.42.0`, commit `2a481c290c99bf30ef80aadafa03d876a7f5f732`, is the phase-1 target compatibility baseline. The exact clone's `APP_VERSION=0.16.0` is semantic observability and is not compared with the Git SHA. It cannot independently accept or reject `apply`.
+  * Every requested operation retains strict, non-mutating pre-write contract evidence. Missing or invalid required consumed evidence produces `E_API_INCOMPATIBLE`, exit code 2, with empty stdout and no modifying request. Additional unconsumed response fields do not fail or widen the contract.
+
   ### External dependencies (platform team)
-  * Pin the target CodeMie API/OpenAPI contract used to finalize schemas and adapters.
+  * Qualify each target CodeMie deployment against the pinned source-derived consumed contract; `/v1/info.version` is not deployment/source identity.
   * Prove complete Workflow/Skill manager/admin visibility, exhaustive stable pagination, exact identity/permission fields, Workflow `meta_config` preservation, and post-write read behavior in the target deployment.
   * Pin ordinary Datasource CRUD/read shapes, discriminators, requiredness, nullability, validation, mutability, and non-secret integration configuration uniformly for every authorable kind. Provider-defined or import/read-only kinds require explicit target evidence; the tool does not invent missing formats.
   * Provide the test environment and service account required to verify the four entity types.
@@ -1590,6 +1646,6 @@
   * None.
 
   ### Statement of readiness
-  The specification is **READY FOR ARCHITECTURE PLANNING**. The v14 identity decisions, v15 exit taxonomy, v16 safe output boundary, v17 Workflow reference decision, v20/v22 generic Datasource boundary, v21 provenance boundary, v22 always-write decision, v23 VER-012 omission/nullability rule, v24 explicit Keycloak endpoint rule, and v26 Mode (c) Keycloak ROPC addition require an architecture refresh. Readiness does not prove the target API contract or operational deployment readiness; the solution architect and platform owner must retain the independent evidence gates above. After that refresh, pre-implementation verification assesses artifact consistency and the security reviewer performs the next required review. The absence of a future security-review artifact at this stage is expected and is not a product blocker.
+  The specification is **READY FOR ARCHITECTURE PLANNING**. The v14 identity decisions, v15 exit taxonomy, v16 safe output boundary, v17 Workflow reference decision, v20/v22 generic Datasource boundary, v21 provenance boundary, v22 always-write decision, v23 VER-012 omission/nullability rule, v24 explicit Keycloak endpoint rule, v26 Mode (c) Keycloak ROPC addition, and v28 target-compatibility decision require downstream convergence. Readiness does not prove operational deployment compatibility; the solution architect and platform owner must retain the independent pre-write and deployment-qualification evidence gates above. After that refresh, pre-implementation verification assesses artifact consistency and the security reviewer performs the next required review. The absence of a future security-review artifact at this stage is expected and is not a product blocker.
 
   ---

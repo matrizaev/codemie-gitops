@@ -14,7 +14,7 @@
   },
   "compatibilityPolicy": {
     "infoEndpointIsIdentity": false,
-    "unknownConsumedResponseField": "ignore",
+    "unknownConsumedResponseField": "ignore-only-when-additive-and-unconsumed",
     "missingOrInvalidConsumedResponseField": "fail-before-write",
     "unknownRequestOrDeclarationField": "reject",
     "deploymentDrift": "verification-and-release-contract-test"
@@ -51,7 +51,13 @@
   },
   "capabilityPreflight": {
     "route": "GET /v1/user",
+    "appliesToEntityKinds": ["Workflow", "Datasource", "Skill"],
+    "effectiveProjectSource": "validated metadata.project after repository-config defaulting",
     "consumedFields": ["is_admin", "is_maintainer", "projects[].name", "projects[].is_project_admin"],
+    "requiredEvidencePredicate": "is_admin == true OR is_maintainer == true OR exists(projects, project.name == effectiveProject AND project.is_project_admin == true)",
+    "projectAdminMustMatchEffectiveProject": true,
+    "missingOrInvalidConsumedField": "E_API_INCOMPATIBLE-exit-2-before-write",
+    "predicateFalse": "E_VISIBILITY_UNPROVEN-exit-2-before-write",
     "sourceEvidence": "rest_api/routers/user.py:52-115; rest_api/models/user_management.py:246-263"
   },
   "entities": {
@@ -214,13 +220,32 @@
         "assistants[].id": "workflow-local id preserved",
         "states[].assistant_id": "workflow-local assistant id preserved"
       },
+      "pagination": {
+        "pageBase": 0,
+        "perPage": 100,
+        "appliesIndependentlyTo": "each routes.enumeratePasses entry",
+        "requestSequence": "always request page 0 first; when pages > 0 request exactly pages 0 through pages - 1; when pages == 0 stop after page 0",
+        "responseInvariants": [
+          "pagination.page equals the requested zero-based page",
+          "pagination.per_page equals 100",
+          "pagination.pages equals ceil(pagination.total / pagination.per_page)",
+          "pagination.pages == 0 if and only if pagination.total == 0"
+        ],
+        "snapshotStabilityInvariants": [
+          "pages, total, and per_page remain stable within each pass",
+          "accumulated item count equals total within each pass",
+          "entity ids do not repeat within a pass"
+        ],
+        "invalidOriginOrResponseContract": "E_API_INCOMPATIBLE-exit-2-before-write",
+        "otherwiseCompatibleSnapshotInstability": "E_RECONCILIATION-exit-1-before-write"
+      },
       "paginationConsumedFields": ["data", "pagination.page", "pagination.pages", "pagination.total", "pagination.per_page"],
       "entityConsumedFields": ["id", "project", "name", "meta_config", "user_abilities"],
       "sourceEvidence": [
-        "rest_api/routers/workflow.py:109-142,224-392",
+        "rest_api/routers/workflow.py:109-142,224-392 (page default 0)",
         "core/workflow_models/workflow_models.py:34-64,406-436",
         "core/workflow_models/workflow_config.py:69-125,343-374",
-        "service/workflow_config/workflow_config_index_service.py:46-163,222-265",
+        "service/workflow_config/workflow_config_index_service.py:46-163,222-265 (offset page * per_page)",
         "service/workflow_service.py:54-66,651-683"
       ]
     },
@@ -248,14 +273,32 @@
         "metadata.project": "project",
         "contentFrom": "content bytes read from the scalar path relative to the declaring YAML"
       },
+      "pagination": {
+        "pageBase": 0,
+        "perPage": 100,
+        "requestSequence": "always request page 0 first; when pages > 0 request exactly pages 0 through pages - 1; when pages == 0 stop after page 0",
+        "responseInvariants": [
+          "page equals the requested zero-based page",
+          "perPage equals 100",
+          "pages equals ceil(total / perPage)",
+          "pages == 0 if and only if total == 0"
+        ],
+        "snapshotStabilityInvariants": [
+          "pages, total, and perPage remain stable across the scan",
+          "accumulated item count equals total",
+          "entity ids do not repeat across pages"
+        ],
+        "invalidOriginOrResponseContract": "E_API_INCOMPATIBLE-exit-2-before-write",
+        "otherwiseCompatibleSnapshotInstability": "E_RECONCILIATION-exit-1-before-write"
+      },
       "paginationConsumedFields": ["skills", "page", "perPage", "total", "pages"],
       "entityConsumedFields": ["id", "name", "project", "created_by", "user_abilities"],
       "persistenceUniqueness": ["name", "created_by.id", "project"],
       "sourceEvidence": [
         "rest_api/models/skill.py:165-211,240-277,421-471,531-539",
-        "rest_api/routers/skill.py:198-316,351-436",
-        "service/skill_service.py:295-370,602-667",
-        "repository/skill_repository.py:46-253,432-631"
+        "rest_api/routers/skill.py:198-316,351-436 (page Query default 0, ge=0)",
+        "service/skill_service.py:295-370,602-667 (page default 0)",
+        "repository/skill_repository.py:432-631 (page default 0; offset page * per_page)"
       ]
     },
     "Datasource": {

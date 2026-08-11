@@ -1,15 +1,13 @@
 # Implementation task breakdown
 
-Source: product specification v27 and this architecture set.
+Source: product specification v28 and this architecture set.
 
-Status: **O-001 CHECKED-IN CONTROLS VERIFIED AND SECURITY-APPROVED; REMOTE
-ACTIVATION PENDING**. The implementation baseline, ADR-012/D-001 work, and the
-checked-in/local O-001 controls are implemented. Independent verification and
-security review approve those local controls for remote activation. O-001 is
-not complete: external provider/runner activation, mutex drills, live inventory,
-writer-freeze, and first-apply checksum evidence remain blocking. O-002 and
-V-000 follow O-001; V-001 follows both. V-002 and L-001 remain farther
-downstream and are not complete.
+Status: **V28 COMPATIBILITY CORRECTIONS PENDING**. The semantic-version and
+pre-write-evidence delta is joined by a pinned-source pagination correction:
+Workflow and Skill must start at page 0. Q-008, W-001, S-001, and R-001 own the
+remaining verification/implementation evidence. O-001 remote activation and
+downstream deployment/release tasks remain paused until the corrections and
+independent convergence verification pass.
 
 ## 1. Dependency policy
 
@@ -139,6 +137,51 @@ Eligibility:
 - Completion: an independent report records v27 convergence and routes any
   security-impact delta to Q-005; a prior-version report is not reused as v27
   completion evidence.
+
+### Q-007 — Verify the v28 compatibility correction design
+
+- Eligibility: `ARCHITECTURE-REVIEW`.
+- Objective: independently verify that v28 removes semantic application version
+  from target acceptance/rejection while retaining all operation-applicable
+  pre-write contract evidence.
+- Requirements: SC-021, IR-011/012, AC-IR-011-01, AC-IR-012-01.
+- Architecture: ADR-004; `plan.md` sections 5, 6, 10, and 13;
+  `data-model.md` section 7; `contracts/source-baseline.md` and
+  `contracts/http-adapter.md` section 2.6.
+- Dependencies: approved product specification v28 and Q-006 baseline evidence.
+- Acceptance evidence: verifier confirms no architecture artifact treats
+  `/v1/info.version` as a Git/source/API identity or required gate; the exact
+  pinned clone reporting `0.16.0` can proceed only after all applicable
+  non-mutating evidence passes; missing/invalid required consumed evidence is
+  still exit-2 `E_API_INCOMPATIBLE` with zero modifying requests. It also
+  confirms that project-admin evidence matches the exact effective project for
+  Workflow, Skill, and Datasource, while Assistant uses strict direct lookup
+  without `/v1/user`; only a sealed `PreparedWrite` created after all applicable
+  reads can reach POST/PUT.
+- Completion: no unresolved product or architecture conflict blocks T-003 and
+  R-001 correction work.
+
+### Q-008 — Verify zero-based Workflow and Skill pagination design
+
+- Eligibility: `ARCHITECTURE-REVIEW`.
+- Objective: independently verify the source-derived page base and invariants
+  before W-001/S-001 correction work.
+- Requirements: FR-029/031/034, IR-012, PA-005, VR-007–010/016.
+- Architecture: ADR-007/008; adapter manifest Workflow/Skill pagination blocks;
+  `contracts/http-adapter.md` sections 5/6; `data-model.md` sections 4/5.
+- Dependencies: approved v28 specification and pinned backend commit
+  `2a481c290c99bf30ef80aadafa03d876a7f5f732`.
+- Acceptance evidence:
+  - Verify router defaults `page=0`, service/repository defaults `0`, and
+    `offset(page * per_page)` for both Workflow and Skill.
+  - Verify both manifest entries require page 0 first, exact `0..pages-1`
+    traversal, page echo/size/count checks, and a single page-0 request for an
+    empty result.
+  - Record that the one-indexed Workflow/Skill statement in
+    `Q-007-post-implementation-verification.md` is stale and superseded for
+    pagination-origin evidence; do not reuse its page-origin conclusion.
+- Completion: independent evidence authorizes W-001/S-001 correction without
+  changing product behavior or Datasource's already-zero-based contract.
 
 ### Q-005 — Security architecture review
 
@@ -389,13 +432,45 @@ Eligibility:
 ### T-003 — Implement pinned compatibility preflight
 
 - Eligibility: `IMPLEMENTATION`.
+- Lifecycle: **REOPENED FOR V28 CORRECTION**.
 - Objective: validate consumed target capabilities against the checked-in
   manifest before writes where detectable.
-- Requirements: IR-002/005/008–010, QR-009.
+- Requirements: SC-021, IR-002/005/008–012, QR-009;
+  AC-IR-011-01 and AC-IR-012-01.
 - Architecture: ADR-004.
-- Dependencies: Q-001, T-002.
-- Acceptance evidence: changed/missing request/page/permission/response fixtures
-  fail before modification; `/v1/info` cannot widen or gate alone.
+- Expected components: `src/preflight/mod.rs`, `src/http/mod.rs`, and manifest
+  conformance/preflight tests.
+- Dependencies: Q-001, Q-007, T-002.
+- Scope:
+  - Remove the runtime comparison of `/v1/info.version` with the pinned Git SHA.
+    `EXPECTED_BACKEND_COMMIT`, if retained, is build/test provenance only and
+    must never be compared with a target response.
+  - Do not require `GET /v1/info` for `apply`; its status, shape, absence, and
+    semantic value cannot accept or reject an operation.
+  - Preserve strict decoding of the manifest's operation-applicable consumed
+    fields in `GET /v1/user` and adapter identity/reference/detail/pagination
+    reads. Required consumed fields must not silently default when absent.
+  - Apply the capability predicate to Workflow, Datasource, and Skill: global
+    admin/maintainer, or a `projects[]` entry whose `name` equals the exact
+    effective project and whose `is_project_admin` is true. An admin entry for
+    another project is insufficient. Assistant remains excluded and uses its
+    strict direct `(project, slug)` lookup under PA-003.
+  - Keep `E_API_INCOMPATIBLE`, exit 2, empty stdout, safe stderr, and zero
+    POST/PUT for missing or invalid required contract evidence.
+- Acceptance evidence:
+  - Replace SHA-valued `/v1/info` success fixtures with the exact pinned-source
+    scenario (`0.16.0`) and prove no semantic-version mismatch is emitted.
+  - Add strict `GET /v1/user` missing/invalid consumed-field tests and retain
+    adapter response/pagination drift tests; each asserts `E_API_INCOMPATIBLE`.
+  - Add Workflow/Skill/Datasource positive exact-project and negative other-
+    project-admin tests; the latter assert `E_VISIBILITY_UNPROVEN` and zero
+    modifying requests. Add an Assistant test proving no `/v1/user` call is
+    required and strict direct-lookup evidence still seals the prepared write.
+  - Additional unconsumed response fields pass without widening declaration or
+    request contracts; manifest tests pin
+    `ignore-only-when-additive-and-unconsumed` and the exact-project predicate.
+  - Request-count assertions prove every failed pre-write case issues zero
+    POST, PUT, DELETE, or other modifying request.
 - Completion: runtime adaptation cannot alter declaration/request contracts.
 
 ## 5. Entity adapters and coordinator
@@ -414,32 +489,45 @@ Eligibility:
 ### W-001 — Implement Workflow identity resolver and adoption
 
 - Eligibility: `IMPLEMENTATION`.
+- Lifecycle: **REOPENED FOR ZERO-BASED PAGINATION CORRECTION**.
 - Objective: implement ADR-008 exactly.
 - Requirements: FR-006/021/022/028–030/032–034, PA-005/006,
   VR-007–010/016.
-- Dependencies: F-006, T-003, Q-002.
+- Dependencies: F-006, T-003, Q-002, Q-008.
 - Scope: all pages/scopes, string `meta_config` strict decode/canonical
   encode/preservation merge, display-name nonselection guard,
   explicit by-ID adoption without display-name veto, rename/new-key semantics,
   unconditional resolved-identity PUT, and post-write identity resolution.
+- Pagination scope: each project/marketplace pass starts at page 0, uses
+  `per_page=100`, requests `[0]` when pages is zero or exactly `0..pages-1`
+  otherwise, and validates page echo, size, page-count formula, stable snapshot,
+  caps, and unique accumulated IDs before sealing evidence.
 - Acceptance evidence: zero/one/multiple/more-than-100/invalid/drift/permission/
   race; explicit candidate plus another same-display-name row succeeds when
-  other checks pass; repeat apply sends PUT; no UUID output.
+  other checks pass; repeat apply sends PUT; no UUID output. Fixtures cover an
+  empty page 0, one item on page 0, 101+ items on pages 0/1, rejection of a
+  page-1 origin, and post-write verification using the same page-0 scanner.
 - Completion: no derived UUID, implicit adoption, display-name selection, or
   equality branch.
 
 ### S-001 — Implement Skill exhaustive resolver and adapter
 
 - Eligibility: `IMPLEMENTATION`.
+- Lifecycle: **REOPENED FOR ZERO-BASED PAGINATION CORRECTION**.
 - Objective: implement ADR-007 and Skill CRUD.
 - Requirements: FR-005/006/015/025/031–034, PA-005, VR-009/010.
-- Dependencies: F-005, F-006, T-003, Q-002.
+- Dependencies: F-005, F-006, T-003, Q-002, Q-008.
 - Scope: per-page 100/all pages/scopes/hints, exact filter, zero/one/multiple,
   capability, scalar YAML-relative sidecar expansion, one create-409
-  re-resolution, unconditional resolved-identity PUT, post-write scan.
+  re-resolution, unconditional resolved-identity PUT, post-write scan. Every
+  scan starts at page 0, requests `[0]` when pages is zero or exactly
+  `0..pages-1` otherwise, and validates page echo, size, page-count formula,
+  stable snapshot, caps, and unique accumulated IDs before sealing evidence.
 - Acceptance evidence: creator duplicates/order/more-than-100/drift/marketplace/
   permissions/same- and different-principal races; no repeated POST or
-  tie-break; repeat apply sends PUT.
+  tie-break; repeat apply sends PUT. Fixtures cover empty page 0, one item on
+  page 0, 101+ items on pages 0/1, rejection of a page-1 origin, and reuse of
+  the same zero-based scanner by initial, post-write, and create-409 resolution.
 - Completion: authored/reported identity is only `(project,name)`.
 
 ### D-001 — Implement peer Datasource adapters
@@ -447,9 +535,11 @@ Eligibility:
 - Eligibility: `IMPLEMENTATION`.
 - **Note (ADR-012 Accepted 2026-08-10)**: Option A selected. Visibility
   precondition: `GET /v1/user` preflight required before any Datasource write;
-  exit `E_VISIBILITY_UNPROVEN` (exit 2) if principal lacks project-admin,
-  global-admin, or global-maintainer. Project-admin scope is sufficient
-  (confirmed from `index_service.py:276-282`).
+  exit `E_VISIBILITY_UNPROVEN` (exit 2) if principal lacks global-admin,
+  global-maintainer, or project-admin for the exact effective project.
+  Project-admin for another project is insufficient. Project-admin scope for
+  the matching project is sufficient (confirmed from
+  `index_service.py:276-282`).
 - Objective: exact exhaustive identity and ordinary write-through CRUD for every
   schema branch.
 - Requirements: FR-005/006/015/021/022/036, DR-010–012, IR-008,
@@ -473,7 +563,8 @@ Eligibility:
     the multipart request is constructed.
   - Multipart parts cap (10 per File Datasource) is enforced before upload.
 - Completion: one Datasource adapter boundary with visibility preflight per
-  ADR-012 Option A; project-admin confirmed sufficient from source evidence.
+  ADR-012 Option A; exact-effective-project admin is confirmed sufficient from
+  source evidence and a cross-project admin cannot pass.
 
 ### W-002 — Implement Workflow execution/reference projection
 
@@ -488,11 +579,44 @@ Eligibility:
 ### R-001 — Implement single-entity write-through coordinator
 
 - Eligibility: `IMPLEMENTATION`.
+- Lifecycle: **REOPENED FOR V28 CORRECTION**.
 - Objective: implement one preflight/resolve/project/write/verify state machine.
 - Requirements: FR-005/006/008/011/012/015/021/032/034/036,
-  IR-003–010, QR-001–003/008/011.
+  IR-003–012, QR-001–003/008/011; AC-IR-011-01 and AC-IR-012-01.
+- Expected components: `src/coordinator/mod.rs`, the adapter-to-write-dispatch
+  boundary, and coordinator request-count/state-transition tests.
 - Dependencies: A-001, W-001, W-002, S-001, D-001, F-007, T-003.
 - Acceptance evidence:
+  - Remove the unconditional `/v1/info.version` compatibility call from the
+    coordinator. The pre-write transition completes only after the kind-
+    applicable admin preflight (Workflow/Skill/Datasource only) and the selected
+    adapter's required identity/reference/detail/pagination reads have decoded
+    successfully.
+  - Refactor the coordinator/adapter boundary so the modifying dispatcher
+    accepts only a sealed `PreparedWrite` containing the kind-specific preflight
+    result, completed operation-specific read evidence, and projected create/
+    update request. For Assistant the preflight result records that admin proof
+    is not required and the read evidence contains the strict direct lookup; for
+    Workflow/Skill/Datasource it contains exact-project visibility proof. No
+    earlier or partial-evidence state can call POST/PUT.
+  - Coordinator success test exposes `/v1/info.version=0.16.0` (or asserts the
+    endpoint is not contacted), supplies valid operation evidence, and observes
+    exactly one expected POST or PUT.
+  - Coordinator incompatibility tests invalidate one required preflight or
+    resolver field at a time and assert exit-2 `E_API_INCOMPATIBLE`, empty
+    stdout, FR-016-safe stderr, and exact zero counts for every modifying route.
+    A matching, non-matching, missing, or unreachable `/v1/info` cannot override
+    either result.
+  - State-transition tests prove evidence is sealed only after all applicable
+    identity/reference/detail/pagination reads and projection complete; inject
+    failure at each read boundary and assert the write dispatcher is never
+    reached. Cross-project admin tests cover Workflow, Skill, and Datasource;
+    Assistant coverage proves direct lookup reaches the same seal without
+    `/v1/user`.
+  - End-to-end Workflow and Skill coordinator tests assert the first list
+    request is page 0, valid page-0 evidence permits exactly one selected write,
+    and an invalid page origin/echo makes zero modifying requests. Post-write
+    verification and Skill create-409 re-resolution repeat from page 0.
   - Fake-server state/fault/request-count tests; stopped pre-write failures.
   - Absent identity has one POST/`created`; present identity has one
     PUT/`updated` on every invocation.
@@ -561,21 +685,26 @@ Eligibility:
 
 - Eligibility: `DEPLOYMENT-VERIFICATION`.
 - Objective: detect target drift before production writes.
-- Requirements: IR-002/005/008–010, QR-009.
+- Requirements: IR-002/005/008–012, QR-009; AC-IR-011-01/AC-IR-012-01.
 - Dependencies: Q-001, Q-002, Q-003, R-001.
 - Acceptance evidence: sanitized non-production suite records manifest version,
   pass/fail, and safe request IDs only; no body, payload, entity, or secret
-  values.
+  values. Workflow and Skill probes assert the first requested/returned page is
+  0 and exercise a non-empty single-page target so a page-1 origin cannot
+  produce a false empty success.
 - Completion: no breaking mismatch; mismatch blocks target/release and escalates.
 
 ### V-001 — Post-implementation convergence verification
 
 - Eligibility: `PRODUCTION-ENABLEMENT`.
-- Objective: prove code/tests/docs converge on v27 and architecture.
-- Requirements: all active v27 requirements and all acceptance criteria.
+- Objective: prove code/tests/docs converge on v28 and architecture.
+- Requirements: all active v28 requirements and all acceptance criteria.
 - Dependencies: O-002, V-000.
 - Acceptance evidence: full requirement/acceptance trace, request capture,
-  schema/stream/no-leak tests, protected/reference-tree integrity proof.
+  schema/stream/no-leak tests, protected/reference-tree integrity proof. The
+  new report must explicitly supersede the stale one-indexed Workflow/Skill
+  statement in `Q-007-post-implementation-verification.md` and verify initial,
+  post-write, and Skill 409 scans start at page 0.
 - Completion: zero blocking findings.
 
 ### V-002 — Post-implementation security review
@@ -634,9 +763,10 @@ Eligibility:
 | FR-005/006/008/012/015/021 | F-006, A-001/W-001/S-001/D-001, R-001 | Q-001–Q-003, V-001 |
 | FR-009/011/014/016/024/026 | F-002/F-004/F-005/F-007/T-001/T-002 | Q-005, V-002 |
 | FR-017/019/020 | F-002 | Q-004/Q-006, V-001 |
-| FR-028–030/032–035 | W-001/W-002/R-001 | Q-002, O-001, V-001 |
-| FR-031–034 | S-001/R-001 | Q-002, O-001, V-001 |
+| FR-028–030/032–035 | W-001/W-002/R-001 | Q-002/Q-008, O-001, V-001 |
+| FR-031–034 | S-001/R-001 | Q-002/Q-008, O-001, V-001 |
 | FR-036 | D-001/R-001 | Q-003, V-000/V-001 |
+| IR-011/012 | T-003/R-001 | Q-007, V-000/V-001 |
 
 ### Exact acceptance-criterion ownership
 
@@ -678,6 +808,8 @@ Eligibility:
 | AC-FR-026-02 | F-007 |
 | AC-FR-026-03 | F-007 |
 | AC-IR-008-01 | D-001/R-001 |
+| AC-IR-011-01 | T-003/R-001 |
+| AC-IR-012-01 | T-003/R-001 |
 | AC-DR-010-01 | F-004/F-006/D-001 |
 | AC-DR-010-02 | F-004 |
 | AC-DR-011-01 | F-006/D-001/R-001 |

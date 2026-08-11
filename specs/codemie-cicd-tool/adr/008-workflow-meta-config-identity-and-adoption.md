@@ -4,6 +4,10 @@
 
 Accepted
 
+Amended 2026-08-11 for the pinned Workflow pagination origin: both required
+enumeration passes are zero-based. The router defaults `page` to `0`, and the
+index service queries with `offset(page * per_page)`.
+
 ## Context
 
 The current Workflow record has a server UUID and display name but no persisted
@@ -73,7 +77,11 @@ generic omitted-field null loop.
 ### Normal resolution
 
 Exhaust every relevant Workflow list page across the project and
-marketplace-inclusive scopes defined by the source-pinned contract. Client-filter exact
+marketplace-inclusive scopes defined by the source-pinned contract. Each pass
+starts at `page=0`: always request page 0 once; for `pages > 0`, request exactly
+pages `0..pages-1`; for `pages == 0`, stop after page 0. Each response must echo
+the requested zero-based page, use `per_page=100`, and satisfy
+`pages=ceil(total/per_page)` with `pages==0` iff `total==0`. Client-filter exact
 effective project and reserved record:
 
 - zero -> enumerate unmarked exact display-name candidates as a nonselecting
@@ -85,8 +93,11 @@ effective project and reserved record:
   `E_IDENTITY_MARKER_INVALID`, exit 1, no write;
 - incomplete visibility/write proof -> exit 2.
 
-Snapshot drift (cycles, repeated row IDs, changing page semantics, mismatch
-between pre/post scans) fails closed as compatible resolution instability.
+An invalid page origin, echo, size, or page-count formula is
+`E_API_INCOMPATIBLE`, exit 2 before write. Across individually compatible
+responses within a pass, changing pagination fingerprints, repeated row IDs,
+accumulated-count mismatch, or pre/post-scan churn fails closed as entity-
+resolution instability, exit 1 before write.
 
 Create/update merges the reserved member into the request and a bounded
 post-write full re-resolution must find exactly one identity associated with
@@ -152,12 +163,16 @@ identity. Workflow-local actor `id` fields are unrelated to this server UUID.
   pagination/scopes, project and write indicators, and by-ID authorization.
 - Establish serialization, reserved-key governance, inventory, and restore/
   duplicate-remediation runbooks.
-- Test zero/one/multiple, >100, invalid markers, marketplace collision,
-  adoption checks, merge preservation, rename, drift, and post-write uncertainty.
+- Test empty page 0, one result on page 0, >100 over pages 0 and 1, rejection of
+  a first request/response at page 1, invalid markers, marketplace collision,
+  adoption checks, merge preservation, rename, drift, and post-write
+  uncertainty. Both initial and post-write scans use the same zero-based helper.
 
 ## References
 
-- Product specification v24: FR-021/022/028–030/032–034, DR-007/008/012,
-  PA-005/006, VR-007–010/016
+- Product specification v28: FR-021/022/028–030/032–034, IR-012,
+  DR-007/008/012, PA-005/006, VR-007–010/016
+- Pinned source: `rest_api/routers/workflow.py:109-142` and
+  `service/workflow_config/workflow_config_index_service.py:46-163,222-265`
 - ADR-006 (Superseded)
 - `contracts/http-adapter.md` section 5
