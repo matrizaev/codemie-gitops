@@ -4,7 +4,7 @@
 
 **Architecture status: READY FOR PRE-IMPLEMENTATION VERIFICATION**
 
-Product specification v28 is the approved source. The architecture now pins
+Product specification v29 is the approved source. The architecture now pins
 presence, null, applicability, ownership, and transport classes for every
 admitted field, requires an explicit token endpoint with deterministic
 precedence, incorporates all architect-owned security remediation from the
@@ -19,22 +19,29 @@ warning lifecycle (`security-review-preimplementation.md`):
   disable for auth POSTs, URL userinfo rejection in all schemas.
 - **SEC-003** (CLOSED): versioned resource budget defaults for all 18 resource
   dimensions in `http-adapter.md` §2.4 and `data-model.md` §11.
-- **SEC-004** (REOPENED FOR V28 CORRECTION): ADR-012 Option A applies to
-  Workflow, Skill, and Datasource, and project-admin evidence must name the
-  exact effective project; current any-project-admin behavior is insufficient.
+- **SEC-004** (CLOSED AND VERIFIED): ADR-012 Option A applies to Workflow,
+  Skill, and Datasource; the implementation strictly binds project-admin
+  evidence to the exact effective project and the final Q-007 security review
+  approves the correction.
 - **SEC-005** (CLOSED): identifier maxLength and control/bidi pattern in all
   schemas; output rendering rules in `cli.md` §10.
 - **SEC-006** (CLOSED): supply-chain and CI controls amendment in ADR-005.
 
-The implementation baseline is not converged on v28: `src/preflight/mod.rs`
-currently compares `GET /v1/info.version` with the pinned Git commit, and
-`src/coordinator/mod.rs` makes that comparison an unconditional write gate.
-That behavior rejects the exact pinned backend because it reports semantic
-`APP_VERSION=0.16.0`. Q-007 must verify this bounded architecture delta, after
-which T-003 and R-001 must remove the semantic-version gate while retaining
-strict, operation-applicable non-mutating evidence before every write. O-001
-remote activation and all downstream deployment/release work remain paused
-until the correction has passed implementation and convergence verification.
+The v28 compatibility and zero-based Workflow/Skill pagination corrections are
+implemented and independently verified. Q-007's final security review is
+`APPROVED FOR NEXT STAGE`, and the final post-implementation convergence report
+is `PASS`; Q-008's page-0 decision is implemented and covered by that final
+verification. This closes the earlier T-003/W-001/S-001/R-001 correction gate
+without completing live deployment qualification.
+
+O-001's checked-in serialization, exact-artifact, inventory, and recovery
+controls are independently verified and security-approved, but O-001 remains
+operationally incomplete. Remote protected-environment activation, runner and
+mutex evidence, live inventory, external-writer freeze, and first-apply
+checksum evidence have not been supplied. Local O-002 examples and runbooks and
+the local V-000 qualification harness may proceed without claiming that remote
+activation. Provider adoption and target-specific qualification remain
+separate, externally evidenced stages.
 
 ## 2. Executive summary
 
@@ -57,19 +64,29 @@ surface.
 
 ## 3. Sources consulted
 
-- Approved product source: `specs/codemie-cicd-tool.md` v28, all sections,
+- Approved product source: `specs/codemie-cicd-tool.md` v29, all sections,
   especially SC-021, IR-011/012, AC-IR-011-01, and AC-IR-012-01.
 - Security review input: `security-review-preimplementation.md` (read-only;
   findings SEC-001–SEC-006 used as remediation drivers).
 - Verification sources: `Q-006-verification-report.md` (read-only v26 baseline)
-  and the current-task independent v27 delta result supplied by the verifier
-  (warning behavior passed; this plan cleanup was the remaining finding).
+  plus `Q-007-post-implementation-verification.md`,
+  `Q-007-security-review.md`, and `Q-008-verification-report.md`.
+- Operational-control evidence: `O-001-verification-report.md`,
+  `O-001-security-review.md`, `.github/workflows/ci.yml`,
+  `.github/workflows/codemie-gitops-apply.yml`, `.gitlab-ci.yml`, and
+  `ops/o001/CHECKLIST.md`.
 - Backend reference: tag `2.42.0`, commit
   `2a481c290c99bf30ef80aadafa03d876a7f5f732`.
 - UI reference: tag `2.42.0`, commit
   `55945d075d82e771c4a2f4238afec1eb4c79d1e1`.
 - Exact evidence and paths: `research.md`, `contracts/source-baseline.md`, and
   `contracts/adapter-manifest-v2.42.0.json`.
+- User-supplied deployment context: an ignored, untracked, owner-only `.env`
+  contains local credentials and `CODEMIE_TEST_PROJECT` for
+  `https://codemie.lab.epam.com/`. Values were not read into architecture
+  artifacts and the project remains opaque. The target URL, project, and
+  credentials are test inputs, not proof of O-001 activation or authorization
+  to modify arbitrary entities.
 - Jira/Confluence: none available.
 
 The two source trees are reference-only evidence, never implementation targets
@@ -112,33 +129,20 @@ compatibility. Exact exhaustive reads, privilege proof, serialized writers,
 post-write identity verification, manual ambiguity remediation, and pinned
 deployment tests contain these limits.
 
-Current implementation gap: the runtime compatibility function decodes
-`/v1/info.version` as a supposed source commit and rejects `0.16.0`; coordinator
-tests likewise substitute the pinned SHA into that semantic field. Conversely,
-operation-applicable evidence already comes from `GET /v1/user` for Workflow,
-Skill, and Datasource plus each adapter's strict identity/reference/detail/
-pagination reads before its POST or PUT. Assistant relies on its direct exact
-lookup rather than admin visibility. The correction removes `/v1/info` from
-acceptance/rejection and preserves those strict read boundaries and their
-no-write failure behavior.
+The corrected implementation no longer contacts `/v1/info` as a compatibility
+gate. It derives operation-applicable evidence from strict direct lookup for
+Assistant and from exact-effective-project capability plus strict identity,
+reference, detail, ability, and zero-based pagination reads for Workflow,
+Skill, and Datasource. A modifying transport call is reachable only through a
+sealed prepared write created after those reads and request projection.
 
-The current `GET /v1/user` implementation also accepts project-admin status for
-any project and silently defaults missing consumed role fields. The v28 gate
-instead binds `projects[].name` and `projects[].is_project_admin` from the same
-entry to the exact effective project for Workflow, Datasource, and Skill.
-Assistant remains on its PA-003 least-privilege direct exact lookup and does not
-require admin preflight. A modifying transport call is reachable only through a
-sealed prepared write created after all operation-applicable non-mutating reads
-and projection have completed.
-
-A live contract test against the exact pinned clone exposed a second
-implementation gap: Workflow and Skill scanners start at page 1, but both
-pinned routers default to page 0 and both query paths use
-`offset(page * per_page)`. This skips the first result page and breaks
-post-write verification. The statement in
-`Q-007-post-implementation-verification.md` that Workflow and Skill are one-
-indexed is disproved source evidence and must not be reused; Q-008 will produce
-superseding verification evidence after the zero-based correction.
+Workflow and Skill scanners now request page 0 first and reuse the same scanner
+for initial, post-write, adoption, and Skill create-409 paths. The final Q-007
+post-implementation report permanently supersedes its earlier one-indexed
+statement and verifies the implemented page-0 behavior. The remaining
+limitations are operational: no local test proves a particular remote target's
+contract, CI-provider protection, runner isolation, writer freeze, or mutex
+behavior.
 
 ## 6. Requirements-to-architecture map
 
@@ -155,6 +159,7 @@ superseding verification evidence after the zero-based correction.
 | IR-011/012, SC-021 | pinned source-derived contract; `/v1/info.version` is observability only; Workflow/Skill/Datasource require exact-effective-project visibility while Assistant uses strict direct lookup; all operation-applicable evidence is sealed with the prepared write before POST/PUT |
 | FR-029/031/034, IR-012 | Workflow and Skill enumeration starts at page 0; initial, post-write, and Skill create-409 scans validate zero-based page echo/count invariants before write or success |
 | PA-005/006, QR-009–011 | privileged resolver identity, serialized CI, writer governance, inventory/remediation |
+| IR-006, QR-012 | provider-safe CI token delivery: GitHub fresh login plus immediate native add-mask in one protected step; GitLab pre-supplied environment-scoped protected+masked token with no login; no persistence, transfer, re-emission, or simulated fallback |
 | SEC-001 (v25) | env-only secret credentials; `--token`/`--client-secret`/`--password` flags are E_USAGE, exit 2, before network access; ADR-011 |
 | SEC-002 (v25) | ValidatedUrl type; HTTPS-required auth_url; loopback exception for target_url; userinfo/fragment/control-char rejection in all URL schema patterns; redirect disabled for auth POSTs; ADR-011 |
 | SEC-003 (v25) | 18 versioned resource budget defaults; YAML, file, network, response, pagination, concurrency, deadline dimensions; `http-adapter.md` §2.4; `data-model.md` §11 |
@@ -413,6 +418,162 @@ mutex, live inventory, writer-freeze, and first-apply checksum records required
 by `tasks.md`; until those records pass the checked-in evidence gate, O-001
 remains operationally incomplete.
 
+### Local documentation and example boundary (O-002A)
+
+O-002 is delivered in two stages without changing its acceptance criteria.
+O-002A owns locally verifiable documentation, examples, policy checks, and
+tests. O-002B owns adoption of those examples in a real remote provider and
+therefore remains dependent on completed O-001 activation. O-002 as a whole is
+complete only when both stages pass.
+
+The implementation layout is fixed as follows:
+
+```text
+README.md
+examples/
+├── README.md
+├── repository/
+│   ├── .codemie/config.yaml
+│   ├── assistants/example-assistant.yaml
+│   ├── workflows/example-workflow.yaml
+│   ├── skills/example-skill.yaml
+│   ├── skills/example-skill.md
+│   └── datasources/example-datasource.yaml
+└── ci/
+    ├── github-actions.yml
+    └── gitlab-ci.yml
+ops/o002/
+├── README.md
+├── GIT_REVERT_RECOVERY.md
+├── WORKFLOW_ADOPTION.md
+└── UNCERTAIN_WRITE.md
+scripts/check_o002_examples.py
+tests/test_o002_examples.py
+```
+
+The root README is the operator entry point: build/install, offline lint,
+configuration precedence, three login modes, in-memory token reuse, apply's
+always-write behavior, output/exit contracts, the four examples, and recovery
+links. `examples/README.md` explains the sample repository and invocation
+order. Example CI files are inert samples under `examples/`; the existing
+root provider definitions remain the O-001 controls.
+
+All secret values are injected through environment variables. Examples contain
+no secret-bearing flags, `.env` loading in CI, token echo/persistence, shell
+tracing, HTTP/body logging, TLS bypass, or local-auth CI flow. GitHub captures
+one fresh `codemie-gitops login` token inside the protected apply step,
+immediately registers it with GitHub's native runtime add-mask control before
+any later command or output, and reuses it only from that step's memory. GitLab
+does not invoke `login`; its protected job consumes one pre-supplied,
+environment-scoped protected+masked `CODEMIE_TOKEN` and retains it only in that
+job's process memory. Neither provider persists, transfers, re-emits, or
+simulates masking for a token. Pull-request/fork jobs remain secret-free; an
+apply job uses a protected, approval-gated environment and consumes the same
+checksummed binary built and tested without deployment credentials.
+
+The checker structurally parses the sample provider files and runbooks, runs
+offline lint for every declaration from the example repository, and fails on
+unsafe credential flags, `--insecure`/TLS bypass, `source .env`, `set -x`,
+debug/body logging, token output/persistence or transfer, unprotected apply
+jobs, fork/PR-secret reachability, a protected-job rebuild, missing GitHub
+native masking, any GitLab `login` invocation or simulated masking, failure to
+consume GitLab's pre-supplied protected+masked token, or missing recovery
+prohibitions. Its tests include positive fixtures and mutation-negative cases;
+text matching alone is not sufficient evidence for provider structure.
+
+### Target qualification and enterprise smoke boundary
+
+V-000 is likewise split without weakening completion: V-000A prepares the
+local, non-mutating target-qualification harness; V-000B executes it against a
+named deployment and alone supplies target-specific completion evidence. The
+local harness records only the fixed non-secret staged-binary SHA-256,
+manifest version, pass/fail, safe request IDs, and the required page-0
+observations. It never records response bodies, entity payloads, URLs, or
+credentials. A V-000B evidence record is valid only for the staged binary
+named by that digest.
+
+The enterprise create/update smoke is a later deployment-verification task,
+not O-001 activation. Its executable entity allowlist is closed to exactly
+Assistant, Workflow, and Skill. A Datasource declaration, manifest member,
+kind selector, or authorization exception is invalid for V-003 and fails
+locally before authentication or any other network access. Any future live
+Datasource exercise requires a separate task and security review; it cannot be
+enabled as a V-003 option.
+
+Before any write, the user or platform owner must confirm an authorized
+non-production `CODEMIE_TEST_PROJECT`, the authorized actor, complete
+visibility/write capability, the durable-record owner, and a bounded exclusive
+writer window. After credential loading, V-003 reruns the complete V-000B
+qualification in the same controlled execution with the same token/session
+that will be used by apply; a prior or differently scoped V-000B record cannot
+satisfy this runtime write gate. The harness strictly decodes
+`GET /v1/user.email` as the authenticated actor identifier together with the
+required role/project fields and proves this exact equality chain:
+
+```text
+authorization.project
+  == CODEMIE_TEST_PROJECT
+  == every declaration's resolved effective project
+  == the exact projects[].name entry used by the fresh V-000B role proof
+```
+
+The authenticated actor must equal `authorization.actor`. That exact project
+entry must exist, and the role predicate must be global administrator,
+global maintainer, or `is_project_admin=true` on that same entry; an admin role
+for another accessible project is insufficient. The authorization record must
+also carry an explicit `exclusiveWriter.confirmed=true`, confirmer, start/end
+times, and the run-scoped identity prefix. The current time and the complete
+create/update sequence must fall inside that window, and the confirmer must
+attest that no other writer can use the prefix during it. Missing, false,
+expired, future, differently scoped, or non-covering confirmation fails before
+the first write.
+
+The harness first runs offline lint and login, then the fresh non-mutating
+V-000B probes and the equality/window gates, and stops on any failure. Each
+entity uses a reviewed run-scoped natural key that is proved absent before the
+first apply. The smoke performs one serialized create followed by one
+serialized repeat apply, which must report `updated` under FR-006. It never
+blindly retries, deletes, rolls back, or automates cleanup. Any uncertain write
+holds further activity and routes to complete inventory and manual remediation.
+
+The local credential file is parsed by a strict non-evaluating loader; it is
+never sourced or otherwise executed as shell. Only documented `CODEMIE_*` keys
+and `CODEMIE_TEST_PROJECT` are accepted, and duplicate, unknown, malformed, or
+multiline records fail before network access. Before loading, the harness
+requires a regular non-symlink file, owner-only permissions, and ignored plus
+untracked Git status. It binds values only in memory and verifies internally
+that the resolved target equals the separately authorized HTTPS origin without
+printing either value. CI examples never consume `.env`.
+
+V-000A does not implement an authentication client. It verifies the staged
+binary SHA-256 and obtains a token only by invoking that exact
+`codemie-gitops login` binary, or consumes an already supplied `CODEMIE_TOKEN`;
+the same unchanged staged binary is retained for V-003. V-000B persists that
+digest in its sanitized record. V-003 must bind its evidence to the same digest
+and reverify it immediately before every apply; mismatch fails before
+authentication when first detected and before the next write if the staged
+binary changes during the controlled execution. The probe's separate read-only
+transport remains bound to ADR-011 and the HTTP resource budgets:
+verified HTTPS, no URL userinfo or proxy downgrade, redirects disabled for
+every request, exact authorized origin before and after URL resolution, and no
+Authorization header outside that origin. Its transport exposes only GET below
+argument parsing, uses bounded connect/read and invocation deadlines, caps each
+response at 8 MiB and pagination at 1,000 pages/100,000 items, strictly decodes
+every consumed JSON member, and emits only fixed sanitized errors without raw
+exceptions. Adversarial fake-server tests prove same-origin and cross-origin
+3xx are not followed, credentials never reach a redirect target, no modifying
+method exists, budgets stop reads, and secret/body canaries never appear.
+
+V-000 target/source qualification retains the full pinned, non-mutating read
+contract, including Datasource GET compatibility required by IR-008. That read
+coverage does not admit a Datasource declaration or authorize a Datasource
+write. V-003's smoke manifest requires exactly one Assistant, one Workflow, and
+one Skill declaration and rejects every other entity member or kind before
+network access. The smoke records only the staged-binary SHA-256, the CLI's
+approved action, kind, project, and natural-key outcomes, plus sanitized harness
+status; the ignored `.env` is never copied, printed, committed, or treated as
+authorization.
+
 ## 13. Implementation stages
 
 1. **Complete** — the pre-implementation architecture convergence and security
@@ -422,21 +583,30 @@ remains operationally incomplete.
    declaration schema, and offline references.
 3. **Complete** — request projection plus typed success/warning/diagnostic
    boundaries, including the v27 lint-warning contract.
-4. **Reopened for v28 correction** — authentication and safe transport remain
-   complete; T-003 must remove the `/v1/info.version`/Git-SHA runtime comparison
-   and prove strict operation-applicable pre-write evidence.
-5. **Reopened for zero-based pagination correction** — Assistant and Datasource
-   remain complete; W-001 and S-001 must make Workflow/Skill initial and
-   verification scans start at page 0, with Skill 409 re-resolution included.
-6. **Reopened for v28 correction** — R-001 must stop invoking the semantic
-   version gate and add coordinator-level positive and no-write evidence tests.
+4. **Complete and independently verified** — T-003 removed the semantic
+   `/v1/info.version`/Git-SHA gate while retaining strict operation-applicable
+   pre-write evidence; Q-007 security review approved the result.
+5. **Complete and independently verified** — W-001 and S-001 use page-0
+   Workflow/Skill scanning for initial, post-write, adoption, and Skill 409
+   re-resolution paths; Q-008 is implemented and its stale page-origin evidence
+   is superseded.
+6. **Complete and independently verified** — R-001 owns the sealed prepared-
+   write boundary and coordinator-level success/no-write evidence.
 7. **Implemented locally / operationally incomplete** — O-001 checked-in
    serialization and identity-writer governance controls are independently
    verified, security-approved, and ready for remote activation. O-001 remains
    blocked on the external provider/runner, mutex, live inventory,
-   writer-freeze, and first-apply checksum evidence. O-002 and V-000 follow
-   O-001; V-001 follows both, with V-002 and L-001 remaining farther downstream
-   in their declared dependency order.
+   writer-freeze, and first-apply checksum evidence.
+8. **Ready for local implementation** — O-002A produces the README, portable
+   examples, recovery runbooks, checker, and tests. V-000A produces the local
+   non-mutating qualification harness. Neither requires nor proves remote
+   O-001 activation.
+9. **Externally gated** — O-002B requires remote O-001 plus provider adoption;
+   V-000B requires a named live target and credentials. The authorized
+   enterprise create/update smoke follows V-000B and the O-002A safety guide,
+   and is closed to Assistant, Workflow, and Skill. V-001 still depends on
+   completed O-002 and V-000; V-002 and L-001 retain their existing downstream
+   order.
 
 Detailed bounded work and exact dependencies are in `tasks.md`.
 
@@ -467,6 +637,9 @@ Statuses below mirror the status section in each ADR file.
 | R-02 | non-blocking | resolver snapshots churn or external writers race | fail closed, serialization, governed writers, remediation |
 | R-03 | non-blocking | provider schema varies by deployment | reject until an exact reviewed schema is bundled |
 | R-04 | non-blocking | QR-005 has no latency threshold | measure without inventing a release SLO; product owner may later define |
+| R-05 | external gate | `CODEMIE_TEST_PROJECT` is configured, but target-side actor/write authorization and an exclusive window are not evidenced in repository artifacts | after a fresh same-session V-000B pass, require exact authorization/config/declaration/project-role equality plus an active explicit exclusive-writer confirmation before any smoke write; platform owner |
+| R-06 | excluded scope | Datasource smoke may trigger target-internal indexing, access, cost, storage, or retention | V-003 cannot express or enable Datasource; any future exercise requires a separate authorized task and security review |
+| R-07 | non-blocking | checked-in examples could drift into unsafe credential or provider patterns | structural checker, mutation-negative tests, offline lint, and independent security review |
 No open entity, projection, configuration, or authentication-endpoint decision
 remains. V-000 deployment verification and the broader V-002
 post-implementation security review remain bounded downstream lifecycle work,
@@ -475,10 +648,11 @@ not complete either task.
 
 ## 16. Handoff
 
-Q-008 must verify the authoritative Workflow/Skill page-base correction and
-explicitly supersede the stale one-indexed statement in the Q-007 post-
-implementation report. Implementation then owns the bounded W-001/S-001 scan
-fix plus R-001 end-to-end no-write/success evidence. After independent post-
-change convergence verification, O-001 may resume remote activation and the
-existing O-002/V-000/V-001/V-002/L-001 dependency chain. This plan does not mark
-those downstream tasks complete.
+The verification engineer should now assess this task-graph maintenance and
+the O-002A/V-000A artifact contracts before implementation. The implementation
+engineer may then create only the bounded README, examples, runbooks, checkers,
+and tests defined above. Security review must confirm credential isolation,
+provider trust boundaries, and live-smoke fail-closed behavior before any
+enterprise write. O-001 remote activation, O-002B provider adoption, V-000B
+live qualification, the closed Assistant/Workflow/Skill enterprise smoke,
+V-001, V-002, and L-001 remain incomplete until their own evidence passes.

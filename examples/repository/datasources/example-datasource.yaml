@@ -1,0 +1,10 @@
+apiVersion: codemie.epam.com/v1alpha1
+kind: Datasource
+metadata:
+  project: portable-example
+  repo_name: example-google-document
+spec:
+  index_type: google
+  description: Portable offline example using a non-secret opaque integration reference.
+  googleDoc: https://docs.google.com/document/d/replace-with-reviewed-document/edit
+  setting_id: replace-with-project-setting

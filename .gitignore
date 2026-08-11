@@ -7,3 +7,5 @@ __pycache__/
 *.py[cod]
 /ops/o001/activation-evidence.local.json
 /ops/o001/inventory.local.json
+/ops/v000/*.local.json
+/ops/v000/run-*.local/

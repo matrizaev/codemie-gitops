@@ -1,0 +1,14 @@
+apiVersion: codemie.epam.com/v1alpha1
+kind: Skill
+metadata:
+  project: portable-example
+  name: example-skill
+spec:
+  description: A portable non-production skill stored in a reviewed markdown sidecar.
+  visibility: private
+  categories: []
+  toolkits: []
+  mcp_servers: []
+  companion_files: []
+  enabled_builtin_subagents: []
+  contentFrom: example-skill.md

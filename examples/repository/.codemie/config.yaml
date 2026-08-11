@@ -1,0 +1,3 @@
+url: https://codemie.example.invalid
+auth_url: https://identity.example.invalid/realms/example/protocol/openid-connect/token
+project: portable-example

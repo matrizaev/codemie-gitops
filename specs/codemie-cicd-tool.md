@@ -2,7 +2,7 @@
 
   ## 1. Document status
 
-  * **Status:** DRAFT — v28 — **READY FOR IMPLEMENTATION**
+  * **Status:** DRAFT — v29 — **READY FOR IMPLEMENTATION**
   * **Tool name:** `codemie-gitops`
   * **Owner:** Product Specification Owner (pending assignment to a named product owner)
   * **Source request:** User-provided request on 2026-08-06: "create a CI/CD tool for the CodeMie platform that will be able to store assistants, workflows, datasources, and skills in YAML files, lint them, and create/update on the server side."
@@ -12,7 +12,7 @@
     * `https://github.com/codemie-ai/codemie` — server (FastAPI + LangChain/LangGraph + PostgreSQL/SQLModel + Elasticsearch)
     * `https://github.com/codemie-ai/codemie-ui` — UI (out of scope for this tool)
     * `https://github.com/codemie-ai/codemie-code` — **different, existing** local-agent CLI; not to be confused with `codemie-gitops`
-  * **Last reviewed:** 2026-08-11 (v28)
+  * **Last reviewed:** 2026-08-11 (v29)
   * **Revision history:**
     * v1 (2026-08-06 15:27 UTC+3) — initial DRAFT, based on public docs only.
     * v2 (2026-08-06 15:53 UTC+3) — post-repo-analysis: schema, identity, cross-entity refs, auth resolved or narrowed.
@@ -42,6 +42,7 @@
     * v26 (2026-08-10) — Added Mode (c) Keycloak ROPC (`grant_type=password`) to login command: human-user Keycloak auth with `CODEMIE_EMAIL` + `CODEMIE_PASSWORD` + `auth_url`; `CODEMIE_CLIENT_ID` defaults to `codemie-sdk`. Modes (a) `client_credentials` and (b) local-auth unchanged. FR-017, FR-024, IR-006, QR-007, §12 Authentication, §24 Constraints, §29 Handoff updated; SC-020 and AC-FR-024-08 added.
     * v27 (2026-08-11) — Clarified per-file lint warning scope: after validating the complete repository closure, lint emits secret-like and deprecation warnings only for the declaration selected by `--file`, in deterministic warning-code/canonical-field-path order. Failed lint emits no warnings and uses only the failure diagnostic contract. FR-014 and AC-FR-014-01 updated.
     * v28 (2026-08-11) — Resolved the target-compatibility identity conflict: the source-derived contract pinned to backend tag `2.42.0`, commit `2a481c290c99bf30ef80aadafa03d876a7f5f732`, is the compatibility baseline. `GET /v1/info.version` is semantic application-version observability, not source/API identity, and MUST NOT be compared with the pinned Git SHA or independently accept/reject `apply`. The exact pinned clone remains compatible when its operation-applicable pre-write contract evidence passes even though it reports `APP_VERSION=0.16.0`. Missing or invalid required consumed-contract evidence still fails as `E_API_INCOMPATIBLE`, exit 2, before any modifying request. Added SC-021, IR-011/012, AC-IR-011-01, and AC-IR-012-01.
+    * v29 (2026-08-11) — Clarified provider-safe CI token delivery without changing the CLI authentication contract. A protected GitHub Actions job may acquire one fresh token with `codemie-gitops login` only when it immediately registers that value with GitHub's native runtime masking control before any later command or output. A protected GitLab CI job consumes a pre-supplied, environment-scoped protected+masked `CODEMIE_TOKEN` because current GitLab has no stable provider-native runtime add-mask control for a freshly generated value. The GitLab example does not invoke `login`, persist or re-emit the token, or invent a masking fallback. Updated SC-011 and IR-006; added QR-012 and AC-QR-012-01.
 
   ---
 
@@ -61,6 +62,7 @@
   * **Stable exit taxonomy:** 0 = success; 1 = entity reconciliation or server-side failure after valid local input; 2 = local parsing/schema/validation/configuration failure, authentication/authorization precondition, connectivity/compatibility failure, or fatal error. (FR-011)
   * **Source-derived target compatibility:** the exact pinned CodeMie backend source is the phase-1 compatibility baseline. Its semantic `APP_VERSION=0.16.0` is not a Git/API identity and cannot by itself reject the target. Before any modifying request, `apply` must still establish every operation-applicable compatibility fact available from the required non-mutating contract evidence; missing or invalid required evidence fails closed. (IR-011, IR-012)
   * **Safe output boundary:** successful outcomes go to stdout; all failure/error diagnostics go to stderr and leave stdout empty. Raw bodies, payloads, credentials, tokens, authorization/cookie data, secret fields, and secret-like values are never logged or persisted. Diagnostics use only explicitly allowlisted non-sensitive fields. Successful `login` token stdout is the sole intentional exception. (FR-011, FR-016, FR-024, FR-026, QR-007)
+  * **Provider-safe CI token delivery:** first-class CI examples use only a token path that their provider can keep masked without persistence. GitHub may capture one fresh `login` token and immediately register it with the native runtime masking control before any later command or output. GitLab consumes a pre-supplied, environment-scoped protected+masked `CODEMIE_TOKEN` directly in the protected job and does not invoke `login`. No example may emulate a missing masking capability or fall back to an unmasked fresh token. (IR-006, QR-012)
   * **No deletes** in phase 1. (FR-008)
 
   **Status:** `READY FOR ARCHITECTURE PLANNING`. Workflow/Skill identity, always-write apply behavior, omission-to-null payload semantics, target compatibility identity, exit codes, safe diagnostics, Workflow reference shapes, inline assistants, and generic Datasource authoring are product-approved. Every authorable Datasource kind uses its ordinary existing create/update format with field requiredness/nullability pinned under DR-012. Implementation remains gated on the pinned source-derived target contract and proof of the required pre-write response, visibility, pagination, metadata-preservation, and authorization behavior.
@@ -126,6 +128,7 @@
   * **Optional-field materialization (product decision, 2026-08-09, v23; resolves VER-012):** an optional authorable server-request field may be omitted from YAML; the CLI emits it as explicit JSON null in every applicable create or update request rather than allowing the server to select a default. Explicit YAML null produces the same payload value where null is accepted. A field that is required by structure or whose pinned applicable request rejects null remains authoring-required and omission fails locally with exit code 2.
   * **Explicit Keycloak endpoint (product decision, 2026-08-09, v24):** Keycloak `login` requires a token endpoint supplied through `--auth-url`, `CODEMIE_AUTH_URL`, or `.codemie/config.yaml` `auth_url`. The CLI never derives this URL from the CodeMie API URL or a domain/path convention. The endpoint is non-secret; client IDs, client secrets, bearer tokens, email addresses, and passwords remain flag/environment inputs only and are prohibited from repository configuration.
   * **Pinned-source compatibility (user decision, 2026-08-11, v28):** the CLI is built against the currently pinned reference-only backend source at tag `2.42.0`, commit `2a481c290c99bf30ef80aadafa03d876a7f5f732`. That exact source baseline MUST be treated as compatible even though its `/v1/info` response reports semantic `APP_VERSION=0.16.0` rather than the Git SHA. The semantic version MUST NOT independently gate `apply`; all operation-applicable, source-derived non-mutating contract evidence remains required before a modifying request.
+  * **CI provider token masking (user-provided operational constraint and product decision, 2026-08-11, v29):** GitHub Actions has a stable provider-native runtime add-mask control suitable for a freshly captured token. Current GitLab supports preconfigured environment-scoped protected+masked variables but has no stable provider-native runtime add-mask command for a freshly generated `login` token. Therefore the phase-1 GitHub example uses fresh login plus immediate native masking, while the GitLab example uses a pre-supplied protected+masked `CODEMIE_TOKEN` in process memory and does not invoke `login`. This provider-specific split preserves the same no-output/no-persistence security outcome and has no insecure fallback.
 
   ---
 
@@ -368,15 +371,16 @@
   * **Trigger:** Two commits merged near-simultaneously; both trigger `apply` against the same environment.
   * **Expected outcome:** Deployment jobs are serialized per target environment before invoking `apply`. If another client bypasses this control and creates a duplicate Workflow marker or Skill natural key, post-write resolution reports an ambiguity that may follow a committed write; the tool does not select, delete, or roll back either entity.
 
-  ### SC-011 — CI acquires a token before apply
+  ### SC-011 — CI supplies one safely masked token before apply
   * **Actor:** CI runner
-  * **Trigger:** CI pipeline starts; no pre-issued token is in the environment.
-  * **Preconditions:** `CODEMIE_CLIENT_ID` and `CODEMIE_CLIENT_SECRET` are available as CI secrets; the Keycloak token endpoint is explicitly supplied by `--auth-url`, `CODEMIE_AUTH_URL`, or `.codemie/config.yaml` `auth_url`.
-  * **Main flow:** 1. CI calls `codemie-gitops login` with the credential environment variables and one explicit endpoint source. 2. Tool resolves the endpoint using `--auth-url` > `CODEMIE_AUTH_URL` > `.codemie/config.yaml` `auth_url` and posts `grant_type=client_credentials` to that exact URL. 3. Tool writes the resulting bearer token as a single line to stdout. 4. CI captures: `CODEMIE_TOKEN=$(codemie-gitops login)`. 5. Subsequent `apply` calls use `CODEMIE_TOKEN` without re-authenticating.
-  * **Expected outcome:** Token acquired once, valid ~8 h, reused across steps. No credentials appear in CI logs.
+  * **Trigger:** A protected CI deployment job needs one bearer token for its serialized `apply` invocations.
+  * **Preconditions:** For fresh acquisition, `CODEMIE_CLIENT_ID` and `CODEMIE_CLIENT_SECRET` are available as CI secrets, the Keycloak token endpoint is explicitly supplied by `--auth-url`, `CODEMIE_AUTH_URL`, or `.codemie/config.yaml` `auth_url`, and the provider exposes a stable native runtime masking control. For pre-issued delivery, `CODEMIE_TOKEN` is an environment-scoped protected+masked CI variable available only to the protected deployment job.
+  * **Main flow:** 1. The job uses exactly one provider-safe branch. 2. In GitHub Actions, CI captures `CODEMIE_TOKEN=$(codemie-gitops login)`, immediately registers the captured value with GitHub's native runtime masking control before any later command or output, and retains it only in the same protected step's memory. 3. In GitLab CI, the protected job consumes the pre-supplied environment-scoped protected+masked `CODEMIE_TOKEN` directly in process memory and does not invoke `login`. 4. Subsequent `apply` calls in the same protected shell boundary reuse the token without re-authenticating or transferring it through a file, artifact, cache, report, job output, or downstream variable.
+  * **Expected outcome:** One masked token is reused for the protected job. No token or credential appears in CI logs or persisted CI data.
   * **Failure flows:**
-    * If no explicit Keycloak endpoint source is configured, the tool exits code 2 before network access, writes a safe missing-configuration diagnostic to stderr, and writes nothing to stdout. It does not attempt to derive an endpoint from `CODEMIE_URL` or another value.
-    * If the explicitly configured endpoint is unreachable or credentials are invalid, the tool exits code 2, writes a safe category/status diagnostic to stderr, and writes nothing to stdout. It never prints or persists credential values, request/response bodies, identity-provider error text, or a token.
+    * In the fresh-acquisition branch, if no explicit Keycloak endpoint source is configured, the tool exits code 2 before network access, writes a safe missing-configuration diagnostic to stderr, and writes nothing to stdout. It does not attempt to derive an endpoint from `CODEMIE_URL` or another value.
+    * In the fresh-acquisition branch, if the explicitly configured endpoint is unreachable or credentials are invalid, the tool exits code 2, writes a safe category/status diagnostic to stderr, and writes nothing to stdout. It never prints or persists credential values, request/response bodies, identity-provider error text, or a token.
+    * If a provider has no stable native runtime masking control and no pre-supplied protected+masked token is available, the credentialed job MUST fail before invoking `login` or making a CodeMie request. It MUST NOT emulate masking, emit the token, or use a persistence mechanism as a fallback.
 
   ### SC-012 — Developer tests against a local dev server
   * **Actor:** Local developer
@@ -611,7 +615,8 @@
   * **IR-006** — **Authentication modes (phase 1):**
     * `CODEMIE_TOKEN` environment variable — **primary CI mode.** Tool sends `Authorization: Bearer $CODEMIE_TOKEN` on every request. The caller is responsible for acquiring and caching the token. The `--token` CLI flag is **not accepted**; supplying it is an exit-2 local failure before network access (SEC-001 remediation, v25).
     * `codemie-gitops login` command — acquires a bearer token and writes it as a single line to stdout. Supports three mutually exclusive modes as defined by FR-024: **(a)** `CODEMIE_CLIENT_ID` (or `--client-id`) + `CODEMIE_CLIENT_SECRET` (environment only) + explicit `auth_url` → `grant_type=client_credentials` at that exact Keycloak token endpoint (CI / production); **(c)** `CODEMIE_EMAIL` (or `--email`) + `CODEMIE_PASSWORD` (environment only) + explicit `auth_url` (no `CODEMIE_CLIENT_SECRET`) → `grant_type=password` at that exact Keycloak token endpoint, `client_id` defaults to `codemie-sdk` (human users / developer access to Keycloak-backed instances); **(b)** `CODEMIE_EMAIL` (or `--email`) + `CODEMIE_PASSWORD` (environment only), no `auth_url` (no `CODEMIE_CLIENT_SECRET`) → `POST /v1/local-auth/login` (local dev only). For all modes, the CLI MUST use the explicitly configured endpoint and MUST NOT derive it from `CODEMIE_URL`, config `url`, or a convention. Missing endpoint configuration where required is exit code 2 before network access. Secret credentials MUST come from CI secret stores via environment variables and MUST NOT be stored in `.codemie/config.yaml`.
-    * **Token lifetime:** ~8 hours. CI pipelines MUST cache the token across steps and MUST NOT call `login` once per entity. The typical pattern is: `CODEMIE_TOKEN=$(codemie-gitops login ...)` at the start of the job, then reuse across all subsequent `apply` invocations.
+    * **Token lifetime:** ~8 hours. CI pipelines MUST reuse one token across all `apply` invocations in the same protected process boundary and MUST NOT call `login` once per entity. They MUST NOT transfer a freshly generated token across steps or jobs to achieve reuse. GitHub captures once at the start of its protected credentialed step; GitLab receives the pre-supplied protected+masked token at the protected job boundary.
+    * **Provider-safe CI delivery:** A CI example MAY acquire a fresh token with `login` only when its provider exposes a stable native runtime masking control that is invoked immediately after capture and before any later command or output; the token MUST remain only in the same protected shell/step memory. Otherwise the example MUST consume a pre-supplied environment-scoped protected+masked `CODEMIE_TOKEN` and MUST NOT invoke `login`. Accordingly, the phase-1 GitHub Actions example uses one fresh login followed immediately by GitHub native runtime masking, while the GitLab CI example consumes a pre-supplied environment-scoped protected+masked `CODEMIE_TOKEN`. Neither path may persist, re-emit, or transfer the token, and no simulated or unmasked fallback is permitted.
     * **Not supported:** browser-redirect / OAuth2 authorization-code flow; static API keys. `POST /v1/local-auth/login` is supported but **only for local dev** (see mode (b) above); MUST NOT be used in CI pipelines.
     * **Project integrations constraint (A-3):** Service-account credentials access only Project-level integrations. Personal integrations (user's own Jira/Git connections) are silently ignored by the server. This is an operational prerequisite, not a tool behavior. Teams MUST migrate personal integrations to project level before the tool's datasource apply will function correctly.
   * **IR-007** — The tool MUST NOT retry create requests on 4xx responses. On 400/409/422, it MUST emit an FR-016-safe rejection diagnostic to stderr, leave stdout empty, and exit code 1.
@@ -636,6 +641,7 @@
   * **QR-009 (Identity safety)** — Workflow and Skill resolution MUST prefer a visible failure over selecting from incomplete, invalid, unstable, or multiple identity evidence. No “first”, “newest”, “owned”, display-name, or list-order tiebreak is permitted.
   * **QR-010 (Concurrency control)** — Production CI apply jobs MUST be serialized per target environment. During a serialized deployment window, the adopting team MUST govern UI and other API clients so they do not concurrently create the same Workflow/Skill natural key, adopt another Workflow for the same key, or modify the reserved Workflow identity record. This is an operational prerequisite because the server does not enforce the Workflow record or Skill natural key globally.
   * **QR-011 (Residual-race visibility)** — A Workflow or Skill write followed by ambiguous identity evidence MUST produce a safe stderr diagnostic that distinguishes “no write performed” from “write may already have committed,” while leaving stdout empty. Automatic deletion, rollback, or arbitrary target selection is prohibited.
+  * **QR-012 (CI token exposure prevention)** — Each first-class CI example MUST use a provider-supported token delivery path that keeps the bearer token masked and process-local throughout the protected deployment boundary. A freshly generated token is permitted only when the provider's stable native runtime masking control is applied immediately after capture and before any later command or output. A provider without that capability MUST use a pre-supplied environment-scoped protected+masked `CODEMIE_TOKEN` and MUST NOT invoke `login`. No token may be echoed, persisted, transferred to another step/job, or handled through an emulated masking fallback.
 
   ---
 
@@ -1250,6 +1256,20 @@
   And the accompanying prerequisites prohibit concurrent UI or other-client Workflow/Skill identity writes during the deployment window
   ```
 
+  ### AC-QR-012-01 — CI examples use provider-safe token delivery
+  ```gherkin
+  Given the phase-1 GitHub Actions and GitLab CI examples
+  When their protected credentialed jobs are reviewed
+  Then GitHub captures one fresh token from codemie-gitops login in the same protected step
+  And GitHub immediately invokes its native runtime add-mask control for that token before any later command or output
+  And GitHub reuses the token only from that step's process memory
+  And GitLab does not invoke codemie-gitops login
+  And GitLab consumes CODEMIE_TOKEN only from an environment-scoped protected+masked CI variable in the protected job
+  And GitLab reuses the token only from that job's process memory
+  And neither example echoes, persists, transfers, or re-emits the token
+  And neither example implements a simulated, unmasked, or persistence-based masking fallback
+  ```
+
   ### AC-FR-022-02 — Config project default satisfies metadata.project requirement
   ```gherkin
   Given .codemie/config.yaml defines project: my-project
@@ -1440,6 +1460,7 @@
   | Product decision Q3/Q12 | SC-011 | FR-024, IR-006 | AC-FR-024-01 |
   | Product decision v24 (explicit Keycloak endpoint) | SC-011 | FR-017/024; IR-006 | AC-FR-017-01/02, AC-FR-024-01/03/07 |
   | Product decision v26 (Keycloak ROPC Mode (c)) | SC-020 | FR-017/024; IR-006; QR-007 | AC-FR-024-08 |
+  | User-provided provider constraint and product decision v29 | SC-011 | IR-006; QR-007/012 | AC-FR-024-01/03, AC-QR-012-01 |
   | Product decision v23 (VER-012; supersedes Q4 completeness rule) | SC-003, SC-017 | FR-021/022; DR-001/012; VR-003/016 | AC-FR-021-01/02, AC-FR-022-01/04 |
   | Reference source plus product decisions v20/v22 (OQ-16/OQ-32) | SC-001, SC-002, SC-005 | FR-036; DR-010/011; IR-008; VR-014/015 | AC-IR-008-01, AC-DR-010-01/02, AC-DR-011-01 |
   | Product decision v14; ADR-008 feasibility evidence | SC-013 | FR-028, FR-029, FR-032, FR-033; DR-007/008 | AC-FR-028-01/02, AC-FR-029-01/02, AC-FR-033-01 |
@@ -1461,6 +1482,7 @@
   * Non-destructive, always-write apply: create when safely missing; update on every valid invocation when safely present; no desired/current comparison, skipped write, or `unchanged` outcome.
   * Offline `lint` + online `apply` + `login` token acquisition. No `plan` in phase 1.
   * Per-environment targeting via `CODEMIE_URL` + `CODEMIE_TOKEN`. No overlay/templating in phase 1.
+  * Provider examples use only provider-supported safe token delivery. GitHub may acquire one fresh token and immediately register it with the native runtime masking control before any later command or output; GitLab consumes a pre-supplied environment-scoped protected+masked `CODEMIE_TOKEN` and does not invoke `login`. Both retain and reuse the token only within the same protected process boundary, with no persistence, transfer, re-emission, or fallback masking mechanism.
   * Target compatibility is derived from the pinned consumed source contract, not semantic `GET /v1/info.version`. The exact pinned backend clone reporting `0.16.0` is compatible when required operation-specific pre-write evidence passes; missing or invalid required evidence remains a fail-before-write `E_API_INCOMPATIBLE` outcome.
   * Explicit authored desired-state values are preserved. Required/null-rejecting fields must be authored; optional authorable request fields may be omitted and then materialize as explicit JSON null in every applicable create/update payload. Explicit YAML null is equivalent where the pinned request accepts it. The bounded transformations and mixed-ownership Workflow `meta_config` rule in FR-021/DR-012 still apply.
   * Phase 1: `codemie` assistant type only. CI docs: GitHub Actions + GitLab CI.
@@ -1490,6 +1512,7 @@
   * MUST use documented API surface (no direct DB).
   * MUST NOT delete server-side assets (phase 1).
   * MUST NOT print or persist tokens, credentials, authorization headers, cookies, secret-classified/secret-like values, request payloads, server-provided error text, or full request/response bodies. Successful `login` stdout is the sole token-output exception.
+  * MUST NOT invoke fresh CI login on a provider that cannot immediately mask the captured token through a stable native runtime control. Such a provider must receive a pre-supplied environment-scoped protected+masked `CODEMIE_TOKEN`; no simulated, unmasked, or persistence-based fallback is allowed.
   * MUST NOT emit Git commit SHA, target environment origin, Git author, CI-run identity, or replacement provenance in success, warning, or failure output.
   * MUST NOT collide with `codemie-code` naming.
   * MUST NOT discover, copy, or invoke server defaults for omitted optional authorable fields; those fields become explicit JSON null under FR-021/DR-012. Fields whose pinned applicable request rejects null remain authoring-required.
@@ -1503,7 +1526,7 @@
   * `apiVersion`/`metadata` envelope treatment — client-side strip before API call vs. server-aware (OQ-18).
   * Strategy for keeping bundled Rust schema in sync with server Pydantic model changes.
   * The exact composition and scheduling of non-mutating, operation-specific contract probes that satisfy IR-012. `GET /v1/info.version` is not eligible as source/API identity or as an independent compatibility gate.
-  * **Token caching in CI:** The tool itself MUST NOT cache tokens across invocations (stateless binary). The recommended pattern is a shell variable assigned once per job. The architect should include this pattern prominently in CI integration examples.
+  * **Token reuse in CI:** The tool itself MUST NOT cache tokens across invocations (stateless binary). The examples must retain one token only in the protected process boundary: GitHub assigns a freshly acquired and immediately native-masked token once in its protected step; GitLab consumes the pre-supplied protected+masked `CODEMIE_TOKEN` already present in its protected job. The architect must preserve this provider-specific split.
   * Pin and contract-test requiredness, nullability, operation applicability, and the ordinary create/update/read request, response, discriminator, validation, integration-reference, and mutability shape for every entity and authorable Datasource kind. Do not infer a format for a provider-defined or import/read-only kind.
 
   **Decisions the architect MUST NOT reinterpret without product sign-off:**
@@ -1518,6 +1541,7 @@
   * Writing a failure outcome to stdout, copying server-provided error content into diagnostics, adding request/response-body logging, or weakening the FR-016 diagnostic allowlist in a debug, verbose, trace, panic, or fatal path.
   * Emitting Git commit SHA, target environment origin, Git author, CI-run identity, or replacement provenance in any CLI output. Cross-system audit correlation remains external.
   * Suppressing the successful `login` token stdout contract or permitting the token to appear anywhere else.
+  * Requiring every CI provider example to invoke `login`, invoking fresh login where the provider cannot immediately mask the captured value through a stable native runtime control, or substituting an emulated/persistence-based masking fallback for GitLab's pre-supplied protected+masked `CODEMIE_TOKEN`.
   * Moving `skillRefs`/`datasourceRefs` onto persisted Workflow assistant entries, replacing workflow-local `states[].assistant_id` with a server UUID, or dropping inline assistant support.
   * Adding non-listed entity types.
   * Adding a `plan` command (deferred, not forbidden).
@@ -1538,7 +1562,7 @@
   Specification status: READY FOR ARCHITECTURE PLANNING
   ```
 
-  Product behavior is now bounded and testable: the four-entity model, Workflow/Skill identity, always-write apply semantics, omission-to-null payload semantics, source-derived target compatibility, explicit Keycloak endpoint configuration, adoption, ambiguity, visibility, serialization, governance, residual races, exit codes, safe non-provenance output, Workflow resource-reference shapes, inline assistants, per-kind ordinary Datasource CRUD, and the three-mode login command including Mode (c) Keycloak ROPC are approved. PRODUCT-OQ-01/VER-011, ARCH-B01, VER-012, OQ-36, and C-13 are resolved, and no open product question blocks architecture planning. The pinned target contract and deployment evidence in §23 remain implementation/verification gates. Pre-implementation verification next assesses the refreshed artifact set, followed by the required security review; a future review artifact is not required to exist before product readiness or architecture planning. Architecture must preserve operation-specific field nullability, explicit non-derived authentication endpoint resolution, source-derived pre-write compatibility evidence, and each Datasource kind's existing format while keeping integration provisioning outside the tool.
+  Product behavior is now bounded and testable: the four-entity model, Workflow/Skill identity, always-write apply semantics, omission-to-null payload semantics, source-derived target compatibility, explicit Keycloak endpoint configuration, provider-safe CI token delivery, adoption, ambiguity, visibility, serialization, governance, residual races, exit codes, safe non-provenance output, Workflow resource-reference shapes, inline assistants, per-kind ordinary Datasource CRUD, and the three-mode login command including Mode (c) Keycloak ROPC are approved. PRODUCT-OQ-01/VER-011, ARCH-B01, VER-012, OQ-36, and C-13 are resolved, and no open product question blocks architecture planning. The pinned target contract and deployment evidence in §23 remain implementation/verification gates. Pre-implementation verification next assesses the refreshed artifact set, followed by the required security review; a future review artifact is not required to exist before product readiness or architecture planning. Architecture must preserve operation-specific field nullability, explicit non-derived authentication endpoint resolution, source-derived pre-write compatibility evidence, provider-specific safe CI token delivery, and each Datasource kind's existing format while keeping integration provisioning outside the tool.
 
   ### Closed product decisions
 
@@ -1635,6 +1659,12 @@
   * The source-derived consumed contract pinned to backend tag `2.42.0`, commit `2a481c290c99bf30ef80aadafa03d876a7f5f732`, is the phase-1 target compatibility baseline. The exact clone's `APP_VERSION=0.16.0` is semantic observability and is not compared with the Git SHA. It cannot independently accept or reject `apply`.
   * Every requested operation retains strict, non-mutating pre-write contract evidence. Missing or invalid required consumed evidence produces `E_API_INCOMPATIBLE`, exit code 2, with empty stdout and no modifying request. Additional unconsumed response fields do not fail or widen the contract.
 
+  **Product decision (2026-08-11, v29):**
+  * The first-class provider examples do not have to use the same token-acquisition mechanism; they must deliver the same no-leak outcome using a provider-supported safe mechanism.
+  * GitHub Actions may capture one fresh `codemie-gitops login` token and must immediately register it with GitHub's native runtime masking control before any later command or output. The token remains only in the same protected step's memory and is reused there.
+  * GitLab CI consumes a pre-supplied environment-scoped protected+masked `CODEMIE_TOKEN` in the protected job and does not invoke `login`, because current GitLab has no stable provider-native runtime add-mask command for a freshly generated token. The token remains process-local and is neither persisted nor re-emitted.
+  * A provider lacking a stable native runtime masking control has no fresh-login fallback. Simulated masking, token files, dotenv reports, job outputs, artifacts, caches, and unmasked use are prohibited.
+
   ### External dependencies (platform team)
   * Qualify each target CodeMie deployment against the pinned source-derived consumed contract; `/v1/info.version` is not deployment/source identity.
   * Prove complete Workflow/Skill manager/admin visibility, exhaustive stable pagination, exact identity/permission fields, Workflow `meta_config` preservation, and post-write read behavior in the target deployment.
@@ -1646,6 +1676,6 @@
   * None.
 
   ### Statement of readiness
-  The specification is **READY FOR ARCHITECTURE PLANNING**. The v14 identity decisions, v15 exit taxonomy, v16 safe output boundary, v17 Workflow reference decision, v20/v22 generic Datasource boundary, v21 provenance boundary, v22 always-write decision, v23 VER-012 omission/nullability rule, v24 explicit Keycloak endpoint rule, v26 Mode (c) Keycloak ROPC addition, and v28 target-compatibility decision require downstream convergence. Readiness does not prove operational deployment compatibility; the solution architect and platform owner must retain the independent pre-write and deployment-qualification evidence gates above. After that refresh, pre-implementation verification assesses artifact consistency and the security reviewer performs the next required review. The absence of a future security-review artifact at this stage is expected and is not a product blocker.
+  The specification is **READY FOR ARCHITECTURE PLANNING**. The v14 identity decisions, v15 exit taxonomy, v16 safe output boundary, v17 Workflow reference decision, v20/v22 generic Datasource boundary, v21 provenance boundary, v22 always-write decision, v23 VER-012 omission/nullability rule, v24 explicit Keycloak endpoint rule, v26 Mode (c) Keycloak ROPC addition, v28 target-compatibility decision, and v29 provider-safe CI token-delivery decision require downstream convergence. Readiness does not prove operational deployment compatibility; the solution architect and platform owner must retain the independent pre-write and deployment-qualification evidence gates above. After that refresh, pre-implementation verification assesses artifact consistency and the security reviewer performs the next required review. The absence of a future security-review artifact at this stage is expected and is not a product blocker.
 
   ---

@@ -95,9 +95,13 @@ effective project and reserved record:
 
 An invalid page origin, echo, size, or page-count formula is
 `E_API_INCOMPATIBLE`, exit 2 before write. Across individually compatible
-responses within a pass, changing pagination fingerprints, repeated row IDs,
-accumulated-count mismatch, or pre/post-scan churn fails closed as entity-
-resolution instability, exit 1 before write.
+responses within a pre-write pass, changing pagination fingerprints, repeated
+row IDs, accumulated-count mismatch, or scan churn fails closed as entity-
+resolution instability, exit 1 with no write. The same compatible instability
+detected during post-write full re-resolution is exit 1 with a may-have-
+committed result; post-write response-contract or connectivity failure is exit
+2 with an uncertain-commit result. Neither post-write classification may be
+described as a before-write failure.
 
 Create/update merges the reserved member into the request and a bounded
 post-write full re-resolution must find exactly one identity associated with

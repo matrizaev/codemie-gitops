@@ -1,0 +1,22 @@
+apiVersion: codemie.epam.com/v1alpha1
+kind: Assistant
+metadata:
+  project: portable-example
+  slug: example-assistant
+spec:
+  name: Portable Example Assistant
+  description: A non-production example that references the checked-in skill.
+  system_prompt: Help with the portable example without accessing external systems.
+  llm_model_type: replace-with-approved-model
+  type: codemie
+  context: []
+  toolkits: []
+  conversation_starters: []
+  shared: false
+  mcp_servers: []
+  sub_assistants: []
+  enabled_builtin_subagents: []
+  skills:
+    - project: portable-example
+      name: example-skill
+  categories: []

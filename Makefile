@@ -8,7 +8,8 @@ lint:
 
 test:
 	cargo test --locked --all-targets
-	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_o001_*.py'
+	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py'
+	PYTHONDONTWRITEBYTECODE=1 python3 scripts/check_o002_examples.py
 
 o001-check:
 	PYTHONDONTWRITEBYTECODE=1 python3 scripts/check_o001_controls.py

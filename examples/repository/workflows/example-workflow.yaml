@@ -1,0 +1,28 @@
+apiVersion: codemie.epam.com/v1alpha1
+kind: Workflow
+metadata:
+  project: portable-example
+  slug: example-workflow
+spec:
+  name: Portable Example Workflow
+  description: A non-production empty graph used for offline validation.
+  mode: Sequential
+  shared: false
+  execution_config:
+    messages_limit_before_summarization: 10
+    tokens_limit_before_summarization: 1000
+    type: default
+    enable_summarization_node: false
+    recursion_limit: 10
+    max_concurrency: 1
+    verbose: false
+    max_iteration_key_output_limit: 100
+    assistants: []
+    tools: []
+    custom_nodes: []
+    states: []
+    retry_policy:
+      initial_interval: 1000
+      backoff_factor: 2
+      max_interval: 60000
+      max_attempts: 3
