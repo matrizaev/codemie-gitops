@@ -391,6 +391,193 @@ impl ApiClient {
         let _ = Self::bounded_body(resp).await;
         Ok(())
     }
+
+    /// GET that returns `Ok(None)` on 404 and `Ok(Some(T))` on 200.
+    ///
+    /// All other non-2xx statuses and transport errors propagate normally.
+    /// Used by adapters to distinguish "not found" (Create path) from errors.
+    pub async fn get_optional<T: serde::de::DeserializeOwned>(
+        &self,
+        url: &ValidatedUrl,
+        path: &str,
+    ) -> Result<Option<T>, AppError> {
+        let full_url = Self::join_url(url, path);
+        let mut last_err =
+            AppError::Connectivity("GET request failed after all retry attempts".into());
+
+        for attempt in 0..GET_MAX_RETRIES {
+            if attempt > 0 {
+                let jitter = Duration::from_millis(RETRY_BASE_JITTER_MS * u64::from(attempt));
+                tokio::time::sleep(jitter).await;
+            }
+
+            match self
+                .client
+                .get(&full_url)
+                .header(reqwest::header::AUTHORIZATION, self.auth_header_value())
+                .send()
+                .await
+            {
+                Err(e) => {
+                    last_err = Self::map_send_error(e);
+                }
+                Ok(resp) => {
+                    let status = resp.status();
+                    // 404 → entity not found; return None for the Create path.
+                    if status == reqwest::StatusCode::NOT_FOUND {
+                        return Ok(None);
+                    }
+                    if status.is_server_error()
+                        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                    {
+                        last_err = Self::classify_error_status(status, false);
+                        continue;
+                    }
+                    if !status.is_success() {
+                        return Err(Self::classify_error_status(status, false));
+                    }
+                    let body = Self::bounded_body(resp).await?;
+                    return Self::deserialize_json::<T>(&body).map(Some);
+                }
+            }
+        }
+
+        Err(last_err)
+    }
+
+    /// POST that returns `Ok(None)` on 409 Conflict and `Ok(Some(T))` on success.
+    ///
+    /// Used by the Skill adapter for the single bounded create-409 re-resolution
+    /// path (S-001). All other non-2xx statuses propagate normally.
+    pub async fn post_or_conflict<B, T>(
+        &self,
+        url: &ValidatedUrl,
+        path: &str,
+        body: &B,
+    ) -> Result<Option<T>, AppError>
+    where
+        B: serde::Serialize,
+        T: serde::de::DeserializeOwned,
+    {
+        let full_url = Self::join_url(url, path);
+        let resp = self
+            .client
+            .post(&full_url)
+            .header(reqwest::header::AUTHORIZATION, self.auth_header_value())
+            .json(body)
+            .send()
+            .await
+            .map_err(Self::map_send_error)?;
+
+        let status = resp.status();
+        if status == reqwest::StatusCode::CONFLICT {
+            // Drain body to release the connection.
+            let _ = Self::bounded_body(resp).await;
+            return Ok(None);
+        }
+        if !status.is_success() {
+            return Err(Self::classify_error_status(status, true));
+        }
+        let body_bytes = Self::bounded_body(resp).await?;
+        Self::deserialize_json(&body_bytes).map(Some)
+    }
+
+    /// POST `multipart/form-data` with scalar query parameters.
+    ///
+    /// `query_params` are appended to the URL as percent-encoded `key=value` pairs.
+    /// `file_parts` become repeated `files` multipart parts. Not retried.
+    pub async fn post_multipart(
+        &self,
+        url: &ValidatedUrl,
+        path: &str,
+        query_params: &[(String, String)],
+        file_parts: Vec<(String, Vec<u8>)>,
+    ) -> Result<serde_json::Value, AppError> {
+        let full_url = Self::join_url_with_query(url, path, query_params);
+        let form = Self::build_multipart_form(file_parts)?;
+        let resp = self
+            .client
+            .post(&full_url)
+            .header(reqwest::header::AUTHORIZATION, self.auth_header_value())
+            .multipart(form)
+            .send()
+            .await
+            .map_err(Self::map_send_error)?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(Self::classify_error_status(status, true));
+        }
+        let body_bytes = Self::bounded_body(resp).await?;
+        Self::deserialize_json(&body_bytes)
+    }
+
+    /// PUT `multipart/form-data` with scalar query parameters. Not retried.
+    pub async fn put_multipart(
+        &self,
+        url: &ValidatedUrl,
+        path: &str,
+        query_params: &[(String, String)],
+        file_parts: Vec<(String, Vec<u8>)>,
+    ) -> Result<serde_json::Value, AppError> {
+        let full_url = Self::join_url_with_query(url, path, query_params);
+        let form = Self::build_multipart_form(file_parts)?;
+        let resp = self
+            .client
+            .put(&full_url)
+            .header(reqwest::header::AUTHORIZATION, self.auth_header_value())
+            .multipart(form)
+            .send()
+            .await
+            .map_err(Self::map_send_error)?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(Self::classify_error_status(status, true));
+        }
+        let body_bytes = Self::bounded_body(resp).await?;
+        Self::deserialize_json(&body_bytes)
+    }
+
+    /// Append percent-encoded query parameters to a base path.
+    fn join_url_with_query(
+        url: &ValidatedUrl,
+        path: &str,
+        query_params: &[(String, String)],
+    ) -> String {
+        let mut full = Self::join_url(url, path);
+        if !query_params.is_empty() {
+            // Check if there's already a `?` in the path (e.g. from pre-built query strings).
+            let sep = if full.contains('?') { '&' } else { '?' };
+            let mut first = true;
+            for (k, v) in query_params {
+                if first {
+                    full.push(sep);
+                    first = false;
+                } else {
+                    full.push('&');
+                }
+                full.push_str(&encode_query_value(k));
+                full.push('=');
+                full.push_str(&encode_query_value(v));
+            }
+        }
+        full
+    }
+
+    /// Build a `reqwest::multipart::Form` from `(filename, bytes)` pairs.
+    ///
+    /// All files are added as `files` parts (the File Datasource transport name).
+    fn build_multipart_form(
+        file_parts: Vec<(String, Vec<u8>)>,
+    ) -> Result<reqwest::multipart::Form, AppError> {
+        let mut form = reqwest::multipart::Form::new();
+        for (filename, bytes) in file_parts {
+            let part = reqwest::multipart::Part::bytes(bytes).file_name(filename);
+            form = form.part("files", part);
+        }
+        Ok(form)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -418,6 +605,20 @@ fn json_max_depth(value: &serde_json::Value, current: usize) -> usize {
             .unwrap_or(current + 1),
         _ => current,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Query-value percent-encoding (T-002)
+// ---------------------------------------------------------------------------
+
+/// Percent-encode a query parameter value per RFC 3986.
+///
+/// Uses `url::form_urlencoded` which encodes all characters except
+/// unreserved ones (A–Z, a–z, 0–9, `-`, `_`, `.`, `~`). Spaces become `+`;
+/// all other characters are `%XX`-encoded. This satisfies the T-002 mandate
+/// that route parameters and query parameter values are encoded by a URL encoder.
+pub fn encode_query_value(value: &str) -> String {
+    url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
 }
 
 // ---------------------------------------------------------------------------

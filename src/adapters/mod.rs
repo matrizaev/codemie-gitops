@@ -10,4 +10,22 @@ pub mod datasource;
 pub mod skill;
 pub mod workflow;
 
-// Re-exports are added in F-002 when the CLI dispatch uses them.
+/// What a successful apply operation did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApplyAction {
+    Created,
+    Updated,
+}
+
+/// The result of a successful single-entity apply.
+///
+/// `server_id` is the server-assigned UUID. It is invocation-local: callers
+/// may forward it to the render layer for outcome reporting but MUST NOT
+/// write it to persistent state or expose it in user-facing output.
+#[derive(Debug)]
+pub struct ApplyResult {
+    /// Whether this was a create or an update.
+    pub action: ApplyAction,
+    /// Server UUID (never forwarded to logs or user-visible output, SEC-005).
+    pub server_id: String,
+}
