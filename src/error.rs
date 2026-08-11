@@ -48,6 +48,30 @@ pub enum AppError {
     #[error("API incompatible: {0}")]
     ApiIncompatible(String),
 
+    /// E_SERVER_REJECTED (exit 1): the server rejected a modifying request
+    /// after local input had passed validation.
+    #[error("server rejected write: {0}")]
+    ServerRejected(String),
+
+    /// E_WRITE_UNCERTAIN (exit 1): a modifying request may have committed but
+    /// the invocation cannot safely report success.
+    #[error("write result uncertain: {0}")]
+    WriteUncertain(String),
+
+    /// E_WRITE_VERIFICATION_UNAVAILABLE (exit 2): post-write verification
+    /// could not complete because connectivity/server availability was lost.
+    #[error("write verification unavailable: {0}")]
+    WriteVerificationUnavailable(String),
+
+    /// E_WRITE_VERIFICATION_INCOMPATIBLE (exit 2): post-write verification
+    /// received a response outside the pinned contract.
+    #[error("write verification incompatible: {0}")]
+    WriteVerificationIncompatible(String),
+
+    /// E_TIMEOUT (exit 2): the whole invocation exceeded its deadline.
+    #[error("invocation timeout: {0}")]
+    Timeout(String),
+
     /// E_INTERNAL (exit 2): local invariant violation.
     #[error("internal error: {0}")]
     Internal(String),
@@ -62,7 +86,9 @@ impl AppError {
     /// Maps the error variant to the CLI contract exit code.
     pub fn exit_code(&self) -> i32 {
         match self {
-            AppError::Reconciliation(_) => 1,
+            AppError::Reconciliation(_)
+            | AppError::ServerRejected(_)
+            | AppError::WriteUncertain(_) => 1,
             _ => 2,
         }
     }

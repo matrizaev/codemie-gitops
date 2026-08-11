@@ -16,7 +16,7 @@ use serde::Deserialize;
 
 use crate::config::ValidatedUrl;
 use crate::error::AppError;
-use crate::http::{ApiClient, encode_query_value};
+use crate::http::{encode_query_value, ApiClient};
 use crate::parse::ParsedDeclaration;
 use crate::projection::{project, ExistingEntity, RequestBody, WritePlan};
 
@@ -71,13 +71,20 @@ pub async fn apply(
     });
 
     // Step 2: Project.
-    let plan = project(decl, existing_entity.as_ref(), None, repo_root, follow_symlinks)?;
+    let plan = project(
+        decl,
+        existing_entity.as_ref(),
+        None,
+        repo_root,
+        follow_symlinks,
+    )?;
 
     // Step 3: Dispatch.
     match plan {
-        WritePlan::Create { request: RequestBody::Json(body) } => {
-            let resp: AssistantIdResponse =
-                client.post(base_url, "/v1/assistants", &body).await?;
+        WritePlan::Create {
+            request: RequestBody::Json(body),
+        } => {
+            let resp: AssistantIdResponse = client.post(base_url, "/v1/assistants", &body).await?;
             Ok(ApplyResult {
                 action: ApplyAction::Created,
                 server_id: resp.id,
@@ -88,8 +95,7 @@ pub async fn apply(
             request: RequestBody::Json(body),
         } => {
             let update_path = format!("/v1/assistants/{}", encode_query_value(&server_id));
-            let resp: AssistantIdResponse =
-                client.put(base_url, &update_path, &body).await?;
+            let resp: AssistantIdResponse = client.put(base_url, &update_path, &body).await?;
             Ok(ApplyResult {
                 action: ApplyAction::Updated,
                 server_id: resp.id,
@@ -98,6 +104,46 @@ pub async fn apply(
         _ => Err(AppError::Internal(
             "Assistant projection produced unexpected body variant".into(),
         )),
+    }
+}
+
+/// Resolve an Assistant natural reference without writing it (DR-003/W-002).
+pub async fn resolve_reference(
+    client: &ApiClient,
+    base_url: &ValidatedUrl,
+    project_name: &str,
+    slug: &str,
+) -> Result<String, AppError> {
+    let path = format!(
+        "/v1/assistants/slug/{}?project={}",
+        encode_query_value(slug),
+        encode_query_value(project_name)
+    );
+    client
+        .get_optional::<AssistantIdResponse>(base_url, &path)
+        .await?
+        .map(|item| item.id)
+        .ok_or_else(|| {
+            AppError::Reconciliation("referenced Assistant is missing on the target server".into())
+        })
+}
+
+/// Verify that the authored identity resolves to the route ID returned by the
+/// modifying request. This is a read-only post-write check (R-001).
+pub async fn verify_identity(
+    client: &ApiClient,
+    base_url: &ValidatedUrl,
+    project_name: &str,
+    slug: &str,
+    expected_server_id: &str,
+) -> Result<(), AppError> {
+    let actual = resolve_reference(client, base_url, project_name, slug).await?;
+    if actual == expected_server_id {
+        Ok(())
+    } else {
+        Err(AppError::Reconciliation(
+            "Assistant write may have committed but identity verification did not match".into(),
+        ))
     }
 }
 
@@ -173,8 +219,13 @@ mod tests {
         let decl = assistant_decl("my-project", "my-assistant");
 
         let result = apply(
-            &client, &url, &decl, "my-project", "my-assistant",
-            Path::new("."), false,
+            &client,
+            &url,
+            &decl,
+            "my-project",
+            "my-assistant",
+            Path::new("."),
+            false,
         )
         .await
         .expect("apply must succeed");
@@ -214,8 +265,13 @@ mod tests {
         let decl = assistant_decl("my-project", "my-assistant");
 
         let result = apply(
-            &client, &url, &decl, "my-project", "my-assistant",
-            Path::new("."), false,
+            &client,
+            &url,
+            &decl,
+            "my-project",
+            "my-assistant",
+            Path::new("."),
+            false,
         )
         .await
         .expect("apply must succeed");
@@ -245,8 +301,13 @@ mod tests {
         let decl = assistant_decl("my-project", "my-assistant");
 
         let err = apply(
-            &client, &url, &decl, "my-project", "my-assistant",
-            Path::new("."), false,
+            &client,
+            &url,
+            &decl,
+            "my-project",
+            "my-assistant",
+            Path::new("."),
+            false,
         )
         .await
         .expect_err("401 must propagate as error");
@@ -295,8 +356,13 @@ mod tests {
         };
 
         let err = apply(
-            &client, &url, &decl, "my-project", "my-assistant",
-            Path::new("."), false,
+            &client,
+            &url,
+            &decl,
+            "my-project",
+            "my-assistant",
+            Path::new("."),
+            false,
         )
         .await
         .expect_err("missing required field must produce Schema error");

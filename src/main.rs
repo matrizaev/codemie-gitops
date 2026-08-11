@@ -1,7 +1,9 @@
 mod adapters;
 mod auth;
+mod cancellation;
 mod cli;
 mod config;
+mod coordinator;
 mod discovery;
 mod error;
 mod http;

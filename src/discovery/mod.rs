@@ -20,6 +20,7 @@ use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::{fs, io};
 
+use crate::cancellation::CancellationToken;
 use crate::error::AppError;
 
 // ---------------------------------------------------------------------------
@@ -162,6 +163,35 @@ pub fn load_declaration_file(
     fs::read_to_string(&canonical_file).map_err(|e| map_io_to_schema(e, file_path))
 }
 
+/// Cancellable declaration loading for the invocation coordinator.
+///
+/// The descriptor is opened once and read in bounded chunks. `max_bytes` is
+/// enforced against both fstat and accumulated bytes so a concurrent file
+/// growth cannot bypass the pre-allocation limit.
+pub fn load_declaration_file_cancellable(
+    file_path: &Path,
+    repo_root: &Path,
+    follow_symlinks: bool,
+    max_bytes: u64,
+    cancellation: &CancellationToken,
+) -> Result<String, AppError> {
+    cancellation.checkpoint()?;
+    if !follow_symlinks {
+        check_no_symlink_in_path(file_path)?;
+    }
+    let canonical_root = fs::canonicalize(repo_root)
+        .map_err(|_| AppError::Configuration("cannot canonicalize repository root".into()))?;
+    let canonical_file = check_containment(file_path, &canonical_root)?;
+    let bytes = read_file_cancellable(
+        &canonical_file,
+        max_bytes,
+        cancellation,
+        "declaration file exceeds its byte limit",
+    )?;
+    String::from_utf8(bytes)
+        .map_err(|_| AppError::YamlParse("declaration is not valid UTF-8".into()))
+}
+
 // ---------------------------------------------------------------------------
 // Sidecar path resolution
 // ---------------------------------------------------------------------------
@@ -244,6 +274,56 @@ pub fn load_sidecar_file(path: &Path, per_file_budget: u64) -> Result<Vec<u8>, A
         .map_err(|e| AppError::Schema(format!("error reading '{}': {e}", path.display())))?;
 
     Ok(buf)
+}
+
+/// Cancellable open-then-fstat sidecar read used under R-001's invocation
+/// deadline. The cancellation flag is checked between 64 KiB chunks.
+pub fn load_sidecar_file_cancellable(
+    path: &Path,
+    per_file_budget: u64,
+    cancellation: &CancellationToken,
+) -> Result<Vec<u8>, AppError> {
+    read_file_cancellable(
+        path,
+        per_file_budget,
+        cancellation,
+        "sidecar exceeds its per-file byte limit",
+    )
+}
+
+fn read_file_cancellable(
+    path: &Path,
+    max_bytes: u64,
+    cancellation: &CancellationToken,
+    limit_message: &str,
+) -> Result<Vec<u8>, AppError> {
+    cancellation.checkpoint()?;
+    let mut file = fs::File::open(path).map_err(|e| map_io_to_schema(e, path))?;
+    let byte_len = file
+        .metadata()
+        .map_err(|_| AppError::Schema("cannot stat input file".into()))?
+        .len();
+    if byte_len > max_bytes {
+        return Err(AppError::Schema(limit_message.into()));
+    }
+
+    let mut output = Vec::with_capacity(byte_len as usize);
+    let mut chunk = [0_u8; 64 * 1024];
+    loop {
+        cancellation.checkpoint()?;
+        let read = file
+            .read(&mut chunk)
+            .map_err(|e| map_io_to_schema(e, path))?;
+        if read == 0 {
+            break;
+        }
+        if output.len().saturating_add(read) as u64 > max_bytes {
+            return Err(AppError::Schema(limit_message.into()));
+        }
+        output.extend_from_slice(&chunk[..read]);
+    }
+    cancellation.checkpoint()?;
+    Ok(output)
 }
 
 // ---------------------------------------------------------------------------
@@ -372,12 +452,7 @@ fn collect_yaml_files(
                     result,
                 )?;
             } else if target_meta.is_file() {
-                visit_file(
-                    &canonical_target,
-                    config_exclusion,
-                    visited_files,
-                    result,
-                )?;
+                visit_file(&canonical_target, config_exclusion, visited_files, result)?;
             }
             continue;
         }
@@ -432,11 +507,12 @@ fn visit_file(
         return Ok(());
     }
 
-    let byte_len = fs::metadata(path)
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let byte_len = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
 
-    result.push(DiscoveredFile { path: path.to_owned(), byte_len });
+    result.push(DiscoveredFile {
+        path: path.to_owned(),
+        byte_len,
+    });
 
     Ok(())
 }
@@ -459,8 +535,7 @@ mod tests {
     fn temp_dir(label: &str) -> (PathBuf, TempGuard) {
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         let pid = std::process::id();
-        let path = std::env::temp_dir()
-            .join(format!("codemie_disc_{pid}_{n}_{label}"));
+        let path = std::env::temp_dir().join(format!("codemie_disc_{pid}_{n}_{label}"));
         fs::create_dir_all(&path).expect("create temp dir");
         let guard = TempGuard(path.clone());
         (path, guard)
@@ -510,8 +585,8 @@ mod tests {
         let decl = root.join("decl.yaml");
         fs::write(&decl, "kind: Assistant\n").unwrap();
 
-        let content = load_declaration_file(&decl, &root, false)
-            .expect("should load file inside repo root");
+        let content =
+            load_declaration_file(&decl, &root, false).expect("should load file inside repo root");
         assert_eq!(content, "kind: Assistant\n");
     }
 
@@ -522,7 +597,12 @@ mod tests {
         let (root, _g) = temp_dir("traversal");
         init_git(&root);
         // Construct a path that starts inside root but escapes via `..`
-        let escape = root.join("subdir").join("..").join("..").join("etc").join("passwd");
+        let escape = root
+            .join("subdir")
+            .join("..")
+            .join("..")
+            .join("etc")
+            .join("passwd");
         let err = load_declaration_file(&escape, &root, false)
             .expect_err("path traversal must be rejected");
         assert_eq!(err.exit_code(), 2, "path traversal must be exit 2");
@@ -634,7 +714,10 @@ mod tests {
             .collect();
         let mut sorted = names.clone();
         sorted.sort();
-        assert_eq!(names, sorted, "discover_yaml_files must return paths in sorted order");
+        assert_eq!(
+            names, sorted,
+            "discover_yaml_files must return paths in sorted order"
+        );
     }
 
     // --- discover_yaml_files — excludes .git -------------------------------
@@ -664,16 +747,24 @@ mod tests {
         init_git(&root);
         let codemie_dir = root.join(".codemie");
         fs::create_dir_all(&codemie_dir).unwrap();
-        fs::write(codemie_dir.join("config.yaml"), "url: https://x.example.com").unwrap();
+        fs::write(
+            codemie_dir.join("config.yaml"),
+            "url: https://x.example.com",
+        )
+        .unwrap();
         fs::write(root.join("decl.yaml"), "kind: Skill\n").unwrap();
 
         let files = discover_yaml_files(&root, false).unwrap();
         assert!(
-            files.iter().all(|f| f.path.file_name() != Some(".codemie/config.yaml".as_ref())),
+            files
+                .iter()
+                .all(|f| f.path.file_name() != Some(".codemie/config.yaml".as_ref())),
             ".codemie/config.yaml must be excluded"
         );
         assert!(
-            !files.iter().any(|f| f.path.ends_with(".codemie/config.yaml")),
+            !files
+                .iter()
+                .any(|f| f.path.ends_with(".codemie/config.yaml")),
             ".codemie/config.yaml must not appear in results"
         );
         assert_eq!(files.len(), 1, "only the declaration should appear");
@@ -699,7 +790,9 @@ mod tests {
             "codemie/ directory must not be excluded"
         );
         assert!(
-            paths.iter().any(|p| p.ends_with("codemie-ui/workflow.yaml")),
+            paths
+                .iter()
+                .any(|p| p.ends_with("codemie-ui/workflow.yaml")),
             "codemie-ui/ directory must not be excluded"
         );
     }
@@ -715,8 +808,8 @@ mod tests {
         for i in 0..=MAX_VISITED_FILES {
             fs::write(root.join(format!("file{i}.txt")), "").unwrap();
         }
-        let err = discover_yaml_files(&root, false)
-            .expect_err("cap exceeded must produce an error");
+        let err =
+            discover_yaml_files(&root, false).expect_err("cap exceeded must produce an error");
         assert_eq!(err.exit_code(), 2);
     }
 
@@ -772,8 +865,8 @@ mod tests {
         let path = root.join("content.md");
         fs::write(&path, b"hello world" as &[u8]).unwrap();
 
-        let bytes = load_sidecar_file(&path, MAX_SIDECAR_FILE_BYTES)
-            .expect("file within budget must load");
+        let bytes =
+            load_sidecar_file(&path, MAX_SIDECAR_FILE_BYTES).expect("file within budget must load");
         assert_eq!(bytes, b"hello world");
     }
 
@@ -784,8 +877,7 @@ mod tests {
         // Write 5 bytes but set the budget to 4 bytes.
         fs::write(&path, b"hello" as &[u8]).unwrap();
 
-        let err = load_sidecar_file(&path, 4)
-            .expect_err("file exceeding budget must be rejected");
+        let err = load_sidecar_file(&path, 4).expect_err("file exceeding budget must be rejected");
         assert_eq!(err.exit_code(), 2);
     }
 
@@ -799,11 +891,27 @@ mod tests {
         assert_eq!(err.exit_code(), 2);
     }
 
+    #[test]
+    fn cancellable_sidecar_read_observes_invocation_cancellation() {
+        let (root, _g) = temp_dir("sidecar_cancelled");
+        let path = root.join("content.md");
+        fs::write(&path, b"content" as &[u8]).unwrap();
+        let cancellation = CancellationToken::default();
+        cancellation.cancel();
+
+        let error = load_sidecar_file_cancellable(&path, MAX_SIDECAR_FILE_BYTES, &cancellation)
+            .expect_err("cancelled sidecar reading must stop before opening the file");
+        assert!(matches!(error, AppError::Timeout(_)));
+    }
+
     // --- DiscoveredFile struct ----------------------------------------------
 
     #[test]
     fn discovered_file_stores_path_and_size() {
-        let f = DiscoveredFile { path: PathBuf::from("/tmp/decl.yaml"), byte_len: 1024 };
+        let f = DiscoveredFile {
+            path: PathBuf::from("/tmp/decl.yaml"),
+            byte_len: 1024,
+        };
         assert_eq!(f.byte_len, 1024);
         assert_eq!(f.path, PathBuf::from("/tmp/decl.yaml"));
     }

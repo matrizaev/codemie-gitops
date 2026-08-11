@@ -4,17 +4,20 @@
 /// = `{version:1, project, slug}`. Two-pass enumeration (pass 1: project-visible,
 /// pass 2: `scope=marketplace`). Deduplicates across passes by server ID.
 /// Optional `adopt_workflow_id` bypasses enumeration (explicit by-ID adoption).
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use serde::Deserialize;
 
 use crate::config::ValidatedUrl;
 use crate::error::AppError;
-use crate::http::{ApiClient, encode_query_value};
+use crate::http::{encode_query_value, ApiClient};
 use crate::parse::ParsedDeclaration;
-use crate::projection::{project, ExistingEntity, RequestBody, WritePlan};
+use crate::projection::{
+    project_with_workflow_references, ExistingEntity, RequestBody, WorkflowReferenceMap, WritePlan,
+};
 
-use super::{ApplyAction, ApplyResult};
+use super::{assistant, datasource, skill, ApplyAction, ApplyResult};
 
 const MAX_PAGES: u32 = 1_000;
 const MAX_ITEMS: u32 = 100_000;
@@ -61,10 +64,15 @@ pub async fn apply(
     repo_root: &Path,
     follow_symlinks: bool,
 ) -> Result<ApplyResult, AppError> {
+    let reference_map = resolve_execution_references(client, base_url, decl).await?;
+
     let existing_entity = if let Some(adopt_id) = adopt_workflow_id {
         // Explicit by-ID adoption: fetch current meta_config for merge (W-001)
         let detail = fetch_detail(client, base_url, adopt_id).await?;
-        Some(ExistingEntity { server_id: detail.id, meta_config: detail.meta_config })
+        Some(ExistingEntity {
+            server_id: detail.id,
+            meta_config: detail.meta_config,
+        })
     } else {
         // Two-pass exhaustive enumeration
         let matches = enumerate_all(client, base_url, project_name, slug).await?;
@@ -84,23 +92,169 @@ pub async fn apply(
         }
     };
 
-    let plan = project(decl, existing_entity.as_ref(), adopt_workflow_id, repo_root, follow_symlinks)?;
+    let plan = project_with_workflow_references(
+        decl,
+        existing_entity.as_ref(),
+        adopt_workflow_id,
+        repo_root,
+        follow_symlinks,
+        Some(&reference_map),
+    )?;
 
     match plan {
-        WritePlan::Create { request: RequestBody::Json(body) } => {
-            let resp: WorkflowIdResponse =
-                client.post(base_url, "/v1/workflows", &body).await?;
-            Ok(ApplyResult { action: ApplyAction::Created, server_id: resp.id })
+        WritePlan::Create {
+            request: RequestBody::Json(body),
+        } => {
+            let resp: WorkflowIdResponse = client.post(base_url, "/v1/workflows", &body).await?;
+            Ok(ApplyResult {
+                action: ApplyAction::Created,
+                server_id: resp.id,
+            })
         }
-        WritePlan::Update { server_id, request: RequestBody::Json(body) } => {
+        WritePlan::Update {
+            server_id,
+            request: RequestBody::Json(body),
+        } => {
             let path = format!("/v1/workflows/{}", encode_query_value(&server_id));
             let resp: WorkflowIdResponse = client.put(base_url, &path, &body).await?;
-            Ok(ApplyResult { action: ApplyAction::Updated, server_id: resp.id })
+            Ok(ApplyResult {
+                action: ApplyAction::Updated,
+                server_id: resp.id,
+            })
         }
         _ => Err(AppError::Internal(
             "workflow: projection produced unexpected body variant".into(),
         )),
     }
+}
+
+/// Re-resolve a Workflow marker after a modifying request and require that it
+/// identifies exactly the server route returned by that request (FR-034).
+pub async fn verify_identity(
+    client: &ApiClient,
+    base_url: &ValidatedUrl,
+    project_name: &str,
+    slug: &str,
+    expected_server_id: &str,
+) -> Result<(), AppError> {
+    let matches = enumerate_all(client, base_url, project_name, slug).await?;
+    match matches.as_slice() {
+        [single] if single.id == expected_server_id => Ok(()),
+        _ => Err(AppError::Reconciliation(
+            "Workflow write may have committed but identity verification did not match exactly once"
+                .into(),
+        )),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// W-002 execution/reference projection
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Default)]
+struct WorkflowReferenceKeys {
+    assistants: BTreeSet<(String, String)>,
+    skills: BTreeSet<(String, String)>,
+    datasources: BTreeSet<(String, String)>,
+}
+
+/// Collect and resolve every distinct Workflow server-resource natural key.
+/// Workflow-local actor/state IDs are deliberately not collected here.
+async fn resolve_execution_references(
+    client: &ApiClient,
+    base_url: &ValidatedUrl,
+    decl: &ParsedDeclaration,
+) -> Result<WorkflowReferenceMap, AppError> {
+    let keys = collect_execution_reference_keys(decl)?;
+    let mut resolved = WorkflowReferenceMap::default();
+
+    for (project, slug) in keys.assistants {
+        let server_id = assistant::resolve_reference(client, base_url, &project, &slug).await?;
+        resolved.insert_assistant(project, slug, server_id);
+    }
+    for (project, name) in keys.skills {
+        let server_id = skill::resolve_reference(client, base_url, &project, &name).await?;
+        resolved.insert_skill(project, name, server_id);
+    }
+    for (project, repo_name) in keys.datasources {
+        let server_id =
+            datasource::resolve_reference(client, base_url, &project, &repo_name).await?;
+        resolved.insert_datasource(project, repo_name, server_id);
+    }
+
+    Ok(resolved)
+}
+
+fn collect_execution_reference_keys(
+    decl: &ParsedDeclaration,
+) -> Result<WorkflowReferenceKeys, AppError> {
+    let actors = decl
+        .value
+        .pointer("/spec/execution_config/assistants")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            AppError::Schema("workflow: execution_config.assistants must be an array".into())
+        })?;
+
+    let mut keys = WorkflowReferenceKeys::default();
+    for actor in actors {
+        let actor = actor.as_object().ok_or_else(|| {
+            AppError::Schema("workflow: execution_config.assistants[] must be an object".into())
+        })?;
+        if let Some(reference) = actor.get("assistantRef") {
+            keys.assistants
+                .insert(reference_key(reference, "slug", "assistantRef")?);
+            continue;
+        }
+
+        collect_reference_array(
+            actor.get("skillRefs"),
+            "name",
+            "skillRefs",
+            &mut keys.skills,
+        )?;
+        collect_reference_array(
+            actor.get("datasourceRefs"),
+            "repo_name",
+            "datasourceRefs",
+            &mut keys.datasources,
+        )?;
+    }
+    Ok(keys)
+}
+
+fn collect_reference_array(
+    value: Option<&serde_json::Value>,
+    key_field: &str,
+    field: &str,
+    output: &mut BTreeSet<(String, String)>,
+) -> Result<(), AppError> {
+    let values = value.and_then(serde_json::Value::as_array).ok_or_else(|| {
+        AppError::Schema(format!("workflow: inline actor {field} must be an array"))
+    })?;
+    for value in values {
+        output.insert(reference_key(value, key_field, field)?);
+    }
+    Ok(())
+}
+
+fn reference_key(
+    value: &serde_json::Value,
+    key_field: &str,
+    field: &str,
+) -> Result<(String, String), AppError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| AppError::Schema(format!("workflow: {field} must be an object")))?;
+    let project = object
+        .get("project")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| AppError::Schema(format!("workflow: {field}.project is required")))?;
+    let key = object
+        .get(key_field)
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| AppError::Schema(format!("workflow: {field}.{key_field} is required")))?;
+    Ok((project.to_owned(), key.to_owned()))
 }
 
 // ---------------------------------------------------------------------------
@@ -246,6 +400,7 @@ mod tests {
                     "mode": "chat",
                     "shared": false,
                     "execution_config": {
+                        "assistants": [],
                         "states": [],
                         "tools": []
                     }
@@ -256,9 +411,7 @@ mod tests {
     }
 
     fn meta_config_for(project: &str, slug: &str) -> String {
-        format!(
-            r#"{{"{IDENTITY_KEY}":{{"version":1,"project":"{project}","slug":"{slug}"}}}}"#
-        )
+        format!(r#"{{"{IDENTITY_KEY}":{{"version":1,"project":"{project}","slug":"{slug}"}}}}"#)
     }
 
     fn empty_page() -> &'static str {
@@ -291,9 +444,12 @@ mod tests {
 
         // Both passes return empty
         let _p1 = server
-            .mock("GET", mockito::Matcher::Regex(
-                r"^/v1/workflows\?minimal_response=false&page=1&per_page=100$".to_string()
-            ))
+            .mock(
+                "GET",
+                mockito::Matcher::Regex(
+                    r"^/v1/workflows\?minimal_response=false&page=1&per_page=100$".to_string(),
+                ),
+            )
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(empty_page())
@@ -323,7 +479,14 @@ mod tests {
         let decl = workflow_decl("my-project", "my-slug");
 
         let result = apply(
-            &client, &url, &decl, "my-project", "my-slug", None, Path::new("."), false,
+            &client,
+            &url,
+            &decl,
+            "my-project",
+            "my-slug",
+            None,
+            Path::new("."),
+            false,
         )
         .await
         .expect("apply must succeed");
@@ -344,9 +507,12 @@ mod tests {
         let mut server = mockito::Server::new_async().await;
 
         let _p1 = server
-            .mock("GET", mockito::Matcher::Regex(
-                r"^/v1/workflows\?minimal_response=false&page=1&per_page=100$".to_string()
-            ))
+            .mock(
+                "GET",
+                mockito::Matcher::Regex(
+                    r"^/v1/workflows\?minimal_response=false&page=1&per_page=100$".to_string(),
+                ),
+            )
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(one_match_page("wf-exist", "my-project", "my-slug"))
@@ -376,7 +542,14 @@ mod tests {
         let decl = workflow_decl("my-project", "my-slug");
 
         let result = apply(
-            &client, &url, &decl, "my-project", "my-slug", None, Path::new("."), false,
+            &client,
+            &url,
+            &decl,
+            "my-project",
+            "my-slug",
+            None,
+            Path::new("."),
+            false,
         )
         .await
         .expect("apply must succeed");
@@ -397,9 +570,12 @@ mod tests {
         let mut server = mockito::Server::new_async().await;
 
         let _p1 = server
-            .mock("GET", mockito::Matcher::Regex(
-                r"^/v1/workflows\?minimal_response=false&page=1&per_page=100$".to_string()
-            ))
+            .mock(
+                "GET",
+                mockito::Matcher::Regex(
+                    r"^/v1/workflows\?minimal_response=false&page=1&per_page=100$".to_string(),
+                ),
+            )
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(two_match_page("my-project", "my-slug"))
@@ -421,7 +597,14 @@ mod tests {
         let decl = workflow_decl("my-project", "my-slug");
 
         let err = apply(
-            &client, &url, &decl, "my-project", "my-slug", None, Path::new("."), false,
+            &client,
+            &url,
+            &decl,
+            "my-project",
+            "my-slug",
+            None,
+            Path::new("."),
+            false,
         )
         .await
         .expect_err("multiple matches must error");
@@ -504,7 +687,11 @@ mod tests {
 
     #[test]
     fn matches_identity_missing_key() {
-        assert!(!matches_identity(Some(r#"{"other": "value"}"#), "proj", "sl"));
+        assert!(!matches_identity(
+            Some(r#"{"other": "value"}"#),
+            "proj",
+            "sl"
+        ));
     }
 
     #[test]

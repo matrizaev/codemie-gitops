@@ -17,8 +17,8 @@
 /// - No credential value appears in tracing events or error messages (SEC-001/005).
 use std::time::Duration;
 
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::Serialize;
 
 use crate::config::ValidatedUrl;
 use crate::error::AppError;
@@ -167,11 +167,12 @@ impl ApiClient {
     /// non-ASCII characters that make the header value invalid, a fixed
     /// placeholder is used; the server will return 401 → `Authentication`.
     fn auth_header_value(&self) -> reqwest::header::HeaderValue {
-        reqwest::header::HeaderValue::from_str(&format!("Bearer {}", self.token))
-            .unwrap_or_else(|_e| {
+        reqwest::header::HeaderValue::from_str(&format!("Bearer {}", self.token)).unwrap_or_else(
+            |_e| {
                 // Non-ASCII token — fall back to a syntactically safe placeholder.
                 reqwest::header::HeaderValue::from_static("Bearer invalid")
-            })
+            },
+        )
     }
 
     /// Construct the full request URL from a base `ValidatedUrl` and a path.
@@ -190,6 +191,12 @@ impl ApiClient {
     /// address, or TLS handshake details into the error chain (SEC-005).
     fn map_send_error(_e: reqwest::Error) -> AppError {
         AppError::Connectivity("API endpoint unreachable".into())
+    }
+
+    /// Map a modifying-request send failure. Once dispatch has started the
+    /// client cannot prove that the server did not commit the request.
+    fn map_modifying_send_error(_e: reqwest::Error) -> AppError {
+        AppError::WriteUncertain("modifying request may have reached the server".into())
     }
 
     /// Classify a non-2xx status into an `AppError`.
@@ -216,6 +223,9 @@ impl ApiClient {
                 "API endpoint returned redirect on modifying request".into(),
             );
         }
+        if is_modifying && matches!(code, 400 | 404 | 409 | 422) {
+            return AppError::ServerRejected(format!("API rejected write with status {code}"));
+        }
         AppError::ApiIncompatible(format!("API returned status {code}"))
     }
 
@@ -232,9 +242,10 @@ impl ApiClient {
                 ));
             }
         }
-        let bytes = resp.bytes().await.map_err(|_e| {
-            AppError::Connectivity("failed to read response body".into())
-        })?;
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|_e| AppError::Connectivity("failed to read response body".into()))?;
         if bytes.len() > RESPONSE_BODY_LIMIT {
             return Err(AppError::ApiIncompatible(
                 "response body exceeds 8 MiB limit".into(),
@@ -256,9 +267,7 @@ impl ApiClient {
             ));
         }
         serde_json::from_value(value).map_err(|_e| {
-            AppError::ApiIncompatible(
-                "response JSON does not match expected shape".into(),
-            )
+            AppError::ApiIncompatible("response JSON does not match expected shape".into())
         })
     }
 
@@ -296,8 +305,7 @@ impl ApiClient {
                 Ok(resp) => {
                     let status = resp.status();
                     // Retry on transient server errors and rate-limit responses.
-                    if status.is_server_error()
-                        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                    if status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS
                     {
                         last_err = Self::classify_error_status(status, false);
                         continue;
@@ -332,7 +340,7 @@ impl ApiClient {
             .json(body)
             .send()
             .await
-            .map_err(Self::map_send_error)?;
+            .map_err(Self::map_modifying_send_error)?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -359,7 +367,7 @@ impl ApiClient {
             .json(body)
             .send()
             .await
-            .map_err(Self::map_send_error)?;
+            .map_err(Self::map_modifying_send_error)?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -381,7 +389,7 @@ impl ApiClient {
             .header(reqwest::header::AUTHORIZATION, self.auth_header_value())
             .send()
             .await
-            .map_err(Self::map_send_error)?;
+            .map_err(Self::map_modifying_send_error)?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -427,8 +435,7 @@ impl ApiClient {
                     if status == reqwest::StatusCode::NOT_FOUND {
                         return Ok(None);
                     }
-                    if status.is_server_error()
-                        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                    if status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS
                     {
                         last_err = Self::classify_error_status(status, false);
                         continue;
@@ -467,7 +474,7 @@ impl ApiClient {
             .json(body)
             .send()
             .await
-            .map_err(Self::map_send_error)?;
+            .map_err(Self::map_modifying_send_error)?;
 
         let status = resp.status();
         if status == reqwest::StatusCode::CONFLICT {
@@ -502,7 +509,7 @@ impl ApiClient {
             .multipart(form)
             .send()
             .await
-            .map_err(Self::map_send_error)?;
+            .map_err(Self::map_modifying_send_error)?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -529,7 +536,7 @@ impl ApiClient {
             .multipart(form)
             .send()
             .await
-            .map_err(Self::map_send_error)?;
+            .map_err(Self::map_modifying_send_error)?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -637,16 +644,10 @@ pub fn encode_query_value(value: &str) -> String {
 /// Returns `Ok(())` when any condition holds; otherwise returns
 /// `AppError::VisibilityUnproven`. Response body and role values are discarded
 /// after the check and are never forwarded to logs or output (SEC-005).
-pub async fn preflight_visibility(
-    client: &ApiClient,
-    url: &ValidatedUrl,
-) -> Result<(), AppError> {
+pub async fn preflight_visibility(client: &ApiClient, url: &ValidatedUrl) -> Result<(), AppError> {
     let user: UserResponse = client.get(url, "/v1/user").await?;
 
-    if user.is_admin
-        || user.is_maintainer
-        || user.projects.iter().any(|p| p.is_project_admin)
-    {
+    if user.is_admin || user.is_maintainer || user.projects.iter().any(|p| p.is_project_admin) {
         return Ok(());
     }
 
@@ -747,10 +748,7 @@ mod tests {
 
     #[test]
     fn json_depth_flat_object_is_one() {
-        assert_eq!(
-            json_max_depth(&serde_json::json!({"a": 1, "b": "x"}), 0),
-            1
-        );
+        assert_eq!(json_max_depth(&serde_json::json!({"a": 1, "b": "x"}), 0), 1);
     }
 
     #[test]

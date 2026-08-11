@@ -9,9 +9,11 @@ use std::path::Path;
 
 use serde::Deserialize;
 
+use crate::cancellation::CancellationToken;
 use crate::config::ValidatedUrl;
+use crate::discovery::{load_sidecar_file_cancellable, MAX_SIDECAR_FILE_BYTES};
 use crate::error::AppError;
-use crate::http::{preflight_visibility, ApiClient, encode_query_value};
+use crate::http::{encode_query_value, preflight_visibility, ApiClient};
 use crate::parse::ParsedDeclaration;
 use crate::projection::{project, ExistingEntity, RequestBody, WritePlan};
 
@@ -58,6 +60,34 @@ pub async fn apply(
     repo_root: &Path,
     follow_symlinks: bool,
 ) -> Result<ApplyResult, AppError> {
+    let cancellation = CancellationToken::default();
+    apply_cancellable(
+        client,
+        base_url,
+        decl,
+        project_name,
+        repo_name,
+        index_type,
+        repo_root,
+        follow_symlinks,
+        &cancellation,
+    )
+    .await
+}
+
+/// Coordinator entry point that propagates the invocation deadline into File
+/// Datasource reads.
+pub async fn apply_cancellable(
+    client: &ApiClient,
+    base_url: &ValidatedUrl,
+    decl: &ParsedDeclaration,
+    project_name: &str,
+    repo_name: &str,
+    index_type: &str,
+    repo_root: &Path,
+    follow_symlinks: bool,
+    cancellation: &CancellationToken,
+) -> Result<ApplyResult, AppError> {
     // ADR-012 Option A: preflight before any write
     preflight_visibility(client, base_url).await?;
 
@@ -66,8 +96,18 @@ pub async fn apply(
     match matches.as_slice() {
         [] => {
             let plan = project(decl, None, None, repo_root, follow_symlinks)?;
-            dispatch(client, base_url, plan, index_type, project_name, repo_name, decl, repo_root)
-                .await
+            dispatch(
+                client,
+                base_url,
+                plan,
+                index_type,
+                project_name,
+                repo_name,
+                decl,
+                repo_root,
+                cancellation,
+            )
+            .await
         }
         [single] => {
             let existing = ExistingEntity {
@@ -75,14 +115,105 @@ pub async fn apply(
                 meta_config: None,
             };
             let plan = project(decl, Some(&existing), None, repo_root, follow_symlinks)?;
-            dispatch(client, base_url, plan, index_type, project_name, repo_name, decl, repo_root)
-                .await
+            dispatch(
+                client,
+                base_url,
+                plan,
+                index_type,
+                project_name,
+                repo_name,
+                decl,
+                repo_root,
+                cancellation,
+            )
+            .await
         }
         _ => Err(AppError::Reconciliation(format!(
             "Datasource: {} matches for (repo_name={repo_name:?}, \
              project={project_name:?}, type={index_type:?}); manual resolution required",
             matches.len()
         ))),
+    }
+}
+
+/// Resolve a Datasource natural reference without requiring the target
+/// declaration's `index_type` (DR-003/W-002).
+///
+/// Workflow references identify Datasources by exact `(project, repo_name)`.
+/// If more than one visible server row has that identity, including rows of
+/// different persisted kinds, resolution is ambiguous and no ID is selected.
+pub async fn resolve_reference(
+    client: &ApiClient,
+    base_url: &ValidatedUrl,
+    project_name: &str,
+    repo_name: &str,
+) -> Result<String, AppError> {
+    let filter = serde_json::to_string(&serde_json::json!({ "project_name": project_name }))
+        .map_err(|_| AppError::Internal("datasource: failed to encode filter JSON".into()))?;
+    let mut matches = Vec::new();
+    let mut page = 0u32;
+    let mut total_seen = 0u32;
+
+    loop {
+        let path = format!(
+            "/v1/index?full_response=true&page={}&per_page=100&filters={}",
+            page,
+            encode_query_value(&filter)
+        );
+        let resp: DatasourcePage = client.get(base_url, &path).await?;
+        let total_pages = resp.pagination.pages;
+        if total_pages > MAX_PAGES {
+            return Err(AppError::ApiIncompatible(
+                "datasource enumeration exceeded 1,000-page cap".into(),
+            ));
+        }
+
+        for item in resp.data {
+            total_seen += 1;
+            if total_seen > MAX_ITEMS {
+                return Err(AppError::ApiIncompatible(
+                    "datasource enumeration exceeded 100,000-item cap".into(),
+                ));
+            }
+            if item.repo_name == repo_name && item.project_name == project_name {
+                matches.push(item.id);
+            }
+        }
+
+        let next = page + 1;
+        if next >= total_pages {
+            break;
+        }
+        page = next;
+    }
+
+    match matches.as_slice() {
+        [single] => Ok(single.clone()),
+        [] => Err(AppError::Reconciliation(
+            "referenced Datasource is missing on the target server".into(),
+        )),
+        _ => Err(AppError::Reconciliation(
+            "referenced Datasource identity is ambiguous on the target server".into(),
+        )),
+    }
+}
+
+/// Post-write exact identity verification for the coordinator (R-001).
+pub async fn verify_identity(
+    client: &ApiClient,
+    base_url: &ValidatedUrl,
+    project_name: &str,
+    repo_name: &str,
+    index_type: &str,
+    expected_server_id: &str,
+) -> Result<(), AppError> {
+    let matches = enumerate(client, base_url, project_name, repo_name, index_type).await?;
+    match matches.as_slice() {
+        [single] if single.id == expected_server_id => Ok(()),
+        _ => Err(AppError::Reconciliation(
+            "Datasource write may have committed but identity verification did not match exactly once"
+                .into(),
+        )),
     }
 }
 
@@ -181,40 +312,67 @@ async fn dispatch(
     repo_name: &str,
     decl: &ParsedDeclaration,
     repo_root: &Path,
+    cancellation: &CancellationToken,
 ) -> Result<ApplyResult, AppError> {
     match plan {
-        WritePlan::Create { request: RequestBody::Json(body) } => {
+        WritePlan::Create {
+            request: RequestBody::Json(body),
+        } => {
             let route = create_route(kind, project_name);
             let resp: serde_json::Value = client.post(base_url, &route, &body).await?;
             let id = extract_id(&resp)?;
-            Ok(ApplyResult { action: ApplyAction::Created, server_id: id })
+            Ok(ApplyResult {
+                action: ApplyAction::Created,
+                server_id: id,
+            })
         }
-        WritePlan::Update { request: RequestBody::Json(body), .. } => {
+        WritePlan::Update {
+            request: RequestBody::Json(body),
+            ..
+        } => {
             let route = update_route(kind, project_name, repo_name);
             let resp: serde_json::Value = client.put(base_url, &route, &body).await?;
             let id = extract_id(&resp)?;
-            Ok(ApplyResult { action: ApplyAction::Updated, server_id: id })
+            Ok(ApplyResult {
+                action: ApplyAction::Updated,
+                server_id: id,
+            })
         }
-        WritePlan::Create { request: RequestBody::FileMultipart { query_params, .. } } => {
+        WritePlan::Create {
+            request: RequestBody::FileMultipart { query_params, .. },
+        } => {
             let route = create_route(kind, project_name);
-            let file_parts = read_file_parts(decl, repo_root)?;
-            let resp =
-                client.post_multipart(base_url, &route, &query_params, file_parts).await?;
+            let file_parts = read_file_parts_async(decl, repo_root, cancellation).await?;
+            let resp = client
+                .post_multipart(base_url, &route, &query_params, file_parts)
+                .await?;
             let id = extract_id(&resp)?;
-            Ok(ApplyResult { action: ApplyAction::Created, server_id: id })
+            Ok(ApplyResult {
+                action: ApplyAction::Created,
+                server_id: id,
+            })
         }
-        WritePlan::Update { request: RequestBody::FileMultipart { mut query_params, .. }, .. } => {
+        WritePlan::Update {
+            request: RequestBody::FileMultipart {
+                mut query_params, ..
+            },
+            ..
+        } => {
             let route = update_route(kind, project_name, repo_name);
             // Inject name=repo_name for server identity: knowledge_base file update uses
             // (project_name, name) to locate the datasource (no ID in route path).
             if !query_params.iter().any(|(k, _)| k == "name") {
                 query_params.push(("name".to_owned(), repo_name.to_owned()));
             }
-            let file_parts = read_file_parts(decl, repo_root)?;
-            let resp =
-                client.put_multipart(base_url, &route, &query_params, file_parts).await?;
+            let file_parts = read_file_parts_async(decl, repo_root, cancellation).await?;
+            let resp = client
+                .put_multipart(base_url, &route, &query_params, file_parts)
+                .await?;
             let id = extract_id(&resp)?;
-            Ok(ApplyResult { action: ApplyAction::Updated, server_id: id })
+            Ok(ApplyResult {
+                action: ApplyAction::Updated,
+                server_id: id,
+            })
         }
     }
 }
@@ -232,14 +390,17 @@ fn extract_id(resp: &serde_json::Value) -> Result<String, AppError> {
 
 fn check_basename_safety(basename: &str) -> Result<(), AppError> {
     if basename.is_empty() {
-        return Err(AppError::Schema("file datasource: basename must not be empty".into()));
+        return Err(AppError::Schema(
+            "file datasource: basename must not be empty".into(),
+        ));
     }
     for ch in basename.chars() {
         let cp = ch as u32;
         if cp <= 0x1F          // C0 controls (NUL=0x00, CR=0x0D, LF=0x0A)
             || (cp >= 0x7F && cp <= 0x9F)  // DEL + C1 controls
             || ch == '/'       // POSIX path separator
-            || ch == '\\'      // Windows path separator
+            || ch == '\\'
+        // Windows path separator
         {
             return Err(AppError::Schema(format!(
                 "file datasource: basename {:?} contains unsafe character U+{cp:04X}",
@@ -254,6 +415,30 @@ fn read_file_parts(
     decl: &ParsedDeclaration,
     repo_root: &Path,
 ) -> Result<Vec<(String, Vec<u8>)>, AppError> {
+    read_file_parts_cancellable(decl, repo_root, &CancellationToken::default())
+}
+
+async fn read_file_parts_async(
+    decl: &ParsedDeclaration,
+    repo_root: &Path,
+    cancellation: &CancellationToken,
+) -> Result<Vec<(String, Vec<u8>)>, AppError> {
+    let declaration = decl.clone();
+    let root = repo_root.to_owned();
+    let cancellation = cancellation.clone();
+    tokio::task::spawn_blocking(move || {
+        read_file_parts_cancellable(&declaration, &root, &cancellation)
+    })
+    .await
+    .map_err(|_| AppError::Internal("file datasource reader task failed".into()))?
+}
+
+fn read_file_parts_cancellable(
+    decl: &ParsedDeclaration,
+    repo_root: &Path,
+    cancellation: &CancellationToken,
+) -> Result<Vec<(String, Vec<u8>)>, AppError> {
+    cancellation.checkpoint()?;
     let files = decl.value["spec"]["files"]
         .as_array()
         .ok_or_else(|| AppError::Schema("file datasource: spec.files must be an array".into()))?;
@@ -267,6 +452,7 @@ fn read_file_parts(
 
     let mut result = Vec::with_capacity(files.len());
     for path_val in files {
+        cancellation.checkpoint()?;
         let rel_path = path_val.as_str().ok_or_else(|| {
             AppError::Schema("file datasource: each spec.files entry must be a string".into())
         })?;
@@ -284,17 +470,12 @@ fn read_file_parts(
         check_basename_safety(basename)?;
 
         let full = repo_root.join(rel_path);
-        let bytes = std::fs::read(&full).map_err(|e| {
-            AppError::Schema(format!(
-                "file datasource: cannot read {:?}: {}",
-                rel_path,
-                e.kind()
-            ))
-        })?;
+        let bytes = load_sidecar_file_cancellable(&full, MAX_SIDECAR_FILE_BYTES, cancellation)?;
 
         result.push((basename.to_owned(), bytes));
     }
 
+    cancellation.checkpoint()?;
     Ok(result)
 }
 
@@ -321,7 +502,9 @@ mod tests {
             .expect("ApiClient must construct in tests")
     }
 
-    fn user_ok_mock(server: &mut mockito::Server) -> impl std::future::Future<Output = mockito::Mock> + '_ {
+    fn user_ok_mock(
+        server: &mut mockito::Server,
+    ) -> impl std::future::Future<Output = mockito::Mock> + '_ {
         server
             .mock("GET", "/v1/user")
             .with_status(200)
@@ -536,8 +719,7 @@ mod tests {
         for i in 0..11 {
             std::fs::write(tmp.path().join(format!("f{i}.txt")), b"x").unwrap();
         }
-        let files: Vec<serde_json::Value> =
-            (0..11).map(|i| json!(format!("f{i}.txt"))).collect();
+        let files: Vec<serde_json::Value> = (0..11).map(|i| json!(format!("f{i}.txt"))).collect();
         let decl = ParsedDeclaration {
             kind: EntityKind::Datasource,
             value: json!({
@@ -548,5 +730,25 @@ mod tests {
         };
         let err = read_file_parts(&decl, tmp.path()).expect_err("11 parts must exceed cap");
         assert!(matches!(err, AppError::Schema(_)));
+    }
+
+    #[test]
+    fn file_streaming_observes_invocation_cancellation() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("document.txt"), b"content").unwrap();
+        let decl = ParsedDeclaration {
+            kind: EntityKind::Datasource,
+            value: json!({
+                "metadata": { "project": "p", "repo_name": "r" },
+                "spec": { "index_type": "file", "files": ["document.txt"] }
+            }),
+            source_path: PathBuf::from("test.yaml"),
+        };
+        let cancellation = CancellationToken::default();
+        cancellation.cancel();
+
+        let error = read_file_parts_cancellable(&decl, tmp.path(), &cancellation)
+            .expect_err("cancelled file streaming must stop before reading file data");
+        assert!(matches!(error, AppError::Timeout(_)));
     }
 }

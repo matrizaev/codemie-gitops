@@ -90,6 +90,50 @@ pub struct ExistingEntity {
     pub meta_config: Option<String>,
 }
 
+/// Natural-key references resolved for one Workflow invocation (W-002).
+///
+/// Keys remain authored natural identities while values are transient server
+/// handles. The map is constructed after exact online resolution and is never
+/// serialized, logged, or persisted.
+#[derive(Debug, Clone, Default)]
+pub struct WorkflowReferenceMap {
+    assistant_ids: BTreeMap<(String, String), String>,
+    skill_ids: BTreeMap<(String, String), String>,
+    datasource_ids: BTreeMap<(String, String), String>,
+}
+
+impl WorkflowReferenceMap {
+    pub fn insert_assistant(
+        &mut self,
+        project: impl Into<String>,
+        slug: impl Into<String>,
+        server_id: impl Into<String>,
+    ) {
+        self.assistant_ids
+            .insert((project.into(), slug.into()), server_id.into());
+    }
+
+    pub fn insert_skill(
+        &mut self,
+        project: impl Into<String>,
+        name: impl Into<String>,
+        server_id: impl Into<String>,
+    ) {
+        self.skill_ids
+            .insert((project.into(), name.into()), server_id.into());
+    }
+
+    pub fn insert_datasource(
+        &mut self,
+        project: impl Into<String>,
+        repo_name: impl Into<String>,
+        server_id: impl Into<String>,
+    ) {
+        self.datasource_ids
+            .insert((project.into(), repo_name.into()), server_id.into());
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Public projection entry point
 // ---------------------------------------------------------------------------
@@ -114,6 +158,26 @@ pub fn project(
     _repo_root: &Path,
     _follow_symlinks: bool,
 ) -> Result<WritePlan, AppError> {
+    project_with_workflow_references(
+        decl,
+        existing,
+        _adopt_workflow_id,
+        _repo_root,
+        _follow_symlinks,
+        None,
+    )
+}
+
+/// Project a declaration while supplying the exact invocation-local Workflow
+/// reference map built by W-002's online resolution step.
+pub fn project_with_workflow_references(
+    decl: &ParsedDeclaration,
+    existing: Option<&ExistingEntity>,
+    _adopt_workflow_id: Option<&str>,
+    _repo_root: &Path,
+    _follow_symlinks: bool,
+    workflow_references: Option<&WorkflowReferenceMap>,
+) -> Result<WritePlan, AppError> {
     let server_id = existing.map(|e| e.server_id.clone());
 
     let request = match decl.kind {
@@ -122,6 +186,7 @@ pub fn project(
             &decl.value,
             server_id.is_some(),
             existing.and_then(|e| e.meta_config.as_deref()),
+            workflow_references,
         ),
         EntityKind::Skill => project_skill(&decl.value, server_id.is_some()),
         EntityKind::Datasource => project_datasource(&decl.value, server_id.is_some()),
@@ -129,7 +194,10 @@ pub fn project(
 
     Ok(match server_id {
         None => WritePlan::Create { request },
-        Some(id) => WritePlan::Update { server_id: id, request },
+        Some(id) => WritePlan::Update {
+            server_id: id,
+            request,
+        },
     })
 }
 
@@ -143,35 +211,84 @@ pub fn project(
 mod assistant {
     /// Fields the client MUST NOT send regardless of projection (manifest
     /// §excludedRequestFields). These are server-owned vendor extensions.
-    pub const EXCLUDED: &[&str] =
-        &["is_react", "bedrock", "bedrock_agentcore_runtime", "agent_card", "skip_integration_validation"];
+    pub const EXCLUDED: &[&str] = &[
+        "is_react",
+        "bedrock",
+        "bedrock_agentcore_runtime",
+        "agent_card",
+        "skip_integration_validation",
+    ];
 
     /// Fields in the authored `spec` that map to request body fields.
     /// Source: manifest §requestFields minus §excludedRequestFields.
     pub const REQUEST_FIELDS: &[&str] = &[
-        "name", "description", "system_prompt", "project", "context",
-        "icon_url", "llm_model_type", "enable_image_generation", "image_generation_model",
-        "toolkits", "conversation_starters", "shared", "is_global", "agent_mode",
-        "plan_prompt", "slug", "temperature", "top_p", "tools_tokens_size_limit",
-        "smart_tool_selection_enabled", "hedging_config", "interactive_features",
-        "mcp_servers", "assistant_ids", "enabled_builtin_subagents", "skill_ids",
-        "type", "categories", "prompt_variables", "custom_metadata", "guardrail_assignments",
+        "name",
+        "description",
+        "system_prompt",
+        "project",
+        "context",
+        "icon_url",
+        "llm_model_type",
+        "enable_image_generation",
+        "image_generation_model",
+        "toolkits",
+        "conversation_starters",
+        "shared",
+        "is_global",
+        "agent_mode",
+        "plan_prompt",
+        "slug",
+        "temperature",
+        "top_p",
+        "tools_tokens_size_limit",
+        "smart_tool_selection_enabled",
+        "hedging_config",
+        "interactive_features",
+        "mcp_servers",
+        "assistant_ids",
+        "enabled_builtin_subagents",
+        "skill_ids",
+        "type",
+        "categories",
+        "prompt_variables",
+        "custom_metadata",
+        "guardrail_assignments",
     ];
 
     /// Optional-null spec fields → explicit JSON null when absent/null.
     /// Source: manifest §fieldClasses.optionalNull (spec.* paths).
     pub const OPTIONAL_NULL: &[&str] = &[
-        "description", "icon_url", "enable_image_generation", "image_generation_model",
-        "is_global", "agent_mode", "plan_prompt", "temperature", "top_p",
-        "tools_tokens_size_limit", "smart_tool_selection_enabled", "hedging_config",
-        "interactive_features", "prompt_variables", "custom_metadata", "guardrail_assignments",
+        "description",
+        "icon_url",
+        "enable_image_generation",
+        "image_generation_model",
+        "is_global",
+        "agent_mode",
+        "plan_prompt",
+        "temperature",
+        "top_p",
+        "tools_tokens_size_limit",
+        "smart_tool_selection_enabled",
+        "hedging_config",
+        "interactive_features",
+        "prompt_variables",
+        "custom_metadata",
+        "guardrail_assignments",
     ];
 
     /// Required spec fields (authoringRequired from manifest).
     pub const REQUIRED: &[&str] = &[
-        "name", "system_prompt", "llm_model_type", "type",
-        "context", "toolkits", "conversation_starters", "shared",
-        "mcp_servers", "enabled_builtin_subagents", "categories",
+        "name",
+        "system_prompt",
+        "llm_model_type",
+        "type",
+        "context",
+        "toolkits",
+        "conversation_starters",
+        "shared",
+        "mcp_servers",
+        "enabled_builtin_subagents",
+        "categories",
     ];
 }
 
@@ -222,22 +339,44 @@ mod workflow {
     /// Fields sent on POST (create). Source: manifest §createRequestFields.
     /// `id` is in §clientExcludedRequestFields — never emitted.
     pub const CREATE_FIELDS: &[&str] = &[
-        "name", "mode", "description", "start_hint", "project",
-        "icon_url", "yaml_config", "shared", "assistants", "tools",
-        "states", "supervisor_prompt", "meta_config", "guardrail_assignments",
+        "name",
+        "mode",
+        "description",
+        "start_hint",
+        "project",
+        "icon_url",
+        "yaml_config",
+        "shared",
+        "assistants",
+        "tools",
+        "states",
+        "supervisor_prompt",
+        "meta_config",
+        "guardrail_assignments",
     ];
 
     /// Fields sent on PUT (update). Source: manifest §updateRequestFields.
     /// `id` is in §clientExcludedRequestFields — never emitted.
     pub const UPDATE_FIELDS: &[&str] = &[
-        "name", "description", "start_hint", "project", "mode",
-        "icon_url", "shared", "yaml_config", "supervisor_prompt",
-        "meta_config", "guardrail_assignments",
+        "name",
+        "description",
+        "start_hint",
+        "project",
+        "mode",
+        "icon_url",
+        "shared",
+        "yaml_config",
+        "supervisor_prompt",
+        "meta_config",
+        "guardrail_assignments",
     ];
 
     /// Optional-null fields → explicit JSON null when absent/null.
     pub const OPTIONAL_NULL: &[&str] = &[
-        "start_hint", "icon_url", "supervisor_prompt", "guardrail_assignments",
+        "start_hint",
+        "icon_url",
+        "supervisor_prompt",
+        "guardrail_assignments",
     ];
 
     /// Required on create and update.
@@ -250,16 +389,24 @@ fn project_workflow(
     decl_value: &Value,
     is_update: bool,
     server_meta_config: Option<&str>,
+    workflow_references: Option<&WorkflowReferenceMap>,
 ) -> Result<RequestBody, AppError> {
     let metadata = get_obj(decl_value, "metadata")?;
     let spec = get_obj(decl_value, "spec")?;
 
     let mut body = Map::new();
+    let execution_config = project_workflow_execution(spec, workflow_references)?;
+    let yaml_config = serde_yaml::to_string(&execution_config)
+        .map_err(|_| AppError::Internal("workflow: failed to encode execution_config".into()))?;
 
     // authorTransform: metadata.project → project
     insert_required_from_obj(&mut body, metadata, "project", "project")?;
 
-    let active_fields = if is_update { workflow::UPDATE_FIELDS } else { workflow::CREATE_FIELDS };
+    let active_fields = if is_update {
+        workflow::UPDATE_FIELDS
+    } else {
+        workflow::CREATE_FIELDS
+    };
 
     for field in active_fields {
         if *field == "project" {
@@ -274,16 +421,14 @@ fn project_workflow(
                 let merged = merge_meta_config(server_meta_config, authored_meta, metadata)?;
                 body.insert("meta_config".to_owned(), merged);
             }
-            "yaml_config" | "assistants" | "tools" | "states" => {
-                // authorTransform: execution_config → yaml_config + flattened assistants/tools/states
-                // For create, adapter must pre-encode execution_config into yaml_config etc.
-                // For update, only yaml_config is used. The adapter fills these from execution_config
-                // before calling project(). Pass through any values already placed in spec by adapter.
-                if let Some(v) = spec.get(*field) {
-                    body.insert((*field).to_owned(), v.clone());
-                }
-                // If absent: operationInapplicable on update (states/assistants/tools not in
-                // updateRequestFields). For create, yaml_config is required by adapter transform.
+            "yaml_config" => {
+                body.insert("yaml_config".to_owned(), Value::String(yaml_config.clone()));
+            }
+            "assistants" | "tools" | "states" => {
+                let value = execution_config.get(*field).cloned().ok_or_else(|| {
+                    AppError::Schema(format!("workflow: execution_config.{field} is required"))
+                })?;
+                body.insert((*field).to_owned(), value);
             }
             f if workflow::REQUIRED.contains(&f) => {
                 insert_required_spec(&mut body, spec, f)?;
@@ -299,6 +444,161 @@ fn project_workflow(
     }
 
     Ok(RequestBody::Json(Value::Object(body)))
+}
+
+/// Convert Workflow's author form into the exact server execution form.
+///
+/// Graph-local IDs (`assistants[].id` and `states[].assistant_id`) remain
+/// unchanged. Only the three approved natural-reference positions are
+/// replaced with server-resource fields.
+fn project_workflow_execution(
+    spec: &Map<String, Value>,
+    references: Option<&WorkflowReferenceMap>,
+) -> Result<Map<String, Value>, AppError> {
+    let mut execution = spec
+        .get("execution_config")
+        .and_then(Value::as_object)
+        .cloned()
+        .ok_or_else(|| AppError::Schema("workflow: spec.execution_config is required".into()))?;
+
+    let assistants = execution
+        .get_mut("assistants")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| {
+            AppError::Schema("workflow: execution_config.assistants must be an array".into())
+        })?;
+
+    for actor in assistants {
+        let actor = actor.as_object_mut().ok_or_else(|| {
+            AppError::Schema("workflow: execution_config.assistants[] must be an object".into())
+        })?;
+
+        // Defensive boundary: these positions are schema-prohibited, but the
+        // projector also rejects them so callers cannot bypass W-002 by
+        // constructing ParsedDeclaration directly.
+        for prohibited in ["assistant_id", "skill_ids", "datasource_ids"] {
+            if actor.contains_key(prohibited) {
+                return Err(AppError::Schema(format!(
+                    "workflow: authored server-resource field '{prohibited}' is prohibited"
+                )));
+            }
+        }
+
+        actor.entry("temperature".to_owned()).or_insert(Value::Null);
+
+        if let Some(reference) = actor.remove("assistantRef") {
+            if actor.contains_key("system_prompt")
+                || actor.contains_key("skillRefs")
+                || actor.contains_key("datasourceRefs")
+            {
+                return Err(AppError::Schema(
+                    "workflow: persisted actor contains inline-only fields".into(),
+                ));
+            }
+            let (project, slug) = reference_pair(&reference, "slug", "assistantRef")?;
+            let server_id = references
+                .and_then(|map| map.assistant_ids.get(&(project, slug)))
+                .ok_or_else(|| {
+                    AppError::Reconciliation(
+                        "workflow: persisted Assistant reference did not resolve exactly once"
+                            .into(),
+                    )
+                })?;
+            actor.insert("assistant_id".to_owned(), Value::String(server_id.clone()));
+        } else {
+            if !actor.contains_key("system_prompt") {
+                return Err(AppError::Schema(
+                    "workflow: inline actor requires system_prompt".into(),
+                ));
+            }
+
+            let skill_refs = actor.remove("skillRefs").ok_or_else(|| {
+                AppError::Schema("workflow: inline actor requires skillRefs".into())
+            })?;
+            let datasource_refs = actor.remove("datasourceRefs").ok_or_else(|| {
+                AppError::Schema("workflow: inline actor requires datasourceRefs".into())
+            })?;
+            let skill_ids = resolve_reference_array(
+                &skill_refs,
+                "name",
+                "skillRefs",
+                references.map(|map| &map.skill_ids),
+            )?;
+            let datasource_ids = resolve_reference_array(
+                &datasource_refs,
+                "repo_name",
+                "datasourceRefs",
+                references.map(|map| &map.datasource_ids),
+            )?;
+            actor.insert("skill_ids".to_owned(), Value::Array(skill_ids));
+            actor.insert("datasource_ids".to_owned(), Value::Array(datasource_ids));
+        }
+    }
+
+    let tools = execution
+        .get_mut("tools")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| {
+            AppError::Schema("workflow: execution_config.tools must be an array".into())
+        })?;
+    for tool in tools {
+        let tool = tool.as_object_mut().ok_or_else(|| {
+            AppError::Schema("workflow: execution_config.tools[] must be an object".into())
+        })?;
+        for optional_null in [
+            "tool_result_json_pointer",
+            "mcp_server",
+            "tokens_size_limit",
+        ] {
+            tool.entry(optional_null.to_owned()).or_insert(Value::Null);
+        }
+    }
+
+    Ok(execution)
+}
+
+fn reference_pair(
+    value: &Value,
+    key_field: &str,
+    field: &str,
+) -> Result<(String, String), AppError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| AppError::Schema(format!("workflow: {field} must be an object")))?;
+    let project = object
+        .get("project")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::Schema(format!("workflow: {field}.project is required")))?;
+    let key = object
+        .get(key_field)
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::Schema(format!("workflow: {field}.{key_field} is required")))?;
+    Ok((project.to_owned(), key.to_owned()))
+}
+
+fn resolve_reference_array(
+    value: &Value,
+    key_field: &str,
+    field: &str,
+    resolved: Option<&BTreeMap<(String, String), String>>,
+) -> Result<Vec<Value>, AppError> {
+    value
+        .as_array()
+        .ok_or_else(|| AppError::Schema(format!("workflow: {field} must be an array")))?
+        .iter()
+        .map(|reference| {
+            let key = reference_pair(reference, key_field, field)?;
+            resolved
+                .and_then(|map| map.get(&key))
+                .cloned()
+                .map(Value::String)
+                .ok_or_else(|| {
+                    AppError::Reconciliation(format!(
+                        "workflow: {field} reference did not resolve exactly once"
+                    ))
+                })
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -323,15 +623,14 @@ fn merge_meta_config(
     let mut merged: BTreeMap<String, Value> = match server_raw {
         None | Some("null") => BTreeMap::new(),
         Some(s) => {
-            let decoded: Value = serde_json::from_str(s)
-                .map_err(|_| AppError::Schema("meta_config: server value is not valid JSON".into()))?;
-            let obj = decoded
-                .as_object()
-                .ok_or_else(|| AppError::Schema("meta_config: server value is not a JSON object".into()))?;
+            let decoded: Value = serde_json::from_str(s).map_err(|_| {
+                AppError::Schema("meta_config: server value is not valid JSON".into())
+            })?;
+            let obj = decoded.as_object().ok_or_else(|| {
+                AppError::Schema("meta_config: server value is not a JSON object".into())
+            })?;
             // Reject invalid reserved record upfront; the reserved key value is overwritten below
-            obj.iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect()
+            obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
         }
     };
 
@@ -364,11 +663,15 @@ fn merge_meta_config(
     let project = metadata
         .get("project")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| AppError::Schema("meta_config: metadata.project required for identity".into()))?;
+        .ok_or_else(|| {
+            AppError::Schema("meta_config: metadata.project required for identity".into())
+        })?;
     let slug = metadata
         .get("slug")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| AppError::Schema("meta_config: metadata.slug required for identity".into()))?;
+        .ok_or_else(|| {
+            AppError::Schema("meta_config: metadata.slug required for identity".into())
+        })?;
 
     let identity = serde_json::json!({
         "project": project,
@@ -390,16 +693,30 @@ fn merge_meta_config(
 
 mod skill {
     pub const CREATE_FIELDS: &[&str] = &[
-        "name", "description", "content", "project", "visibility",
-        "categories", "toolkits", "mcp_servers", "companion_files",
+        "name",
+        "description",
+        "content",
+        "project",
+        "visibility",
+        "categories",
+        "toolkits",
+        "mcp_servers",
+        "companion_files",
         "enabled_builtin_subagents",
     ];
     // create == update for Skill
     pub const UPDATE_FIELDS: &[&str] = CREATE_FIELDS;
 
     pub const REQUIRED: &[&str] = &[
-        "name", "description", "content", "project", "visibility",
-        "categories", "toolkits", "mcp_servers", "companion_files",
+        "name",
+        "description",
+        "content",
+        "project",
+        "visibility",
+        "categories",
+        "toolkits",
+        "mcp_servers",
+        "companion_files",
         "enabled_builtin_subagents",
     ];
     // No optionalNull fields for Skill (manifest §fieldClasses.optionalNull = [])
@@ -415,7 +732,11 @@ fn project_skill(decl_value: &Value, is_update: bool) -> Result<RequestBody, App
     insert_required_from_obj(&mut body, metadata, "name", "name")?;
     insert_required_from_obj(&mut body, metadata, "project", "project")?;
 
-    let active_fields = if is_update { skill::UPDATE_FIELDS } else { skill::CREATE_FIELDS };
+    let active_fields = if is_update {
+        skill::UPDATE_FIELDS
+    } else {
+        skill::CREATE_FIELDS
+    };
 
     for field in active_fields {
         if *field == "name" || *field == "project" {
@@ -468,8 +789,13 @@ fn create_only_fields(kind: &str) -> &'static [&'static str] {
     match kind {
         "git" | "svn" => &["indexType", "summarizationModel"],
         "confluence" => &[
-            "include_restricted_content", "include_archived_content", "include_attachments",
-            "include_comments", "keep_markdown_format", "keep_newlines", "embedding_model",
+            "include_restricted_content",
+            "include_archived_content",
+            "include_attachments",
+            "include_comments",
+            "keep_markdown_format",
+            "keep_newlines",
+            "embedding_model",
         ],
         "jira" | "xray" | "azure_devops_wiki" | "azure_devops_work_item" => &["embedding_model"],
         "google" => &["googleDoc", "setting_id", "embedding_model"],
@@ -481,44 +807,108 @@ fn create_only_fields(kind: &str) -> &'static [&'static str] {
 fn create_request_fields(kind: &str) -> &'static [&'static str] {
     match kind {
         "git" | "svn" => &[
-            "name", "description", "link", "branch", "filesFilter",
-            "indexType", "embeddingsModel", "summarizationModel", "prompt",
-            "docsGeneration", "projectSpaceVisible", "setting_id",
-            "guardrail_assignments", "cron_expression", "timezone",
+            "name",
+            "description",
+            "link",
+            "branch",
+            "filesFilter",
+            "indexType",
+            "embeddingsModel",
+            "summarizationModel",
+            "prompt",
+            "docsGeneration",
+            "projectSpaceVisible",
+            "setting_id",
+            "guardrail_assignments",
+            "cron_expression",
+            "timezone",
         ],
         "confluence" => &[
-            "name", "project_name", "description", "project_space_visible", "cql",
-            "setting_id", "include_restricted_content", "include_archived_content",
-            "include_attachments", "include_comments", "keep_markdown_format",
-            "keep_newlines", "embedding_model", "cron_expression", "timezone",
+            "name",
+            "project_name",
+            "description",
+            "project_space_visible",
+            "cql",
+            "setting_id",
+            "include_restricted_content",
+            "include_archived_content",
+            "include_attachments",
+            "include_comments",
+            "keep_markdown_format",
+            "keep_newlines",
+            "embedding_model",
+            "cron_expression",
+            "timezone",
             "guardrail_assignments",
         ],
         "jira" | "xray" => &[
-            "name", "project_name", "description", "project_space_visible", "jql",
-            "setting_id", "embedding_model", "cron_expression", "timezone",
+            "name",
+            "project_name",
+            "description",
+            "project_space_visible",
+            "jql",
+            "setting_id",
+            "embedding_model",
+            "cron_expression",
+            "timezone",
             "guardrail_assignments",
         ],
         "azure_devops_wiki" => &[
-            "name", "project_name", "description", "project_space_visible",
-            "wiki_query", "wiki_name", "setting_id", "embedding_model",
-            "cron_expression", "timezone", "guardrail_assignments",
+            "name",
+            "project_name",
+            "description",
+            "project_space_visible",
+            "wiki_query",
+            "wiki_name",
+            "setting_id",
+            "embedding_model",
+            "cron_expression",
+            "timezone",
+            "guardrail_assignments",
         ],
         "azure_devops_work_item" => &[
-            "name", "project_name", "description", "project_space_visible",
-            "wiql_query", "setting_id", "embedding_model",
-            "cron_expression", "timezone", "guardrail_assignments",
+            "name",
+            "project_name",
+            "description",
+            "project_space_visible",
+            "wiql_query",
+            "setting_id",
+            "embedding_model",
+            "cron_expression",
+            "timezone",
+            "guardrail_assignments",
         ],
         "sharepoint" => &[
-            "name", "project_name", "description", "project_space_visible",
-            "site_url", "include_pages", "include_documents", "include_lists",
-            "max_file_size_mb", "files_filter", "auth_type", "setting_id",
-            "embedding_model", "cron_expression", "timezone",
-            "oauth_client_id", "oauth_tenant_id", "guardrail_assignments",
+            "name",
+            "project_name",
+            "description",
+            "project_space_visible",
+            "site_url",
+            "include_pages",
+            "include_documents",
+            "include_lists",
+            "max_file_size_mb",
+            "files_filter",
+            "auth_type",
+            "setting_id",
+            "embedding_model",
+            "cron_expression",
+            "timezone",
+            "oauth_client_id",
+            "oauth_tenant_id",
+            "guardrail_assignments",
         ],
         "google" => &[
-            "name", "project_name", "description", "project_space_visible",
-            "googleDoc", "setting_id", "embedding_model",
-            "cron_expression", "timezone", "guardrail_assignments",
+            "name",
+            "project_name",
+            "description",
+            "project_space_visible",
+            "googleDoc",
+            "setting_id",
+            "embedding_model",
+            "cron_expression",
+            "timezone",
+            "guardrail_assignments",
         ],
         _ => &[],
     }
@@ -528,38 +918,93 @@ fn create_request_fields(kind: &str) -> &'static [&'static str] {
 fn update_request_fields(kind: &str) -> &'static [&'static str] {
     match kind {
         "git" | "svn" => &[
-            "name", "description", "prompt", "embeddingsModel", "projectSpaceVisible",
-            "docsGeneration", "branch", "link", "filesFilter", "setting_id",
-            "guardrail_assignments", "cron_expression", "timezone",
+            "name",
+            "description",
+            "prompt",
+            "embeddingsModel",
+            "projectSpaceVisible",
+            "docsGeneration",
+            "branch",
+            "link",
+            "filesFilter",
+            "setting_id",
+            "guardrail_assignments",
+            "cron_expression",
+            "timezone",
         ],
         "confluence" => &[
-            "name", "project_name", "description", "project_space_visible",
-            "cql", "setting_id", "cron_expression", "timezone", "guardrail_assignments",
+            "name",
+            "project_name",
+            "description",
+            "project_space_visible",
+            "cql",
+            "setting_id",
+            "cron_expression",
+            "timezone",
+            "guardrail_assignments",
         ],
         "jira" | "xray" => &[
-            "name", "project_name", "description", "project_space_visible",
-            "jql", "setting_id", "cron_expression", "timezone", "guardrail_assignments",
+            "name",
+            "project_name",
+            "description",
+            "project_space_visible",
+            "jql",
+            "setting_id",
+            "cron_expression",
+            "timezone",
+            "guardrail_assignments",
         ],
         "azure_devops_wiki" => &[
-            "name", "project_name", "description", "project_space_visible",
-            "wiki_query", "wiki_name", "setting_id", "cron_expression",
-            "timezone", "guardrail_assignments",
+            "name",
+            "project_name",
+            "description",
+            "project_space_visible",
+            "wiki_query",
+            "wiki_name",
+            "setting_id",
+            "cron_expression",
+            "timezone",
+            "guardrail_assignments",
         ],
         "azure_devops_work_item" => &[
-            "name", "project_name", "description", "project_space_visible",
-            "wiql_query", "setting_id", "cron_expression", "timezone",
+            "name",
+            "project_name",
+            "description",
+            "project_space_visible",
+            "wiql_query",
+            "setting_id",
+            "cron_expression",
+            "timezone",
             "guardrail_assignments",
         ],
         "sharepoint" => &[
-            "name", "project_name", "description", "project_space_visible",
-            "site_url", "include_pages", "include_documents", "include_lists",
-            "max_file_size_mb", "files_filter", "auth_type", "setting_id",
-            "embedding_model", "cron_expression", "timezone",
-            "oauth_client_id", "oauth_tenant_id", "guardrail_assignments",
+            "name",
+            "project_name",
+            "description",
+            "project_space_visible",
+            "site_url",
+            "include_pages",
+            "include_documents",
+            "include_lists",
+            "max_file_size_mb",
+            "files_filter",
+            "auth_type",
+            "setting_id",
+            "embedding_model",
+            "cron_expression",
+            "timezone",
+            "oauth_client_id",
+            "oauth_tenant_id",
+            "guardrail_assignments",
         ],
         "google" => &[
-            "name", "project_name", "description", "project_space_visible",
-            "cron_expression", "timezone", "guardrail_assignments",
+            "name",
+            "project_name",
+            "description",
+            "project_space_visible",
+            "cron_expression",
+            "timezone",
+            "guardrail_assignments",
         ],
         _ => &[],
     }
@@ -647,16 +1092,32 @@ fn project_file_datasource(
 
     let active_fields: &[&str] = if is_update {
         &[
-            "name", "project_name", "description", "project_space_visible",
-            "uploaded_files", "files", "csv_separator", "csv_start_row",
-            "csv_rows_per_document", "embedding_model", "guardrail_assignments",
+            "name",
+            "project_name",
+            "description",
+            "project_space_visible",
+            "uploaded_files",
+            "files",
+            "csv_separator",
+            "csv_start_row",
+            "csv_rows_per_document",
+            "embedding_model",
+            "guardrail_assignments",
             "include_email_attachments",
         ]
     } else {
         &[
-            "name", "project_name", "description", "project_space_visible",
-            "files", "csv_separator", "csv_start_row", "csv_rows_per_document",
-            "embedding_model", "guardrail_assignments", "include_email_attachments",
+            "name",
+            "project_name",
+            "description",
+            "project_space_visible",
+            "files",
+            "csv_separator",
+            "csv_start_row",
+            "csv_rows_per_document",
+            "embedding_model",
+            "guardrail_assignments",
+            "include_email_attachments",
         ]
     };
 
@@ -679,7 +1140,10 @@ fn project_file_datasource(
                                 .unwrap_or(path_str)
                                 .to_owned();
                             // Content is empty here; adapter fills before upload.
-                            parts.push(FilePart { filename, content: Vec::new() });
+                            parts.push(FilePart {
+                                filename,
+                                content: Vec::new(),
+                            });
                         }
                     }
                 }
@@ -688,7 +1152,9 @@ fn project_file_datasource(
                 if is_update {
                     if let Some(v) = spec.get("uploaded_files") {
                         let encoded = serde_json::to_string(v).map_err(|_| {
-                            AppError::Internal("file datasource: uploaded_files encode failed".into())
+                            AppError::Internal(
+                                "file datasource: uploaded_files encode failed".into(),
+                            )
                         })?;
                         query_params.push(("uploaded_files".to_owned(), encoded));
                     }
@@ -697,7 +1163,9 @@ fn project_file_datasource(
             "guardrail_assignments" => {
                 if let Some(v) = spec.get("guardrail_assignments") {
                     let encoded = serde_json::to_string(v).map_err(|_| {
-                        AppError::Internal("file datasource: guardrail_assignments encode failed".into())
+                        AppError::Internal(
+                            "file datasource: guardrail_assignments encode failed".into(),
+                        )
                     })?;
                     query_params.push(("guardrail_assignments".to_owned(), encoded));
                 }
@@ -712,7 +1180,10 @@ fn project_file_datasource(
         }
     }
 
-    Ok(RequestBody::FileMultipart { parts, query_params })
+    Ok(RequestBody::FileMultipart {
+        parts,
+        query_params,
+    })
 }
 
 /// Convert a scalar JSON value to a query-parameter string.
@@ -776,7 +1247,11 @@ fn insert_required_spec(
 
 /// Insert an optional-null spec field: explicit null when absent or authored null;
 /// authored value otherwise.
-fn insert_optional_null_spec(body: &mut Map<String, Value>, spec: &Map<String, Value>, field: &str) {
+fn insert_optional_null_spec(
+    body: &mut Map<String, Value>,
+    spec: &Map<String, Value>,
+    field: &str,
+) {
     let value = spec.get(field).cloned().unwrap_or(Value::Null);
     body.insert(field.to_owned(), value);
 }
@@ -787,7 +1262,84 @@ fn insert_optional_null_spec(body: &mut Map<String, Value>, spec: &Map<String, V
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
+    use crate::parse::{EntityKind, ParsedDeclaration};
+
+    fn workflow_projection_decl(actors: Value) -> ParsedDeclaration {
+        ParsedDeclaration {
+            kind: EntityKind::Workflow,
+            value: serde_json::json!({
+                "metadata": {"project": "project-a", "slug": "flow-a"},
+                "spec": {
+                    "name": "Flow A",
+                    "description": "Projection fixture",
+                    "mode": "Sequential",
+                    "shared": false,
+                    "execution_config": {
+                        "messages_limit_before_summarization": 10,
+                        "tokens_limit_before_summarization": 1000,
+                        "type": "generic",
+                        "enable_summarization_node": false,
+                        "recursion_limit": 10,
+                        "max_concurrency": 1,
+                        "verbose": false,
+                        "max_iteration_key_output_limit": 100,
+                        "assistants": actors,
+                        "tools": [],
+                        "custom_nodes": [],
+                        "states": [
+                            {
+                                "id": "state-persisted",
+                                "assistant_id": "local-persisted",
+                                "task": "",
+                                "finish_iteration": false,
+                                "next": {"state_id": "state-inline", "override_task": false,
+                                    "store_in_context": true, "include_in_llm_history": true,
+                                    "clear_prior_messages": false, "clear_context_store": false,
+                                    "include_in_iterator_context": ["*"], "append_to_context": false},
+                                "retry_policy": {"initial_interval": 1000, "backoff_factor": 2,
+                                    "max_interval": 60000, "max_attempts": 3},
+                                "interrupt_before": false,
+                                "resolve_dynamic_values_in_prompt": false,
+                                "result_as_human_message": false
+                            }
+                        ],
+                        "retry_policy": {"initial_interval": 1000, "backoff_factor": 2,
+                            "max_interval": 60000, "max_attempts": 3}
+                    }
+                }
+            }),
+            source_path: PathBuf::from("workflow.yaml"),
+        }
+    }
+
+    fn workflow_actor_fixture() -> Value {
+        serde_json::json!([
+            {
+                "id": "local-persisted",
+                "assistantRef": {"project": "project-a", "slug": "assistant-a"},
+                "name": "Persisted", "model": "gpt", "limit_tool_output_tokens": 1000,
+                "tools": [], "exclude_extra_context_tools": false, "mcp_servers": []
+            },
+            {
+                "id": "local-inline", "name": "Inline", "model": "gpt",
+                "system_prompt": "inline prompt", "limit_tool_output_tokens": 1000,
+                "tools": [], "exclude_extra_context_tools": false, "mcp_servers": [],
+                "skillRefs": [{"project": "project-a", "name": "skill-a"}],
+                "datasourceRefs": [{"project": "project-a", "repo_name": "docs-a"}]
+            }
+        ])
+    }
+
+    fn workflow_reference_fixture() -> WorkflowReferenceMap {
+        let mut refs = WorkflowReferenceMap::default();
+        refs.insert_assistant("project-a", "assistant-a", "server-assistant");
+        refs.insert_skill("project-a", "skill-a", "server-skill");
+        refs.insert_datasource("project-a", "docs-a", "server-datasource");
+        refs
+    }
 
     // -----------------------------------------------------------------------
     // meta_config merge tests (metaConfigCodec, data-model.md §4)
@@ -908,7 +1460,9 @@ mod tests {
 
     #[test]
     fn write_plan_create_variant() {
-        let plan = WritePlan::Create { request: RequestBody::Json(serde_json::json!({})) };
+        let plan = WritePlan::Create {
+            request: RequestBody::Json(serde_json::json!({})),
+        };
         assert!(matches!(plan, WritePlan::Create { .. }));
     }
 
@@ -1027,6 +1581,103 @@ mod tests {
     fn workflow_client_excluded_id_absent_from_all_field_lists() {
         assert!(!workflow::CREATE_FIELDS.contains(&"id"));
         assert!(!workflow::UPDATE_FIELDS.contains(&"id"));
+    }
+
+    #[test]
+    fn workflow_create_projects_persisted_and_inline_references_at_exact_positions() {
+        let decl = workflow_projection_decl(workflow_actor_fixture());
+        let refs = workflow_reference_fixture();
+        let plan =
+            project_with_workflow_references(&decl, None, None, Path::new("."), false, Some(&refs))
+                .expect("projection must succeed");
+        let body = match plan {
+            WritePlan::Create {
+                request: RequestBody::Json(body),
+            } => body,
+            other => panic!("unexpected plan: {other:?}"),
+        };
+
+        let actors = body["assistants"].as_array().unwrap();
+        assert_eq!(actors[0]["id"], "local-persisted");
+        assert_eq!(actors[0]["assistant_id"], "server-assistant");
+        assert!(actors[0].get("assistantRef").is_none());
+        assert_eq!(actors[1]["id"], "local-inline");
+        assert_eq!(actors[1]["skill_ids"], serde_json::json!(["server-skill"]));
+        assert_eq!(
+            actors[1]["datasource_ids"],
+            serde_json::json!(["server-datasource"])
+        );
+        assert!(actors[1].get("skillRefs").is_none());
+        assert!(actors[1].get("datasourceRefs").is_none());
+        assert_eq!(body["states"][0]["assistant_id"], "local-persisted");
+
+        let encoded: Value = serde_yaml::from_str(body["yaml_config"].as_str().unwrap()).unwrap();
+        assert_eq!(encoded["assistants"], body["assistants"]);
+        assert_eq!(encoded["states"][0]["assistant_id"], "local-persisted");
+    }
+
+    #[test]
+    fn workflow_update_carries_projected_yaml_without_create_only_flattened_fields() {
+        let decl = workflow_projection_decl(workflow_actor_fixture());
+        let refs = workflow_reference_fixture();
+        let existing = ExistingEntity {
+            server_id: "workflow-server-id".into(),
+            meta_config: None,
+        };
+        let plan = project_with_workflow_references(
+            &decl,
+            Some(&existing),
+            None,
+            Path::new("."),
+            false,
+            Some(&refs),
+        )
+        .expect("projection must succeed");
+        let body = match plan {
+            WritePlan::Update {
+                request: RequestBody::Json(body),
+                ..
+            } => body,
+            other => panic!("unexpected plan: {other:?}"),
+        };
+
+        assert!(body.get("assistants").is_none());
+        assert!(body.get("states").is_none());
+        let encoded: Value = serde_yaml::from_str(body["yaml_config"].as_str().unwrap()).unwrap();
+        assert_eq!(encoded["assistants"][0]["assistant_id"], "server-assistant");
+        assert_eq!(encoded["states"][0]["assistant_id"], "local-persisted");
+    }
+
+    #[test]
+    fn workflow_missing_online_reference_fails_before_request_projection() {
+        let decl = workflow_projection_decl(workflow_actor_fixture());
+        let err = project_with_workflow_references(
+            &decl,
+            None,
+            None,
+            Path::new("."),
+            false,
+            Some(&WorkflowReferenceMap::default()),
+        )
+        .expect_err("missing reference must fail");
+        assert!(matches!(err, AppError::Reconciliation(_)));
+    }
+
+    #[test]
+    fn workflow_authored_server_resource_field_is_rejected_defensively() {
+        let mut actors = workflow_actor_fixture();
+        actors[0]["assistant_id"] = Value::String("authored-server-id".into());
+        let decl = workflow_projection_decl(actors);
+        let err = project_with_workflow_references(
+            &decl,
+            None,
+            None,
+            Path::new("."),
+            false,
+            Some(&workflow_reference_fixture()),
+        )
+        .expect_err("server-resource fields must be rejected");
+        assert!(matches!(err, AppError::Schema(_)));
     }
 
     // -----------------------------------------------------------------------

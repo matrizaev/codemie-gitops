@@ -349,7 +349,10 @@ struct DiagnosticJson<'a> {
     http: Option<HttpInfoJson<'a>>,
     #[serde(rename = "requestId", skip_serializing_if = "Option::is_none")]
     request_id: Option<&'a str>,
-    #[serde(rename = "serverCorrelationId", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "serverCorrelationId",
+        skip_serializing_if = "Option::is_none"
+    )]
     server_correlation_id: Option<&'a str>,
 }
 
@@ -424,7 +427,17 @@ pub struct Renderer<W: Write, E: Write> {
 impl<W: Write, E: Write> Renderer<W, E> {
     /// Construct a renderer with the given writers and output mode.
     pub fn new(stdout: W, stderr: E, mode: OutputMode) -> Self {
-        Renderer { stdout, stderr, mode }
+        Renderer {
+            stdout,
+            stderr,
+            mode,
+        }
+    }
+
+    /// Return the owned output writers. Primarily used by boundary tests to
+    /// assert the stdout/stderr split without touching process-global streams.
+    pub fn into_writers(self) -> (W, E) {
+        (self.stdout, self.stderr)
     }
 
     /// Emit a successful outcome record to stdout.
@@ -558,19 +571,42 @@ pub fn diagnostic_from_app_error(error: &crate::error::AppError) -> DiagnosticIn
         }
         AppError::Schema(_) => (ErrorCode::ESchema, DiagnosticCategory::LocalInput),
         AppError::YamlParse(_) => (ErrorCode::EYamlParse, DiagnosticCategory::LocalInput),
-        AppError::Authentication(_) => {
-            (ErrorCode::EAuthentication, DiagnosticCategory::Authentication)
-        }
+        AppError::Authentication(_) => (
+            ErrorCode::EAuthentication,
+            DiagnosticCategory::Authentication,
+        ),
         AppError::Authorization(_) => {
             (ErrorCode::EAuthorization, DiagnosticCategory::Authorization)
         }
-        AppError::VisibilityUnproven(_) => {
-            (ErrorCode::EVisibilityUnproven, DiagnosticCategory::Authorization)
-        }
+        AppError::VisibilityUnproven(_) => (
+            ErrorCode::EVisibilityUnproven,
+            DiagnosticCategory::Authorization,
+        ),
         AppError::Connectivity(_) => (ErrorCode::EConnectivity, DiagnosticCategory::Connectivity),
-        AppError::ApiIncompatible(_) => {
-            (ErrorCode::EApiIncompatible, DiagnosticCategory::Compatibility)
-        }
+        AppError::ApiIncompatible(_) => (
+            ErrorCode::EApiIncompatible,
+            DiagnosticCategory::Compatibility,
+        ),
+        AppError::ServerRejected(_) => (
+            ErrorCode::EServerRejected,
+            DiagnosticCategory::ServerRejection,
+        ),
+        AppError::WriteUncertain(_) => (
+            ErrorCode::EWriteUncertain,
+            DiagnosticCategory::Reconciliation,
+        ),
+        AppError::WriteVerificationUnavailable(_) => (
+            ErrorCode::EWriteVerificationUnavailable,
+            DiagnosticCategory::Connectivity,
+        ),
+        AppError::WriteVerificationIncompatible(_) => (
+            ErrorCode::EWriteVerificationIncompatible,
+            DiagnosticCategory::Compatibility,
+        ),
+        // R-001 classifies whole-invocation deadline expiry at the external
+        // boundary as E_CONNECTIVITY, while preserving a typed timeout inside
+        // the application and worker layers.
+        AppError::Timeout(_) => (ErrorCode::EConnectivity, DiagnosticCategory::Connectivity),
         AppError::Internal(_) => (ErrorCode::EInternal, DiagnosticCategory::Internal),
         AppError::Reconciliation(_) => {
             // Reconciliation errors map to exit 1. The specific reconciliation
@@ -578,7 +614,10 @@ pub fn diagnostic_from_app_error(error: &crate::error::AppError) -> DiagnosticIn
             // determined by the adapter tasks (W-001, S-001, D-001) which will
             // produce richer error types. For now, AppError::Reconciliation
             // maps to E_AMBIGUOUS_IDENTITY as the generic reconciliation code.
-            (ErrorCode::EAmbiguousIdentity, DiagnosticCategory::Reconciliation)
+            (
+                ErrorCode::EAmbiguousIdentity,
+                DiagnosticCategory::Reconciliation,
+            )
         }
     };
     DiagnosticInput {
@@ -726,7 +765,10 @@ mod tests {
         )
         .unwrap();
         let out = String::from_utf8(r.stdout).unwrap();
-        assert_eq!(out.trim_end_matches('\n'), "created Datasource proj/my-repo");
+        assert_eq!(
+            out.trim_end_matches('\n'),
+            "created Datasource proj/my-repo"
+        );
     }
 
     #[test]
@@ -794,7 +836,10 @@ mod tests {
         // No extra fields
         let obj = val.as_object().unwrap();
         assert_eq!(obj.len(), 4, "must have exactly 4 fields");
-        assert!(!obj.contains_key("name"), "name must not appear for Workflow");
+        assert!(
+            !obj.contains_key("name"),
+            "name must not appear for Workflow"
+        );
         assert!(!obj.contains_key("repo_name"), "repo_name must not appear");
     }
 
@@ -1029,7 +1074,10 @@ mod tests {
         let val: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
         assert_eq!(val["errorCode"], "E_CONFIGURATION");
         // The malicious input string must not appear anywhere in output.
-        assert!(!out.contains("http://evil.com"), "user input must not appear in output");
+        assert!(
+            !out.contains("http://evil.com"),
+            "user input must not appear in output"
+        );
     }
 
     // --- Entity key helpers ---

@@ -22,8 +22,10 @@ use std::path::{Path, PathBuf};
 use serde_json::Value as JsonValue;
 use serde_yaml::Value as YamlValue;
 
+use crate::cancellation::CancellationToken;
 use crate::discovery::{
-    load_sidecar_file, resolve_sidecar_path, MAX_AGGREGATE_UPLOAD_BYTES, MAX_SIDECAR_FILE_BYTES,
+    load_sidecar_file, load_sidecar_file_cancellable, resolve_sidecar_path,
+    MAX_AGGREGATE_UPLOAD_BYTES, MAX_SIDECAR_FILE_BYTES,
 };
 use crate::error::AppError;
 use crate::schema::DECLARATION_SCHEMA_JSON;
@@ -113,6 +115,37 @@ pub fn parse_and_validate(
     repo_root: &Path,
     follow_symlinks: bool,
 ) -> Result<ParsedDeclaration, AppError> {
+    parse_and_validate_inner(raw_yaml, file_path, repo_root, follow_symlinks, None)
+}
+
+/// Coordinator-only parsing entry point with cooperative cancellation for
+/// sidecar expansion and phase checkpoints.
+pub(crate) fn parse_and_validate_cancellable(
+    raw_yaml: &str,
+    file_path: &Path,
+    repo_root: &Path,
+    follow_symlinks: bool,
+    cancellation: &CancellationToken,
+) -> Result<ParsedDeclaration, AppError> {
+    parse_and_validate_inner(
+        raw_yaml,
+        file_path,
+        repo_root,
+        follow_symlinks,
+        Some(cancellation),
+    )
+}
+
+fn parse_and_validate_inner(
+    raw_yaml: &str,
+    file_path: &Path,
+    repo_root: &Path,
+    follow_symlinks: bool,
+    cancellation: Option<&CancellationToken>,
+) -> Result<ParsedDeclaration, AppError> {
+    if let Some(cancellation) = cancellation {
+        cancellation.checkpoint()?;
+    }
     // Step 1 — Per-file byte limit (must precede any AST allocation, SEC-003).
     if raw_yaml.len() > MAX_YAML_FILE_BYTES {
         return Err(AppError::YamlParse(format!(
@@ -127,10 +160,7 @@ pub fn parse_and_validate(
 
     // Step 3 — Parse to serde_yaml::Value.
     let yaml_value: YamlValue = serde_yaml::from_str(raw_yaml).map_err(|e| {
-        AppError::YamlParse(format!(
-            "'{}': YAML parse error: {e}",
-            file_path.display()
-        ))
+        AppError::YamlParse(format!("'{}': YAML parse error: {e}", file_path.display()))
     })?;
 
     // Step 4 — Tree-walk: depth, scalar size, collection members, tagged
@@ -152,8 +182,18 @@ pub fn parse_and_validate(
     let kind = extract_entity_kind(&json_value, file_path)?;
 
     // Step 8 — Expand contentFrom sidecar for Skill declarations.
-    let json_value =
-        expand_content_from(json_value, &kind, file_path, repo_root, follow_symlinks)?;
+    let json_value = expand_content_from(
+        json_value,
+        &kind,
+        file_path,
+        repo_root,
+        follow_symlinks,
+        cancellation,
+    )?;
+
+    if let Some(cancellation) = cancellation {
+        cancellation.checkpoint()?;
+    }
 
     Ok(ParsedDeclaration {
         kind,
@@ -272,9 +312,7 @@ fn scan_for_injections(raw: &str, file_path: &Path) -> Result<(), AppError> {
             b'!' => {
                 // Tag indicator: `!` followed by `!`, `<`, or a word character.
                 if i + 1 < len
-                    && (bytes[i + 1] == b'!'
-                        || bytes[i + 1] == b'<'
-                        || is_word_byte(bytes[i + 1]))
+                    && (bytes[i + 1] == b'!' || bytes[i + 1] == b'<' || is_word_byte(bytes[i + 1]))
                 {
                     return Err(AppError::YamlParse(format!(
                         "'{}': YAML tag found; tags are not permitted (ADR-001)",
@@ -395,17 +433,12 @@ fn check_yaml_tree(value: &YamlValue, depth: usize, file_path: &Path) -> Result<
 /// Schema compilation errors are reported as `AppError::Internal` because
 /// they indicate a defect in the bundled schema artifact, not a user error.
 fn validate_against_schema(value: JsonValue, file_path: &Path) -> Result<JsonValue, AppError> {
-    let schema_json: JsonValue =
-        serde_json::from_str(DECLARATION_SCHEMA_JSON).map_err(|e| {
-            AppError::Internal(format!(
-                "bundled declaration schema is not valid JSON: {e}"
-            ))
-        })?;
+    let schema_json: JsonValue = serde_json::from_str(DECLARATION_SCHEMA_JSON).map_err(|e| {
+        AppError::Internal(format!("bundled declaration schema is not valid JSON: {e}"))
+    })?;
 
     let validator = jsonschema::validator_for(&schema_json).map_err(|e| {
-        AppError::Internal(format!(
-            "bundled declaration schema failed to compile: {e}"
-        ))
+        AppError::Internal(format!("bundled declaration schema failed to compile: {e}"))
     })?;
 
     let errors: Vec<String> = validator
@@ -433,16 +466,13 @@ fn validate_against_schema(value: JsonValue, file_path: &Path) -> Result<JsonVal
 /// The `kind` field is required by the schema so this should only fail if
 /// called on a value that bypassed schema validation.
 fn extract_entity_kind(value: &JsonValue, file_path: &Path) -> Result<EntityKind, AppError> {
-    let kind_str = value
-        .get("kind")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            AppError::Schema(format!(
-                "'{}': 'kind' field is missing or not a string \
+    let kind_str = value.get("kind").and_then(|v| v.as_str()).ok_or_else(|| {
+        AppError::Schema(format!(
+            "'{}': 'kind' field is missing or not a string \
                  (should have been caught by schema validation)",
-                file_path.display()
-            ))
-        })?;
+            file_path.display()
+        ))
+    })?;
 
     match kind_str {
         "Assistant" => Ok(EntityKind::Assistant),
@@ -479,6 +509,7 @@ fn expand_content_from(
     file_path: &Path,
     repo_root: &Path,
     follow_symlinks: bool,
+    cancellation: Option<&CancellationToken>,
 ) -> Result<JsonValue, AppError> {
     if *kind != EntityKind::Skill {
         return Ok(value);
@@ -496,11 +527,15 @@ fn expand_content_from(
 
     // Resolve path through the discovery module (enforces symlink and
     // root-containment policy per cli.md §3 and F-003).
-    let sidecar_path =
-        resolve_sidecar_path(&relative_path, file_path, repo_root, follow_symlinks)?;
+    let sidecar_path = resolve_sidecar_path(&relative_path, file_path, repo_root, follow_symlinks)?;
 
     // Load with the per-file budget (open-then-fstat pattern, SEC-003).
-    let sidecar_bytes = load_sidecar_file(&sidecar_path, MAX_SIDECAR_FILE_BYTES)?;
+    let sidecar_bytes = match cancellation {
+        Some(cancellation) => {
+            load_sidecar_file_cancellable(&sidecar_path, MAX_SIDECAR_FILE_BYTES, cancellation)?
+        }
+        None => load_sidecar_file(&sidecar_path, MAX_SIDECAR_FILE_BYTES)?,
+    };
 
     // Aggregate upload budget: for a single Skill declaration there is exactly
     // one `contentFrom` sidecar, so the aggregate equals the per-file size.
@@ -654,7 +689,11 @@ spec:
 
         let raw = fs::read_to_string(&file).unwrap();
         let result = parse_and_validate(&raw, &file, &root, false);
-        assert!(result.is_ok(), "valid Workflow YAML must parse: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "valid Workflow YAML must parse: {:?}",
+            result
+        );
         let decl = result.unwrap();
         assert_eq!(decl.kind, EntityKind::Workflow);
     }
@@ -683,10 +722,7 @@ spec:
         init_git(&root);
         let file = root.join("decl.yaml");
 
-        let yaml = format!(
-            "{}\nunknown_extra_field: oops\n",
-            minimal_workflow_yaml()
-        );
+        let yaml = format!("{}\nunknown_extra_field: oops\n", minimal_workflow_yaml());
         fs::write(&file, &yaml).unwrap();
 
         let err = parse_and_validate(&yaml, &file, &root, false)
@@ -799,7 +835,11 @@ spec:
         fs::write(&decl_file, &yaml_str).unwrap();
 
         let result = parse_and_validate(&yaml_str, &decl_file, &root, false);
-        assert!(result.is_ok(), "contentFrom expansion must succeed: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "contentFrom expansion must succeed: {:?}",
+            result
+        );
 
         let decl = result.unwrap();
         assert_eq!(decl.kind, EntityKind::Skill);
@@ -868,13 +908,37 @@ spec:
             &decl_file,
             &root,
             false,
+            None,
         );
-        assert!(result.is_ok(), "small sidecar must not exceed budget: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "small sidecar must not exceed budget: {:?}",
+            result
+        );
     }
 
     // ---------------------------------------------------------------------------
     // YAML resource budget enforcement
     // ---------------------------------------------------------------------------
+
+    #[test]
+    fn cancellable_parser_observes_invocation_cancellation() {
+        let (root, _g) = temp_dir("cancelled");
+        init_git(&root);
+        let file = root.join("decl.yaml");
+        let cancellation = CancellationToken::default();
+        cancellation.cancel();
+
+        let error = parse_and_validate_cancellable(
+            minimal_workflow_yaml(),
+            &file,
+            &root,
+            false,
+            &cancellation,
+        )
+        .expect_err("cancelled parsing must stop at its invocation checkpoint");
+        assert!(matches!(error, AppError::Timeout(_)));
+    }
 
     #[test]
     fn yaml_exceeding_file_byte_limit_is_yaml_parse_error() {
@@ -961,7 +1025,11 @@ spec:
         let file = root.join("x.yaml");
         // `&word` inside a double-quoted string must NOT be flagged.
         let result = scan_for_injections(r#"key: "&anchor inside string""#, &file);
-        assert!(result.is_ok(), "& inside double-quoted string must be allowed: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "& inside double-quoted string must be allowed: {:?}",
+            result
+        );
     }
 
     #[test]
@@ -971,7 +1039,11 @@ spec:
         let file = root.join("x.yaml");
         // `*word` inside a single-quoted string must NOT be flagged.
         let result = scan_for_injections("key: '*alias inside string'", &file);
-        assert!(result.is_ok(), "* inside single-quoted string must be allowed: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "* inside single-quoted string must be allowed: {:?}",
+            result
+        );
     }
 
     #[test]
@@ -989,8 +1061,8 @@ spec:
         let (root, _g) = temp_dir("alias_bare");
         init_git(&root);
         let file = root.join("x.yaml");
-        let err = scan_for_injections("key: *myalias", &file)
-            .expect_err("bare alias must be rejected");
+        let err =
+            scan_for_injections("key: *myalias", &file).expect_err("bare alias must be rejected");
         assert_eq!(err.exit_code(), 2);
     }
 
@@ -1018,10 +1090,12 @@ spec:
         let (root, _g) = temp_dir("merge_key");
         init_git(&root);
         let file = root.join("x.yaml");
-        let err = check_yaml_tree(&val, 0, &file)
-            .expect_err("merge key must be rejected");
+        let err = check_yaml_tree(&val, 0, &file).expect_err("merge key must be rejected");
         assert_eq!(err.exit_code(), 2);
         let msg = format!("{err}");
-        assert!(msg.contains("merge key"), "error must mention merge key: {msg}");
+        assert!(
+            msg.contains("merge key"),
+            "error must mention merge key: {msg}"
+        );
     }
 }

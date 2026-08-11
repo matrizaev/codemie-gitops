@@ -10,7 +10,7 @@ use serde::Deserialize;
 
 use crate::config::ValidatedUrl;
 use crate::error::AppError;
-use crate::http::{ApiClient, encode_query_value};
+use crate::http::{encode_query_value, ApiClient};
 use crate::parse::ParsedDeclaration;
 use crate::projection::{project, ExistingEntity, RequestBody, WritePlan};
 
@@ -54,7 +54,13 @@ pub async fn apply(
     match matches.as_slice() {
         [] => {
             create_with_reresolution(
-                client, base_url, decl, project_name, skill_name, repo_root, follow_symlinks,
+                client,
+                base_url,
+                decl,
+                project_name,
+                skill_name,
+                repo_root,
+                follow_symlinks,
             )
             .await
         }
@@ -71,6 +77,44 @@ pub async fn apply(
              manual resolution required",
             matches.len()
         ))),
+    }
+}
+
+/// Resolve a Skill natural reference without creating or updating it
+/// (FR-031/DR-003/W-002).
+pub async fn resolve_reference(
+    client: &ApiClient,
+    base_url: &ValidatedUrl,
+    project_name: &str,
+    skill_name: &str,
+) -> Result<String, AppError> {
+    let matches = enumerate(client, base_url, project_name, skill_name).await?;
+    match matches.as_slice() {
+        [single] => Ok(single.id.clone()),
+        [] => Err(AppError::Reconciliation(
+            "referenced Skill is missing on the target server".into(),
+        )),
+        _ => Err(AppError::Reconciliation(
+            "referenced Skill identity is ambiguous on the target server".into(),
+        )),
+    }
+}
+
+/// Post-write exact identity verification for the coordinator (FR-034/R-001).
+pub async fn verify_identity(
+    client: &ApiClient,
+    base_url: &ValidatedUrl,
+    project_name: &str,
+    skill_name: &str,
+    expected_server_id: &str,
+) -> Result<(), AppError> {
+    let actual = resolve_reference(client, base_url, project_name, skill_name).await?;
+    if actual == expected_server_id {
+        Ok(())
+    } else {
+        Err(AppError::Reconciliation(
+            "Skill write may have committed but identity verification did not match".into(),
+        ))
     }
 }
 
@@ -140,7 +184,9 @@ async fn create_with_reresolution(
 ) -> Result<ApplyResult, AppError> {
     let plan = project(decl, None, None, repo_root, follow_symlinks)?;
     let body = match plan {
-        WritePlan::Create { request: RequestBody::Json(b) } => b,
+        WritePlan::Create {
+            request: RequestBody::Json(b),
+        } => b,
         _ => {
             return Err(AppError::Internal(
                 "skill: projection produced unexpected create variant".into(),
@@ -152,7 +198,10 @@ async fn create_with_reresolution(
         .post_or_conflict::<_, SkillIdResponse>(base_url, "/v1/skills", &body)
         .await?
     {
-        Some(resp) => Ok(ApplyResult { action: ApplyAction::Created, server_id: resp.id }),
+        Some(resp) => Ok(ApplyResult {
+            action: ApplyAction::Created,
+            server_id: resp.id,
+        }),
         None => {
             // 409: re-enumerate once; no second POST attempt (S-001)
             let second = enumerate(client, base_url, project_name, skill_name).await?;
@@ -191,10 +240,16 @@ async fn dispatch_update(
     plan: WritePlan,
 ) -> Result<ApplyResult, AppError> {
     match plan {
-        WritePlan::Update { server_id, request: RequestBody::Json(body) } => {
+        WritePlan::Update {
+            server_id,
+            request: RequestBody::Json(body),
+        } => {
             let path = format!("/v1/skills/{}", encode_query_value(&server_id));
             let resp: SkillIdResponse = client.put(base_url, &path, &body).await?;
-            Ok(ApplyResult { action: ApplyAction::Updated, server_id: resp.id })
+            Ok(ApplyResult {
+                action: ApplyAction::Updated,
+                server_id: resp.id,
+            })
         }
         _ => Err(AppError::Internal(
             "skill: projection produced unexpected update variant".into(),
@@ -284,10 +339,17 @@ mod tests {
         let client = test_client(&server.url());
         let decl = skill_decl("my-project", "my-skill");
 
-        let result =
-            apply(&client, &url, &decl, "my-project", "my-skill", Path::new("."), false)
-                .await
-                .expect("apply must succeed");
+        let result = apply(
+            &client,
+            &url,
+            &decl,
+            "my-project",
+            "my-skill",
+            Path::new("."),
+            false,
+        )
+        .await
+        .expect("apply must succeed");
 
         assert_eq!(result.action, ApplyAction::Created);
         assert_eq!(result.server_id, "new-uuid");
@@ -319,10 +381,17 @@ mod tests {
         let client = test_client(&server.url());
         let decl = skill_decl("my-project", "my-skill");
 
-        let result =
-            apply(&client, &url, &decl, "my-project", "my-skill", Path::new("."), false)
-                .await
-                .expect("apply must succeed");
+        let result = apply(
+            &client,
+            &url,
+            &decl,
+            "my-project",
+            "my-skill",
+            Path::new("."),
+            false,
+        )
+        .await
+        .expect("apply must succeed");
 
         assert_eq!(result.action, ApplyAction::Updated);
         assert_eq!(result.server_id, "existing-id");
@@ -346,10 +415,17 @@ mod tests {
         let client = test_client(&server.url());
         let decl = skill_decl("my-project", "my-skill");
 
-        let err =
-            apply(&client, &url, &decl, "my-project", "my-skill", Path::new("."), false)
-                .await
-                .expect_err("multiple matches must error");
+        let err = apply(
+            &client,
+            &url,
+            &decl,
+            "my-project",
+            "my-skill",
+            Path::new("."),
+            false,
+        )
+        .await
+        .expect_err("multiple matches must error");
 
         assert!(matches!(err, AppError::Reconciliation(_)));
         assert_eq!(err.exit_code(), 1);
@@ -397,10 +473,17 @@ mod tests {
         let client = test_client(&server.url());
         let decl = skill_decl("my-project", "my-skill");
 
-        let result =
-            apply(&client, &url, &decl, "my-project", "my-skill", Path::new("."), false)
-                .await
-                .expect("409 re-resolution must succeed");
+        let result = apply(
+            &client,
+            &url,
+            &decl,
+            "my-project",
+            "my-skill",
+            Path::new("."),
+            false,
+        )
+        .await
+        .expect("409 re-resolution must succeed");
 
         assert_eq!(result.action, ApplyAction::Updated);
         assert_eq!(result.server_id, "conflict-id");
