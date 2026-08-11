@@ -11,13 +11,13 @@ use serde::Deserialize;
 
 use crate::config::ValidatedUrl;
 use crate::error::AppError;
-use crate::http::{encode_query_value, ApiClient};
+use crate::http::{ApiClient, encode_query_value};
 use crate::parse::ParsedDeclaration;
 use crate::projection::{
-    project_with_workflow_references, ExistingEntity, RequestBody, WorkflowReferenceMap, WritePlan,
+    ExistingEntity, RequestBody, WorkflowReferenceMap, WritePlan, project_with_workflow_references,
 };
 
-use super::{assistant, datasource, skill, ApplyAction, ApplyResult};
+use super::{ApplyAction, ApplyResult, assistant, datasource, skill};
 
 const MAX_PAGES: u32 = 1_000;
 const MAX_ITEMS: u32 = 100_000;
@@ -87,7 +87,7 @@ pub async fn apply(
                     "Workflow: {} matches for (project={project_name:?}, slug={slug:?}); \
                      use --adopt-workflow-id to select one",
                     matches.len()
-                )))
+                )));
             }
         }
     };

@@ -288,7 +288,7 @@ success report.
 | Required scenario | Skill (ADR-007) | Workflow (ADR-008) | Status |
 |---|---|---|---|
 | More than 100 rows | Step 2 (per_page=100, all pages) | "Exhaust every relevant list page" | PASS |
-| Scopes | `project_with_marketplace` explicit in manifest route | "marketplace-inclusive scopes" — value not pinned in manifest route | PARTIAL (Finding VER-001) |
+| Scopes | `project_with_marketplace` explicit in manifest route | pass 1: no scope (project-visible); pass 2: scope=marketplace (globally published) — pinned in enumeratePasses, per_page=100 | PASS (VER-001 CLOSED) |
 | Pagination drift | Step 3: changing totals/cycles → exit 1 | Snapshot drift → compatible instability → exit 1 | PASS |
 | `meta_config` | Not applicable to Skill | Reserved record decode/merge/encode defined in ADR and manifest | PASS |
 | Abilities | `user_abilities` in entityConsumedFields; preflight proves project-admin | `user_abilities` in entityConsumedFields; preflight proves project-admin | PASS |
@@ -324,7 +324,7 @@ success report.
 ```
 Finding ID: VER-001
 Severity: MEDIUM
-Status: OPEN
+Status: CLOSED
 
 Title:
 Workflow enumeration scope parameter value not pinned in manifest
@@ -370,6 +370,19 @@ Verification:
 A follow-up manifest patch that lists the exact scope(s) and the source lines
 confirming their completeness resolves this finding. No implementation change
 is required once the manifest is updated.
+
+Resolution (2026-08-10):
+Manifest updated. routes.enumerate (single ambiguous string) replaced with
+routes.enumeratePasses (two-element array of fully-resolved URL templates):
+  Pass 1: GET /v1/workflows?minimal_response=false&page={page}&per_page=100
+  Pass 2: GET /v1/workflows?minimal_response=false&page={page}&per_page=100&scope=marketplace
+Source evidence: service/workflow_config/workflow_config_index_service.py,
+WorkflowScope(StrEnum) has exactly one member: MARKETPLACE='marketplace'.
+Absent scope returns user-visible project workflows (membership-filtered);
+scope=marketplace returns globally-published (is_global) workflows only.
+Both passes are required for complete identity resolution per ADR-008.
+per_page pinned to 100 (also resolves VER-002). See enumerateScopeEvidence
+field in adapter-manifest-v2.42.0.json Workflow.routes.
 ```
 
 ### Finding VER-002
@@ -510,9 +523,11 @@ downstream tasks:
    only. V-000 (Deployment Verification) must confirm behavioral conformance
    against a live target.
 
-2. **Workflow scope parameter values**: The exact scope(s) required for complete
-   Workflow enumeration were not confirmed from the reference source in this
-   review (VER-001).
+2. **Workflow scope parameter values**: RESOLVED (VER-001 CLOSED 2026-08-10).
+   The manifest now pins both scope values via enumeratePasses: absent scope
+   (user-visible project workflows) and scope=marketplace (globally-published
+   workflows). Source confirmed from pinned reference
+   service/workflow_config/workflow_config_index_service.py WorkflowScope enum.
 
 3. **Pagination stability guarantees beyond total-change detection**: The ADR
    detects total-field drift and cycle/repeated-ID drift. The scenario where
@@ -564,7 +579,7 @@ From Q-001 (for reference only, already recorded):
 | Reserved key protected in declaration schema (Q-001) | PASS |
 | Exhaustive pagination covering >100 items | PASS |
 | Pagination drift detection | PASS |
-| Scope: marketplace-inclusive (value not pinned) | PARTIAL — VER-001 |
+| Scope: marketplace-inclusive (pinned: no-scope + scope=marketplace) | PASS — VER-001 CLOSED |
 | Exact project client filter | PASS |
 | Zero match → adoption guard → POST / E_ADOPTION_REQUIRED | PASS |
 | One match → PUT (unconditional) | PASS |
@@ -595,15 +610,15 @@ Workflow resolution.
 
 Three non-blocking findings were identified:
 - VER-001 (MEDIUM): Workflow scope parameter value not pinned in manifest.
-  Recommend resolution before W-001 implementation begins to avoid source
-  derivation ambiguity.
+  CLOSED 2026-08-10: manifest updated with enumeratePasses array (two concrete
+  URL templates) and enumerateScopeEvidence annotation. Source:
+  service/workflow_config/workflow_config_index_service.py WorkflowScope enum.
 - VER-002 (LOW): Workflow per_page not specified; recommend adding a concrete
-  value for implementation clarity.
+  value for implementation clarity. CLOSED 2026-08-10: per_page=100 pinned in
+  both enumeratePasses entries (resolved together with VER-001).
 - VER-003 (LOW): Per-entity user_abilities write proof values not documented
   for Skill or Workflow; traceable from pinned source evidence but not
   explicit in the manifest.
 
+VER-001 and VER-002 are closed. VER-003 remains open (LOW, non-blocking).
 None of the findings block implementation of W-001, S-001, or their dependents.
-VER-001 should be resolved by the solution architect during W-001 work item
-preparation. VER-002 and VER-003 may be resolved concurrently with
-implementation.

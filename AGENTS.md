@@ -107,6 +107,8 @@ reference-only directories.
 
 ## Rust Idioms & Domain Types
 
+- After finishing changes to Rust code, run `make format` and `make lint`
+  before reporting the work complete.
 - Prefer idiomatic Rust over ad hoc plumbing: small modules, explicit
   ownership, narrow traits, `From`/`TryFrom` conversions, and typed
   request/command/query structs at boundaries.

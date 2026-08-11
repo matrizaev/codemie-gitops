@@ -237,9 +237,7 @@ fn natural_key_of(kind: &EntityKind, value: &serde_json::Value) -> Option<String
 /// string) because effective-project resolution is a caller-layer concern
 /// (F-002/F-004); validate_graph validates references against the same project
 /// string that is present in the declaration.
-fn build_graph_index(
-    decls: &[ParsedDeclaration],
-) -> Result<HashMap<GraphKey, PathBuf>, AppError> {
+fn build_graph_index(decls: &[ParsedDeclaration]) -> Result<HashMap<GraphKey, PathBuf>, AppError> {
     let mut index: HashMap<GraphKey, PathBuf> = HashMap::new();
 
     for decl in decls {
@@ -549,7 +547,7 @@ mod tests {
         project: &str,
         slug: &str,
         actor_id: &str,
-        skill_refs: &[(&str, &str)],     // (project, name)
+        skill_refs: &[(&str, &str)],      // (project, name)
         datasource_refs: &[(&str, &str)], // (project, repo_name)
         states_assistant_ids: &[&str],
     ) -> ParsedDeclaration {
@@ -663,8 +661,8 @@ mod tests {
     fn assistant_with_refs(
         project: &str,
         slug: &str,
-        skill_refs: &[(&str, &str)],      // (project, name)
-        datasource_refs: &[(&str, &str)], // (project, repo_name)
+        skill_refs: &[(&str, &str)],         // (project, name)
+        datasource_refs: &[(&str, &str)],    // (project, repo_name)
         sub_assistant_refs: &[(&str, &str)], // (project, slug)
     ) -> ParsedDeclaration {
         let skills: Vec<serde_json::Value> = skill_refs
@@ -720,7 +718,10 @@ mod tests {
             source_path: p("workflows/my-flow.yaml"),
         };
         let result = validate_natural(&decl);
-        assert!(result.is_ok(), "empty workflow must pass natural validation: {result:?}");
+        assert!(
+            result.is_ok(),
+            "empty workflow must pass natural validation: {result:?}"
+        );
     }
 
     /// A valid slug is accepted by validate_natural (no false positive).
@@ -793,7 +794,11 @@ mod tests {
             workflow_with_inline_actor("p", "my-flow", "actor-1", &[], &[], &["nonexistent"]);
         let err = validate_natural(&decl)
             .expect_err("unresolved state actor_id must fail with AppError::Schema");
-        assert_eq!(err.exit_code(), 2, "unresolved state reference must be exit 2");
+        assert_eq!(
+            err.exit_code(),
+            2,
+            "unresolved state reference must be exit 2"
+        );
         let msg = format!("{err}");
         assert!(
             msg.contains("nonexistent") || msg.contains("assistant_id"),
@@ -821,8 +826,8 @@ mod tests {
             }),
             source_path: p("workflows/wf.yaml"),
         };
-        let err = validate_natural(&decl)
-            .expect_err("unknown tool_id must fail with AppError::Schema");
+        let err =
+            validate_natural(&decl).expect_err("unknown tool_id must fail with AppError::Schema");
         assert_eq!(err.exit_code(), 2);
         let msg = format!("{err}");
         assert!(
@@ -869,7 +874,10 @@ mod tests {
     #[test]
     fn empty_declaration_set_passes_validate_graph() {
         let result = validate_graph(&[]);
-        assert!(result.is_ok(), "empty set must pass graph validation: {result:?}");
+        assert!(
+            result.is_ok(),
+            "empty set must pass graph validation: {result:?}"
+        );
     }
 
     /// A single declaration with no cross-entity references passes.
@@ -877,7 +885,10 @@ mod tests {
     fn single_decl_no_refs_passes_validate_graph() {
         let decl = skill_decl("my-project", "my-skill-name");
         let result = validate_graph(std::slice::from_ref(&decl));
-        assert!(result.is_ok(), "single decl with no refs must pass: {result:?}");
+        assert!(
+            result.is_ok(),
+            "single decl with no refs must pass: {result:?}"
+        );
     }
 
     /// Two skills in the same project with the same name are duplicates →
@@ -888,8 +899,8 @@ mod tests {
             skill_decl("proj-x", "my-skill-name"),
             skill_decl("proj-x", "my-skill-name"),
         ];
-        let err = validate_graph(&decls)
-            .expect_err("duplicate skill must fail with AppError::Schema");
+        let err =
+            validate_graph(&decls).expect_err("duplicate skill must fail with AppError::Schema");
         assert_eq!(err.exit_code(), 2, "duplicate must be exit 2");
         let msg = format!("{err}");
         assert!(
@@ -934,8 +945,7 @@ mod tests {
             assistant_decl("proj", "my-assistant"),
             assistant_decl("proj", "my-assistant"),
         ];
-        let err = validate_graph(&decls)
-            .expect_err("duplicate assistant must fail");
+        let err = validate_graph(&decls).expect_err("duplicate assistant must fail");
         assert_eq!(err.exit_code(), 2);
     }
 
@@ -1010,14 +1020,8 @@ mod tests {
     #[test]
     fn workflow_valid_datasource_ref_resolves() {
         let ds = datasource_decl("proj", "my-repo");
-        let wf = workflow_with_inline_actor(
-            "proj",
-            "my-flow",
-            "a1",
-            &[],
-            &[("proj", "my-repo")],
-            &[],
-        );
+        let wf =
+            workflow_with_inline_actor("proj", "my-flow", "a1", &[], &[("proj", "my-repo")], &[]);
         let decls = vec![ds, wf];
         let result = validate_graph(&decls);
         assert!(
@@ -1045,14 +1049,8 @@ mod tests {
     #[test]
     fn workflow_valid_persisted_assistant_ref_resolves() {
         let asst = assistant_decl("proj", "my-assistant");
-        let wf = workflow_with_persisted_actor(
-            "proj",
-            "my-flow",
-            "a1",
-            "proj",
-            "my-assistant",
-            &["a1"],
-        );
+        let wf =
+            workflow_with_persisted_actor("proj", "my-flow", "a1", "proj", "my-assistant", &["a1"]);
         let decls = vec![asst, wf];
         let result = validate_graph(&decls);
         assert!(
@@ -1064,8 +1062,7 @@ mod tests {
     /// An Assistant referencing a non-existent Skill via `spec.skills[]` fails.
     #[test]
     fn assistant_unresolved_skill_ref_fails_validate_graph() {
-        let asst =
-            assistant_with_refs("proj", "my-assistant", &[("proj", "no-skill")], &[], &[]);
+        let asst = assistant_with_refs("proj", "my-assistant", &[("proj", "no-skill")], &[], &[]);
         let err = validate_graph(std::slice::from_ref(&asst))
             .expect_err("unresolved assistant skill ref must fail");
         assert_eq!(err.exit_code(), 2);
@@ -1094,13 +1091,8 @@ mod tests {
     /// An Assistant referencing a non-existent sub_assistant fails.
     #[test]
     fn assistant_unresolved_sub_assistant_ref_fails_validate_graph() {
-        let asst = assistant_with_refs(
-            "proj",
-            "my-assistant",
-            &[],
-            &[],
-            &[("proj", "missing-sub")],
-        );
+        let asst =
+            assistant_with_refs("proj", "my-assistant", &[], &[], &[("proj", "missing-sub")]);
         let err = validate_graph(std::slice::from_ref(&asst))
             .expect_err("unresolved sub_assistant ref must fail");
         assert_eq!(err.exit_code(), 2);
@@ -1162,7 +1154,11 @@ mod tests {
         );
         let err = validate_graph(std::slice::from_ref(&asst))
             .expect_err("cross-project unresolved ref must fail");
-        assert_eq!(err.exit_code(), 2, "cross-project unresolved ref must be exit 2");
+        assert_eq!(
+            err.exit_code(),
+            2,
+            "cross-project unresolved ref must be exit 2"
+        );
         let msg = format!("{err}");
         assert!(
             msg.contains("no-such-skill") || msg.contains("project-b"),

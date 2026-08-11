@@ -420,8 +420,7 @@ mod tests {
         // `specs/codemie-cicd-tool/contracts/adapter-manifest-v2.42.0.json`
         // §source.backend.commit.
         assert_eq!(
-            EXPECTED_BACKEND_COMMIT,
-            "2a481c290c99bf30ef80aadafa03d876a7f5f732",
+            EXPECTED_BACKEND_COMMIT, "2a481c290c99bf30ef80aadafa03d876a7f5f732",
             "EXPECTED_BACKEND_COMMIT must match the pinned manifest value"
         );
     }

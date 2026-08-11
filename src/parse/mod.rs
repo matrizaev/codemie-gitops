@@ -24,8 +24,8 @@ use serde_yaml::Value as YamlValue;
 
 use crate::cancellation::CancellationToken;
 use crate::discovery::{
-    load_sidecar_file, load_sidecar_file_cancellable, resolve_sidecar_path,
-    MAX_AGGREGATE_UPLOAD_BYTES, MAX_SIDECAR_FILE_BYTES,
+    MAX_AGGREGATE_UPLOAD_BYTES, MAX_SIDECAR_FILE_BYTES, load_sidecar_file,
+    load_sidecar_file_cancellable, resolve_sidecar_path,
 };
 use crate::error::AppError;
 use crate::schema::DECLARATION_SCHEMA_JSON;

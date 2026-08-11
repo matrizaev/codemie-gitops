@@ -28,7 +28,9 @@ impl std::str::FromStr for OutputMode {
         match s {
             "text" => Ok(OutputMode::Text),
             "json" => Ok(OutputMode::Json),
-            other => Err(format!("unknown output mode '{other}'; expected 'text' or 'json'")),
+            other => Err(format!(
+                "unknown output mode '{other}'; expected 'text' or 'json'"
+            )),
         }
     }
 }

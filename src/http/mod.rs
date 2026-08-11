@@ -15,13 +15,26 @@
 /// - GET retries up to 3 times on transient failures (5xx / 429 / connect error).
 /// - POST / PUT / DELETE are never blindly retried.
 /// - No credential value appears in tracing events or error messages (SEC-001/005).
-use std::time::Duration;
+use std::{sync::OnceLock, time::Duration};
 
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 use crate::config::ValidatedUrl;
 use crate::error::AppError;
+
+static RUSTLS_PROVIDER: OnceLock<()> = OnceLock::new();
+
+/// Install the process-wide rustls ring crypto provider once.
+///
+/// Reqwest 0.13's `rustls-no-provider` feature deliberately leaves provider
+/// selection to the application. If another component installed a provider
+/// first, rustls keeps that process-wide selection.
+pub(crate) fn ensure_rustls_provider() {
+    RUSTLS_PROVIDER.get_or_init(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
 
 // ---------------------------------------------------------------------------
 // Resource budget constants (SEC-003, http-adapter.md §2.4)
@@ -70,6 +83,7 @@ impl HttpClient {
     /// `redirect::Policy::none()` is set here to satisfy ADR-011 §4; any
     /// future real construction of this client MUST preserve this invariant.
     pub fn new() -> Result<Self, AppError> {
+        ensure_rustls_provider();
         let inner = reqwest::Client::builder()
             .use_rustls_tls()
             .redirect(reqwest::redirect::Policy::none())
@@ -145,6 +159,7 @@ impl ApiClient {
     /// ensures no OpenSSL runtime dependency. `redirect::Policy::none()` disables
     /// all redirects (preferred per ADR-011 §4).
     pub fn new(base_url: ValidatedUrl, token: String) -> Result<Self, AppError> {
+        ensure_rustls_provider();
         let client = reqwest::Client::builder()
             .use_rustls_tls()
             .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))

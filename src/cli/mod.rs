@@ -22,8 +22,8 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-use crate::auth::{login, select_auth_mode, Credentials};
-use crate::config::{find_repo_root, resolve_config, ResolveConfigArgs};
+use crate::auth::{Credentials, login, select_auth_mode};
+use crate::config::{ResolveConfigArgs, find_repo_root, resolve_config};
 use crate::coordinator::{self, ApplyCommand};
 use crate::output::OutputMode;
 

@@ -16,9 +16,8 @@ use crate::error::AppError;
 /// from the checked-in contract artifact.
 ///
 /// The path is relative to this source file's location inside the workspace.
-pub const DECLARATION_SCHEMA_JSON: &str = include_str!(
-    "../../specs/codemie-cicd-tool/contracts/declaration-v1alpha1.schema.json"
-);
+pub const DECLARATION_SCHEMA_JSON: &str =
+    include_str!("../../specs/codemie-cicd-tool/contracts/declaration-v1alpha1.schema.json");
 
 /// Validate a declaration value against the bundled v1alpha1 schema.
 ///
@@ -35,15 +34,11 @@ pub const DECLARATION_SCHEMA_JSON: &str = include_str!(
 pub fn validate_declaration(value: &serde_json::Value) -> Result<(), AppError> {
     let schema_json: serde_json::Value =
         serde_json::from_str(DECLARATION_SCHEMA_JSON).map_err(|e| {
-            AppError::Internal(format!(
-                "bundled declaration schema is not valid JSON: {e}"
-            ))
+            AppError::Internal(format!("bundled declaration schema is not valid JSON: {e}"))
         })?;
 
     let validator = jsonschema::validator_for(&schema_json).map_err(|e| {
-        AppError::Internal(format!(
-            "bundled declaration schema failed to compile: {e}"
-        ))
+        AppError::Internal(format!("bundled declaration schema failed to compile: {e}"))
     })?;
 
     let errors: Vec<String> = validator
@@ -79,8 +74,7 @@ mod tests {
 
     #[test]
     fn embedded_schema_has_correct_id() {
-        let parsed: serde_json::Value =
-            serde_json::from_str(DECLARATION_SCHEMA_JSON).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(DECLARATION_SCHEMA_JSON).unwrap();
         let id = parsed["$id"].as_str().unwrap_or("");
         assert!(
             id.contains("codemie"),

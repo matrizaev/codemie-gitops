@@ -65,7 +65,7 @@ impl TryFrom<&str> for ValidatedUrl {
             _ => {
                 return Err(AppError::Configuration(
                     "URL scheme must be http or https".into(),
-                ))
+                ));
             }
         }
 
@@ -82,9 +82,7 @@ impl TryFrom<&str> for ValidatedUrl {
             const SEP: &str = "://";
             if let Some(pos) = raw.find(SEP) {
                 let after_sep = &raw[pos + SEP.len()..];
-                let auth_end = after_sep
-                    .find(['/', '?', '#'])
-                    .unwrap_or(after_sep.len());
+                let auth_end = after_sep.find(['/', '?', '#']).unwrap_or(after_sep.len());
                 if after_sep[..auth_end].contains('@') {
                     return Err(AppError::Configuration(
                         "URL must not contain userinfo".into(),
@@ -99,7 +97,7 @@ impl TryFrom<&str> for ValidatedUrl {
             _ => {
                 return Err(AppError::Configuration(
                     "URL must have a non-empty host".into(),
-                ))
+                ));
             }
         }
 
@@ -447,7 +445,10 @@ mod tests {
     #[test]
     fn validated_url_rejects_userinfo_username_only() {
         let err = ValidatedUrl::try_from("https://user@host/path");
-        assert!(err.is_err(), "URL with username-only userinfo must be rejected");
+        assert!(
+            err.is_err(),
+            "URL with username-only userinfo must be rejected"
+        );
     }
 
     #[test]
@@ -461,7 +462,10 @@ mod tests {
     fn validated_url_rejects_c0_control_char() {
         let raw = "https://host/path\x00";
         let err = ValidatedUrl::try_from(raw);
-        assert!(err.is_err(), "URL with NUL control character must be rejected");
+        assert!(
+            err.is_err(),
+            "URL with NUL control character must be rejected"
+        );
         assert_eq!(err.unwrap_err().exit_code(), 2);
     }
 
@@ -477,7 +481,10 @@ mod tests {
         // U+0080 is the first C1 control character
         let raw = "https://host/path\u{0080}";
         let err = ValidatedUrl::try_from(raw);
-        assert!(err.is_err(), "URL with C1 control character must be rejected");
+        assert!(
+            err.is_err(),
+            "URL with C1 control character must be rejected"
+        );
         assert_eq!(err.unwrap_err().exit_code(), 2);
     }
 
@@ -607,7 +614,7 @@ mod tests {
         // An invalid higher-precedence value must not fall through to the
         // lower-precedence config value (CLI contract §2, F-002 acceptance).
         let result = resolve_validated_url(
-            Some("http://bad.example.com"), // invalid: non-loopback http
+            Some("http://bad.example.com"),   // invalid: non-loopback http
             Some("https://good.example.com"), // valid: would succeed alone
         );
         assert!(
@@ -622,7 +629,7 @@ mod tests {
     #[test]
     fn resolve_auth_url_invalid_flag_does_not_fallback_to_config() {
         let result = resolve_validated_auth_url(
-            Some("http://bad.example.com/token"), // invalid: http for auth
+            Some("http://bad.example.com/token"),   // invalid: http for auth
             Some("https://good.example.com/token"), // valid
         );
         assert!(
@@ -664,14 +671,20 @@ token: "secret"
     fn repository_config_rejects_client_secret_key() {
         let yaml = "client_secret: \"s3cr3t\"\n";
         let result: Result<RepositoryConfig, _> = serde_yaml::from_str(yaml);
-        assert!(result.is_err(), "credential key 'client_secret' must be rejected");
+        assert!(
+            result.is_err(),
+            "credential key 'client_secret' must be rejected"
+        );
     }
 
     #[test]
     fn repository_config_rejects_password_key() {
         let yaml = "password: \"s3cr3t\"\n";
         let result: Result<RepositoryConfig, _> = serde_yaml::from_str(yaml);
-        assert!(result.is_err(), "credential key 'password' must be rejected");
+        assert!(
+            result.is_err(),
+            "credential key 'password' must be rejected"
+        );
     }
 
     #[test]
@@ -680,8 +693,8 @@ token: "secret"
 auth_url: "https://auth.example.com"
 project: "my-project"
 "#;
-        let cfg: RepositoryConfig = serde_yaml::from_str(yaml)
-            .expect("valid config with all known keys should parse");
+        let cfg: RepositoryConfig =
+            serde_yaml::from_str(yaml).expect("valid config with all known keys should parse");
         assert_eq!(cfg.url.as_deref(), Some("https://api.example.com"));
         assert_eq!(cfg.auth_url.as_deref(), Some("https://auth.example.com"));
         assert_eq!(cfg.project.as_deref(), Some("my-project"));
@@ -690,8 +703,7 @@ project: "my-project"
     #[test]
     fn repository_config_accepts_partial_keys() {
         let yaml = "project: \"default-project\"\n";
-        let cfg: RepositoryConfig =
-            serde_yaml::from_str(yaml).expect("single key should parse");
+        let cfg: RepositoryConfig = serde_yaml::from_str(yaml).expect("single key should parse");
         assert!(cfg.url.is_none());
         assert!(cfg.auth_url.is_none());
         assert_eq!(cfg.project.as_deref(), Some("default-project"));

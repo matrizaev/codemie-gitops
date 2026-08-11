@@ -11,11 +11,11 @@ use serde::Deserialize;
 
 use crate::cancellation::CancellationToken;
 use crate::config::ValidatedUrl;
-use crate::discovery::{load_sidecar_file_cancellable, MAX_SIDECAR_FILE_BYTES};
+use crate::discovery::{MAX_SIDECAR_FILE_BYTES, load_sidecar_file_cancellable};
 use crate::error::AppError;
-use crate::http::{encode_query_value, preflight_visibility, ApiClient};
+use crate::http::{ApiClient, encode_query_value, preflight_visibility};
 use crate::parse::ParsedDeclaration;
-use crate::projection::{project, ExistingEntity, RequestBody, WritePlan};
+use crate::projection::{ExistingEntity, RequestBody, WritePlan, project};
 
 use super::{ApplyAction, ApplyResult};
 

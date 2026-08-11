@@ -2,3 +2,4 @@
 codemie/
 codemie-ui/
 target/
+.env

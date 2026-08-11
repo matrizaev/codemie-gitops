@@ -28,6 +28,7 @@ use serde::Deserialize;
 
 use crate::config::ValidatedUrl;
 use crate::error::AppError;
+use crate::http::ensure_rustls_provider;
 
 // ---------------------------------------------------------------------------
 // Token response
@@ -179,6 +180,7 @@ pub fn effective_client_id(mode: &AuthMode, credentials: &Credentials) -> Option
 /// This function is `pub` so T-002 can share or extend the same base
 /// configuration for authenticated API calls.
 pub fn build_auth_client() -> Result<reqwest::Client, AppError> {
+    ensure_rustls_provider();
     reqwest::Client::builder()
         .use_rustls_tls()
         .redirect(reqwest::redirect::Policy::none())
@@ -225,10 +227,9 @@ async fn extract_token_from_response(resp: reqwest::Response) -> Result<String, 
     }
 
     // 2xx: read the body and extract access_token.
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|_e| AppError::Connectivity("failed to read authentication response body".into()))?;
+    let bytes = resp.bytes().await.map_err(|_e| {
+        AppError::Connectivity("failed to read authentication response body".into())
+    })?;
 
     let token_resp: TokenResponse = serde_json::from_slice(&bytes).map_err(|_e| {
         AppError::Authentication("authentication response did not contain access_token".into())
@@ -297,9 +298,10 @@ pub async fn login(
                     "auth_url is required for Keycloak client_credentials".into(),
                 )
             })?;
-            let client_secret = credentials.client_secret.as_deref().ok_or_else(|| {
-                AppError::Authentication("client_secret is not set".into())
-            })?;
+            let client_secret = credentials
+                .client_secret
+                .as_deref()
+                .ok_or_else(|| AppError::Authentication("client_secret is not set".into()))?;
 
             let mut params: Vec<(String, String)> = vec![
                 ("grant_type".into(), "client_credentials".into()),
@@ -331,8 +333,8 @@ pub async fn login(
             })?;
             // `effective_client_id` always returns Some for KeycloakRopc,
             // defaulting to "codemie-sdk" when client_id is not set (ADR-011 §1a).
-            let client_id = effective_client_id(&mode, credentials)
-                .unwrap_or_else(|| "codemie-sdk".to_owned());
+            let client_id =
+                effective_client_id(&mode, credentials).unwrap_or_else(|| "codemie-sdk".to_owned());
             let email = credentials.email.as_deref().ok_or_else(|| {
                 AppError::Authentication("email is not set for Keycloak ROPC".into())
             })?;
@@ -373,10 +375,7 @@ pub async fn login(
                 AppError::Authentication("password is not set for local-auth".into())
             })?;
 
-            let login_url = format!(
-                "{}/v1/local-auth/login",
-                url.trim_end_matches('/')
-            );
+            let login_url = format!("{}/v1/local-auth/login", url.trim_end_matches('/'));
 
             // JSON body; serde_json ensures control characters are escaped
             // and no intermediate string concatenation is used (SEC-005).
@@ -499,10 +498,7 @@ mod tests {
             client_id: None,
             email: Some("user@example.com".into()),
         };
-        assert_eq!(
-            select_auth_mode(&creds, None).unwrap(),
-            AuthMode::LocalAuth
-        );
+        assert_eq!(select_auth_mode(&creds, None).unwrap(), AuthMode::LocalAuth);
     }
 
     #[test]
@@ -548,7 +544,10 @@ mod tests {
         let err = select_auth_mode(&creds, None).unwrap_err();
         let msg = format!("{err}");
         // Ensure the message contains no secret-value patterns
-        assert!(!msg.contains("CODEMIE_"), "error must not echo env var names");
+        assert!(
+            !msg.contains("CODEMIE_"),
+            "error must not echo env var names"
+        );
     }
 
     // --- effective_client_id ---
@@ -590,10 +589,7 @@ mod tests {
             email: None,
         };
         let id = effective_client_id(&AuthMode::KeycloakClientCredentials, &creds);
-        assert!(
-            id.is_none(),
-            "default must not be applied for Mode (a)"
-        );
+        assert!(id.is_none(), "default must not be applied for Mode (a)");
     }
 
     #[test]
@@ -606,7 +602,10 @@ mod tests {
             email: None,
         };
         let id = effective_client_id(&AuthMode::BearerToken, &creds);
-        assert!(id.is_none(), "default must not be applied for BearerToken mode");
+        assert!(
+            id.is_none(),
+            "default must not be applied for BearerToken mode"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -641,10 +640,7 @@ mod tests {
         let _mock = server
             .mock("POST", "/token")
             .match_body(mockito::Matcher::AllOf(vec![
-                mockito::Matcher::UrlEncoded(
-                    "grant_type".into(),
-                    "client_credentials".into(),
-                ),
+                mockito::Matcher::UrlEncoded("grant_type".into(), "client_credentials".into()),
                 mockito::Matcher::UrlEncoded("client_id".into(), "my-client-a".into()),
                 mockito::Matcher::UrlEncoded("client_secret".into(), "my-secret".into()),
             ]))
@@ -747,13 +743,7 @@ mod tests {
             client_id: None, // absent → defaults to codemie-sdk
             email: Some("user@example.com".into()),
         };
-        let result = login(
-            AuthMode::KeycloakRopc,
-            &creds,
-            None,
-            Some(&auth_url),
-        )
-        .await;
+        let result = login(AuthMode::KeycloakRopc, &creds, None, Some(&auth_url)).await;
 
         assert_eq!(result.unwrap(), "token-from-mode-c");
         _mock.assert_async().await;
@@ -769,8 +759,7 @@ mod tests {
         let _mock = server
             .mock("POST", "/token")
             .match_body(mockito::Matcher::Exact(
-                "grant_type=password&client_id=custom-client&username=u%40x.com&password=pw"
-                    .into(),
+                "grant_type=password&client_id=custom-client&username=u%40x.com&password=pw".into(),
             ))
             .with_status(200)
             .with_header("content-type", "application/json")
@@ -785,8 +774,7 @@ mod tests {
             client_id: Some("custom-client".into()),
             email: Some("u@x.com".into()),
         };
-        let result =
-            login(AuthMode::KeycloakRopc, &creds, None, Some(&auth_url)).await;
+        let result = login(AuthMode::KeycloakRopc, &creds, None, Some(&auth_url)).await;
 
         assert_eq!(result.unwrap(), "tok-c-custom");
         _mock.assert_async().await;
@@ -803,9 +791,10 @@ mod tests {
 
         let _mock = server
             .mock("POST", "/v1/local-auth/login")
-            .match_header("content-type", mockito::Matcher::Regex(
-                "application/json".into(),
-            ))
+            .match_header(
+                "content-type",
+                mockito::Matcher::Regex("application/json".into()),
+            )
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "email": "local@example.com",
                 "password": "localpass",
@@ -823,13 +812,7 @@ mod tests {
             client_id: None,
             email: Some("local@example.com".into()),
         };
-        let result = login(
-            AuthMode::LocalAuth,
-            &creds,
-            Some(&base_url),
-            None,
-        )
-        .await;
+        let result = login(AuthMode::LocalAuth, &creds, Some(&base_url), None).await;
 
         assert_eq!(result.unwrap(), "token-from-mode-b");
         _mock.assert_async().await;
@@ -857,8 +840,7 @@ mod tests {
             client_id: None,
             email: Some("a@b.com".into()),
         };
-        let result =
-            login(AuthMode::LocalAuth, &creds, Some(&base_url), None).await;
+        let result = login(AuthMode::LocalAuth, &creds, Some(&base_url), None).await;
         assert_eq!(result.unwrap(), "tok-trailing");
         _mock.assert_async().await;
     }
@@ -997,8 +979,7 @@ mod tests {
             client_id: None,
             email: Some("u@x.com".into()),
         };
-        let result =
-            login(AuthMode::LocalAuth, &creds, Some(&base_url), None).await;
+        let result = login(AuthMode::LocalAuth, &creds, Some(&base_url), None).await;
 
         let err = result.unwrap_err();
         assert!(

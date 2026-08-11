@@ -12,10 +12,10 @@ use crate::cancellation::CancellationToken;
 use crate::config::ValidatedUrl;
 use crate::discovery::{discover_yaml_files, load_declaration_file_cancellable};
 use crate::error::AppError;
-use crate::http::{preflight_visibility, ApiClient};
+use crate::http::{ApiClient, preflight_visibility};
 use crate::output::{Action, Outcome};
 use crate::parse::{
-    parse_and_validate_cancellable, EntityKind, ParsedDeclaration, MAX_YAML_FILE_BYTES,
+    EntityKind, MAX_YAML_FILE_BYTES, ParsedDeclaration, parse_and_validate_cancellable,
 };
 use crate::preflight::check_compatibility;
 use crate::validate::{validate_graph, validate_natural};
@@ -445,12 +445,12 @@ fn classify_verification_failure(error: AppError) -> AppError {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     use super::*;
     use crate::output::OutputMode;
-    use crate::render::{diagnostic_from_app_error, Renderer};
+    use crate::render::{Renderer, diagnostic_from_app_error};
 
     fn assistant_yaml() -> &'static str {
         r#"apiVersion: codemie.epam.com/v1alpha1
@@ -527,12 +527,14 @@ spec:
         let worker_token = cancellation.clone();
         let observed = Arc::new(AtomicBool::new(false));
         let worker_observed = Arc::clone(&observed);
-        let worker = tokio::task::spawn_blocking(move || loop {
-            if worker_token.checkpoint().is_err() {
-                worker_observed.store(true, Ordering::Release);
-                break;
+        let worker = tokio::task::spawn_blocking(move || {
+            loop {
+                if worker_token.checkpoint().is_err() {
+                    worker_observed.store(true, Ordering::Release);
+                    break;
+                }
+                std::thread::yield_now();
             }
-            std::thread::yield_now();
         });
 
         tokio::time::sleep(Duration::from_millis(1)).await;

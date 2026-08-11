@@ -124,7 +124,11 @@
       "naturalKey": ["project", "slug"],
       "serverTransportId": "UUID returned by exhaustive reserved-meta_config resolution",
       "routes": {
-        "enumerate": "GET /v1/workflows?minimal_response=false&page={page}&per_page={per_page}&scope={scope}",
+        "enumeratePasses": [
+          "GET /v1/workflows?minimal_response=false&page={page}&per_page=100",
+          "GET /v1/workflows?minimal_response=false&page={page}&per_page=100&scope=marketplace"
+        ],
+        "enumerateScopeEvidence": "service/workflow_config/workflow_config_index_service.py WorkflowScope(StrEnum): one member MARKETPLACE='marketplace'. Absent scope parameter => user-visible project workflows (membership-filtered). scope=marketplace => globally-published (is_global) workflows only. Both passes required for complete identity resolution per ADR-008 'marketplace-inclusive scopes'. Resolves VER-001 (MEDIUM) and VER-002 (LOW) from Q-002 verification report.",
         "detail": "GET /v1/workflows/id/{id}",
         "create": "POST /v1/workflows",
         "update": "PUT /v1/workflows/{id}"

@@ -10,9 +10,9 @@ use serde::Deserialize;
 
 use crate::config::ValidatedUrl;
 use crate::error::AppError;
-use crate::http::{encode_query_value, ApiClient};
+use crate::http::{ApiClient, encode_query_value};
 use crate::parse::ParsedDeclaration;
-use crate::projection::{project, ExistingEntity, RequestBody, WritePlan};
+use crate::projection::{ExistingEntity, RequestBody, WritePlan, project};
 
 use super::{ApplyAction, ApplyResult};
 
@@ -190,7 +190,7 @@ async fn create_with_reresolution(
         _ => {
             return Err(AppError::Internal(
                 "skill: projection produced unexpected create variant".into(),
-            ))
+            ));
         }
     };
 

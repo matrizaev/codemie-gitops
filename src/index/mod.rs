@@ -61,11 +61,7 @@ impl RepositoryIndex {
     }
 
     /// Look up entries by project and kind.
-    pub fn find_by_project_kind(
-        &self,
-        project: &str,
-        kind: EntityKind,
-    ) -> Vec<&IndexEntry> {
+    pub fn find_by_project_kind(&self, project: &str, kind: EntityKind) -> Vec<&IndexEntry> {
         self.entries
             .iter()
             .filter(|e| e.project == project && e.kind == kind)
