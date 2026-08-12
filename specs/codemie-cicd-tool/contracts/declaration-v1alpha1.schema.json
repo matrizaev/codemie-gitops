@@ -183,7 +183,8 @@
         "name", "system_prompt", "llm_model_type", "type", "context",
         "toolkits", "conversation_starters",
         "shared", "mcp_servers",
-        "sub_assistants", "enabled_builtin_subagents", "skills", "categories"
+        "sub_assistants", "enabled_builtin_subagents", "skills", "categories",
+        "prompt_variables"
       ],
       "properties": {
         "name": {"type": "string", "minLength": 1},
@@ -223,7 +224,7 @@
         "enabled_builtin_subagents": {"type": "array", "uniqueItems": true, "items": {"const": "GENERAL_PURPOSE_SUBAGENT"}},
         "skills": {"type": "array", "items": {"$ref": "#/$defs/skillKey"}},
         "categories": {"type": "array", "maxItems": 3, "items": {"type": "string"}},
-        "prompt_variables": {"type": ["array", "null"], "items": {"$ref": "#/$defs/promptVariable"}},
+        "prompt_variables": {"type": "array", "items": {"$ref": "#/$defs/promptVariable"}},
         "custom_metadata": {"type": ["object", "null"]},
         "guardrail_assignments": {"type": ["array", "null"], "items": {"$ref": "#/$defs/guardrailAssignment"}}
       },

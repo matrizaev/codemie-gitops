@@ -108,6 +108,7 @@
           "spec.mcp_servers[].name", "spec.mcp_servers[].enabled",
           "spec.mcp_servers[].use_custom_config",
           "spec.mcp_servers[].resolve_dynamic_values_in_arguments",
+          "spec.prompt_variables",
           "spec.prompt_variables[].key", "spec.prompt_variables[].default_value",
           "spec.prompt_variables[].is_sensitive"
         ],
@@ -117,7 +118,7 @@
           "spec.image_generation_model", "spec.is_global", "spec.agent_mode",
           "spec.plan_prompt", "spec.temperature", "spec.top_p",
           "spec.tools_tokens_size_limit", "spec.smart_tool_selection_enabled",
-          "spec.hedging_config", "spec.interactive_features", "spec.prompt_variables",
+          "spec.hedging_config", "spec.interactive_features",
           "spec.custom_metadata", "spec.guardrail_assignments",
           "all nullable nested Tool/Toolkit/MCP/guardrail/hedging/prompt members admitted by the declaration schema"
         ],

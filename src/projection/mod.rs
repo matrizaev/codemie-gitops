@@ -260,7 +260,6 @@ mod assistant {
         "smart_tool_selection_enabled",
         "hedging_config",
         "interactive_features",
-        "prompt_variables",
         "custom_metadata",
         "guardrail_assignments",
     ];
@@ -277,6 +276,7 @@ mod assistant {
         "shared",
         "mcp_servers",
         "enabled_builtin_subagents",
+        "prompt_variables",
         "categories",
     ];
 }

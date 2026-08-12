@@ -79,7 +79,7 @@ found. All three absence checks complete before an in-memory qualification
 proof is created. No natural key or display-name value is persisted.
 
 Evidence contains only the fixed schema
-and manifest versions, pass/fail status, the actual validated staged-binary
+and version identifiers, pass/fail status, the actual validated staged-binary
 SHA-256, fixed actor/project/role/writer-window binding categories, safe local
 request IDs, fixed Assistant/Workflow/Skill absence categories, and bounded
 page-0 counts. It excludes session identifiers, target URLs, actors,
@@ -92,3 +92,12 @@ reconstructed from the evidence file. A future V-003 integration must consume
 that proof before it can claim same-execution/session/digest binding, rerun the
 required checks, and perform its separately required digest check before every
 apply. No live request or write is part of the local V-000A task.
+
+Version identifiers use separate namespaces: `schemaVersion: 1` is the
+sanitized evidence-envelope schema, while `adapterManifestVersion: 3` binds the
+record to the consumed adapter contract. Legacy evidence containing
+`manifestVersion: 2`, omitting `adapterManifestVersion`, or naming another
+adapter version is stale and cannot qualify V-000B or V-003.
+
+The smoke authorization `actor` is the authenticated `/v1/user.user_id`, not
+the user's email. Email is used only where an authentication mode requires it.

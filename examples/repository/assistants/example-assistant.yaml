@@ -20,3 +20,4 @@ spec:
     - project: portable-example
       name: example-skill
   categories: []
+  prompt_variables: []

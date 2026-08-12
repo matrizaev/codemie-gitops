@@ -40,7 +40,8 @@ struct AssistantLookupResponse {
 /// Minimal fields consumed from a successful modifying response.
 #[derive(Deserialize)]
 struct AssistantWriteResponse {
-    id: String,
+    #[serde(rename = "assistantId", alias = "id")]
+    id: Option<String>,
 }
 
 /// Actual strict direct-lookup evidence required by the Assistant seal.
@@ -132,18 +133,24 @@ pub async fn apply(
 }
 
 async fn dispatch(prepared: PreparedWrite<'_>) -> Result<ApplyResult, AppError> {
-    let action = match prepared.target() {
-        ResolutionTarget::Create => ApplyAction::Created,
-        ResolutionTarget::Update { .. } => ApplyAction::Updated,
+    let (action, resolved_update_id) = match prepared.target() {
+        ResolutionTarget::Create => (ApplyAction::Created, None),
+        ResolutionTarget::Update { server_id } => (ApplyAction::Updated, Some(server_id.clone())),
     };
     let response = ApiClient::dispatch_prepared(prepared).await?;
     let response: AssistantWriteResponse = decode_write_response(response)?.ok_or_else(|| {
         AppError::Internal("Assistant modifying request cannot return a conflict signal".into())
     })?;
-    Ok(ApplyResult {
-        action,
-        server_id: response.id,
-    })
+    let server_id = match (response.id, resolved_update_id) {
+        (Some(id), _) => id,
+        (None, Some(id)) => id,
+        (None, None) => {
+            return Err(AppError::Internal(
+                "Assistant update path missing resolved server identity".into(),
+            ));
+        }
+    };
+    Ok(ApplyResult { action, server_id })
 }
 
 /// Resolve an Assistant natural reference without writing it (DR-003/W-002).
@@ -233,6 +240,7 @@ mod tests {
                     "shared": true,
                     "mcp_servers": [],
                     "enabled_builtin_subagents": [],
+                    "prompt_variables": [],
                     "categories": []
                 }
             }),
@@ -259,7 +267,7 @@ mod tests {
             .mock("POST", "/v1/assistants")
             .with_status(201)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"id":"uuid-1"}"#)
+            .with_body(r#"{"assistantId":"uuid-1"}"#)
             .create_async()
             .await;
 
@@ -281,6 +289,47 @@ mod tests {
 
         assert_eq!(result.action, ApplyAction::Created);
         assert_eq!(result.server_id, "uuid-1");
+        _resolve.assert_async().await;
+        _create.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn apply_creates_when_response_uses_assistant_id() {
+        let mut server = mockito::Server::new_async().await;
+        let _membership = membership(&mut server).await;
+
+        let _resolve = server
+            .mock("GET", "/v1/assistants/slug/my-assistant?project=my-project")
+            .with_status(404)
+            .create_async()
+            .await;
+
+        let _create = server
+            .mock("POST", "/v1/assistants")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"message":"Specified assistant saved","assistantId":"uuid-2","validation":null}"#)
+            .create_async()
+            .await;
+
+        let url = test_url(&server.url());
+        let client = test_client(&server.url());
+        let decl = assistant_decl("my-project", "my-assistant");
+
+        let result = apply(
+            &client,
+            &url,
+            &decl,
+            "my-project",
+            "my-assistant",
+            Path::new("."),
+            false,
+        )
+        .await
+        .expect("apply must succeed");
+
+        assert_eq!(result.action, ApplyAction::Created);
+        assert_eq!(result.server_id, "uuid-2");
         _resolve.assert_async().await;
         _create.assert_async().await;
     }
@@ -307,6 +356,49 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"id":"existing-uuid"}"#)
+            .create_async()
+            .await;
+
+        let url = test_url(&server.url());
+        let client = test_client(&server.url());
+        let decl = assistant_decl("my-project", "my-assistant");
+
+        let result = apply(
+            &client,
+            &url,
+            &decl,
+            "my-project",
+            "my-assistant",
+            Path::new("."),
+            false,
+        )
+        .await
+        .expect("apply must succeed");
+
+        assert_eq!(result.action, ApplyAction::Updated);
+        assert_eq!(result.server_id, "existing-uuid");
+        _resolve.assert_async().await;
+        _update.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn apply_updates_when_response_omits_id() {
+        let mut server = mockito::Server::new_async().await;
+        let _membership = membership(&mut server).await;
+
+        let _resolve = server
+            .mock("GET", "/v1/assistants/slug/my-assistant?project=my-project")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"id":"existing-uuid","user_abilities":["read","write"]}"#)
+            .create_async()
+            .await;
+
+        let _update = server
+            .mock("PUT", "/v1/assistants/existing-uuid")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"message":"Specified assistant updated","validation":null}"#)
             .create_async()
             .await;
 
@@ -597,6 +689,7 @@ mod tests {
                     "shared": true,
                     "mcp_servers": [],
                     "enabled_builtin_subagents": [],
+                    "prompt_variables": [],
                     "categories": []
                     // system_prompt absent
                 }

@@ -386,6 +386,7 @@ spec:
   enabled_builtin_subagents: []
   skills: []
   categories: []
+  prompt_variables: []
 "#
     }
 
