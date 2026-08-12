@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted — amended by ADR-012 (visibility precondition)
+Accepted for ordinary per-kind CRUD projections; identity absence and
+visibility decisions are superseded by ADR-018.
 
 ## Context
 
@@ -54,17 +55,16 @@ has no JSON-null token.
 
 All kinds use exhaustive list/exact filtering because `find_id` selects a first
 row and persistence has no natural-key unique constraint. Missing identity uses
-ordinary create. One exact match proves visibility/write capability and always
-uses ordinary update. Duplicates fail without selection.
+ordinary create. One exact match proves identity cardinality only and always
+selects ordinary update. Complete visibility must already have passed, and an
+existing target independently proves its operation-specific write ability.
+Duplicates fail without selection.
 
-**Visibility precondition (ADR-012 Option A)**: Before any Datasource apply,
-the CLI must verify via `GET /v1/user` that the invoking principal holds
-project-admin, global-admin, or global-maintainer status. If the check fails,
-the CLI exits `E_VISIBILITY_UNPROVEN` (exit 2) before any Datasource write.
-Source evidence: `index_service.py:276-282` — `admin_project_names` branch
-carries no `project_space_visible` guard, confirming project-admin scope is
-sufficient for complete Datasource visibility within a project. A field admitted only
-by create is omitted on update; the client does not invent an update position.
+**V32 boundary (ADR-015/018)**: exact membership qualifies creation. A visible
+exact row selects update only with exact `write`. A visible miss proves no
+absence and permits one create; HTTP 409 is authoritative collision with no
+retry, lookup, or guessed update. Administrator visibility is optional. A
+field admitted only by create is omitted on update.
 
 Every opaque integration identifier points to pre-existing external platform
 configuration. The CLI validates the closed local field form, sends it without

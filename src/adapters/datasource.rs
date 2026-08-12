@@ -121,7 +121,7 @@ pub async fn apply(
     cancellation: &CancellationToken,
 ) -> Result<ApplyResult, AppError> {
     // ADR-012 Option A: exact-effective-project preflight before any write.
-    let visibility = preflight_visibility(client, base_url, request.project_name).await?;
+    let _initial_visibility = preflight_visibility(client, base_url, request.project_name).await?;
 
     let enumeration = enumerate(
         client,
@@ -184,8 +184,9 @@ pub async fn apply(
         _scan: enumeration.evidence,
         _write_ability: write_ability,
     };
-    let prepared = PreparedWrite::datasource(visibility, resolution, plan, file_parts)?;
-    dispatch(client, base_url, prepared).await
+    let visibility = preflight_visibility(client, base_url, request.project_name).await?;
+    let prepared = PreparedWrite::datasource(client, visibility, resolution, plan, file_parts)?;
+    dispatch(prepared).await
 }
 
 /// Resolve a Datasource natural reference without requiring the target
@@ -374,19 +375,15 @@ fn validate_pagination(
 // Dispatch: the HTTP client accepts only the evidence-bearing aggregate
 // ---------------------------------------------------------------------------
 
-async fn dispatch(
-    client: &ApiClient,
-    base_url: &ValidatedUrl,
-    prepared: PreparedWrite,
-) -> Result<ApplyResult, AppError> {
+async fn dispatch(prepared: PreparedWrite<'_>) -> Result<ApplyResult, AppError> {
     let action = match prepared.target() {
         ResolutionTarget::Create => ApplyAction::Created,
         ResolutionTarget::Update { .. } => ApplyAction::Updated,
     };
-    let response = client.dispatch_prepared(base_url, prepared).await?;
+    let response = ApiClient::dispatch_prepared(prepared).await?;
     let PreparedWriteResponse::Success(response) = response else {
-        return Err(AppError::Internal(
-            "Datasource modifying request cannot return a conflict signal".into(),
+        return Err(AppError::ServerRejected(
+            "Datasource create collided with an existing server identity".into(),
         ));
     };
     let id = extract_id(&response)?;
@@ -527,10 +524,11 @@ mod tests {
     ) -> impl std::future::Future<Output = mockito::Mock> + '_ {
         server
             .mock("GET", "/v1/user")
+            .expect_at_least(1)
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"is_admin":false,"is_maintainer":false,"projects":[{"name":"my-project","is_project_admin":true}]}"#,
+                r#"{"user_id":"user-1","is_admin":false,"is_maintainer":false,"projects":[{"name":"my-project","is_project_admin":true}]}"#,
             )
             .create_async()
     }
@@ -614,6 +612,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn file_multipart_409_is_one_post_with_no_followup_request() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("document.txt"), b"secret file bytes").unwrap();
+        let declaration = ParsedDeclaration {
+            kind: EntityKind::Datasource,
+            value: json!({
+                "metadata": { "project": "my-project", "repo_name": "my-files" },
+                "spec": { "index_type": "file", "files": ["document.txt"] }
+            }),
+            source_path: PathBuf::from("test.yaml"),
+        };
+        let mut server = mockito::Server::new_async().await;
+        let user = user_ok_mock(&mut server).await;
+        let scan = server
+            .mock("GET", mockito::Matcher::Regex(r"^/v1/index\?".to_owned()))
+            .with_status(200)
+            .with_body(empty_page())
+            .expect(1)
+            .create_async()
+            .await;
+        let create = server
+            .mock(
+                "POST",
+                mockito::Matcher::Regex(r"^/v1/index/knowledge_base/file\?".to_owned()),
+            )
+            .with_status(409)
+            .with_body("must-not-leak")
+            .expect(1)
+            .create_async()
+            .await;
+        let put = server
+            .mock("PUT", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+        let patch = server
+            .mock("PATCH", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+        let delete = server
+            .mock("DELETE", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+
+        let error = apply(
+            &test_client(&server.url()),
+            &test_url(&server.url()),
+            ApplyRequest {
+                declaration: &declaration,
+                project_name: "my-project",
+                repo_name: "my-files",
+                index_type: "file",
+                repo_root: tmp.path(),
+                follow_symlinks: false,
+            },
+            &CancellationToken::default(),
+        )
+        .await
+        .expect_err("multipart 409 must be terminal");
+        assert!(matches!(error, AppError::ServerRejected(_)));
+        user.assert_async().await;
+        scan.assert_async().await;
+        create.assert_async().await;
+        put.assert_async().await;
+        patch.assert_async().await;
+        delete.assert_async().await;
+    }
+
+    #[tokio::test]
     async fn apply_updates_git_datasource_when_found() {
         let mut server = mockito::Server::new_async().await;
 
@@ -665,10 +734,11 @@ mod tests {
         let mut server = mockito::Server::new_async().await;
         let user = server
             .mock("GET", "/v1/user")
+            .expect_at_least(1)
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"is_admin":false,"is_maintainer":false,"projects":[{"name":"other-project","is_project_admin":true}]}"#,
+                r#"{"user_id":"user-1","is_admin":false,"is_maintainer":false,"projects":[{"name":"other-project","is_project_admin":true}]}"#,
             )
             .expect(1)
             .create_async()

@@ -2,7 +2,15 @@
 
 ## Status
 
-Accepted — Option A selected, 2026-08-10
+Superseded by product specification v32 and ADR-018. Administrator-complete
+enumeration is optional and not a creation prerequisite. Historical analysis
+below is non-normative.
+
+Amended by ADR-013 for product v31: the global/exact-project admin predicate
+below remains sufficient. When it fails, Workflow, Skill, and Datasource may
+also qualify only through ADR-013's strict same-session exact personal-owner
+proof. This does not broaden shared projects, change Assistant, or supply
+write ability.
 
 **Platform owner prerequisite resolved from source evidence.** The critical
 prerequisite (which role grants complete `GET /v1/index` visibility) is

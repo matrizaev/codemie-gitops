@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted
+Accepted only for zero-based exhaustive scanning mechanics; identity and
+visibility decisions are superseded by ADR-017.
 
 Amended 2026-08-11 for the pinned Skill pagination origin: page numbering is
 zero-based. The router accepts `page >= 0` with default `0`, the service and
@@ -54,8 +55,9 @@ Selected and product-approved.
 
 For exact `(project,name)`:
 
-1. Preflight proves the CI principal has project-manager/admin visibility and
-   write capability for the target project. Failure is exit 2 before write.
+1. ADR-015 exact project membership qualifies creation. Identity is exact
+   `(project,authenticated_user_id,name)` per ADR-017; update separately
+   requires exact `write` on the selected row.
 2. Enumerate every page of `GET /v1/skills` with `per_page=100`, starting at
    `page=0`, using exact `project`, `project_with_marketplace`, and `search`
    hints where compatible. Always request page 0 once. If the response reports
@@ -70,12 +72,16 @@ For exact `(project,name)`:
    must remain stable and the accumulated unique item count must equal `total`;
    churn, repeated IDs, or totals that change during the scan remain entity-
    resolution instability, exit 1 before write.
-4. Client-filter the complete visible set by exact project and exact name.
+4. Client-filter by exact project, authenticated creator ID, and exact name;
+   other creators are excluded rather than ambiguity.
 5. Zero matches: POST once. One: prove write ability, GET any detail required by
    the pinned request mapping, and PUT by returned ID on every valid apply. More than one:
    `E_AMBIGUOUS_IDENTITY`, exit 1, no write.
-6. A same-principal concurrent-create 409 allows one bounded full
-   re-resolution; POST is never repeated.
+6. A create 409 triggers exactly one exhaustive page-0-origin same-creator
+   read-only scan. No second POST or PUT/PATCH/DELETE is permitted. One exact
+   collision is `ServerRejected` exit 1; multiple are ambiguity exit 1; stable
+   zero is reconciliation instability exit 1; compatibility/connectivity
+   failure is exit 2.
 7. After create/update, one bounded full re-resolution must find exactly one
    identity associated with the expected route ID. Uncertain/duplicate result is
    reported without delete or rollback.
@@ -93,11 +99,9 @@ Rename or project change is a new identity: zero-match creates the new Skill
 and the old Skill remains because delete is out of scope. Existing references
 must be updated in Git. No implicit adoption/rename search occurs.
 
-Different-principal concurrent create can still produce duplicates because the
-server's uniqueness boundary differs. Production use therefore requires
-per-environment serialization, governed UI/API writers, periodic duplicate
-inventory, and a platform-owned remediation runbook. The CLI never chooses a
-duplicate and never deletes one.
+Different-principal same-name rows are distinct identities. Same-principal
+races still require serialization, post-write verification, and manual
+remediation. The CLI never chooses a same-principal duplicate or deletes one.
 
 ## Consequences
 
@@ -110,7 +114,7 @@ duplicate and never deletes one.
 ### Negative
 
 - Exhaustive pagination costs more than direct lookup.
-- Correctness depends on complete privileged visibility.
+- Correctness depends on visibility of the authenticated creator's own rows.
 - Operational controls, not the database, contain cross-principal races.
 
 ### Risks
@@ -132,7 +136,7 @@ duplicate and never deletes one.
 
 ## References
 
-- Product specification v28: FR-005/006/011/021/022/031–034, IR-012, DR-012,
+- Product specification v31: FR-005/006/011/021/022/031–034/037, IR-012/013, DR-012/013,
   PA-005, VR-009/010/016
 - Pinned source: `rest_api/routers/skill.py:198-316`,
   `service/skill_service.py:295-370`, and

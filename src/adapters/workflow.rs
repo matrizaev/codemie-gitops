@@ -1,7 +1,7 @@
 /// Workflow entity adapter — W-001.
 ///
 /// Identity resolved from `meta_config["codemie.epam.com/gitops/workflow-identity"]`
-/// = `{version:1, project, slug}`. Two-pass enumeration (pass 1: project-visible,
+/// = `{version:2, project, creator_user_id, slug}`. Two-pass enumeration (pass 1: project-visible,
 /// pass 2: `scope=marketplace`). Deduplicates across passes by server ID.
 /// Optional `adopt_workflow_id` is considered only after both scans prove zero
 /// exact markers, then validates one explicit by-ID adoption candidate.
@@ -15,7 +15,9 @@ use crate::config::ValidatedUrl;
 use crate::error::AppError;
 use crate::http::{ApiClient, encode_query_value, preflight_visibility};
 use crate::parse::ParsedDeclaration;
-use crate::projection::{ExistingEntity, WorkflowReferenceMap, project_with_workflow_references};
+use crate::projection::{
+    ExistingEntity, RequestBody, WorkflowReferenceMap, WritePlan, project_with_workflow_references,
+};
 
 use super::{
     ApplyAction, ApplyResult, PreparedWrite, ResolutionTarget, WriteAbilityEvidence, assistant,
@@ -52,7 +54,13 @@ struct WorkflowItem {
     #[serde(rename = "name")]
     name: String,
     meta_config: RequiredNullableString,
+    created_by: Creator,
     user_abilities: Vec<String>,
+}
+
+#[derive(Deserialize, Clone)]
+struct Creator {
+    id: String,
 }
 
 /// `meta_config` is nullable in the pinned API but its response member is
@@ -154,7 +162,8 @@ pub async fn apply(
     base_url: &ValidatedUrl,
     request: ApplyRequest<'_>,
 ) -> Result<ApplyResult, AppError> {
-    let visibility = preflight_visibility(client, base_url, request.project_name).await?;
+    let initial_visibility = preflight_visibility(client, base_url, request.project_name).await?;
+    let creator_user_id = initial_visibility.authenticated_user_id().to_owned();
     let authored_display_name = request
         .declaration
         .value
@@ -170,6 +179,7 @@ pub async fn apply(
         base_url,
         request.project_name,
         request.slug,
+        &creator_user_id,
         Some(authored_display_name),
     )
     .await?;
@@ -183,7 +193,10 @@ pub async fn apply(
             ));
         }
         let detail = fetch_detail(client, base_url, adopt_id).await?;
-        if detail.id != adopt_id || detail.project != request.project_name {
+        if detail.id != adopt_id
+            || detail.project != request.project_name
+            || detail.created_by.id != creator_user_id
+        {
             return Err(AppError::Reconciliation(
                 "workflow adoption candidate does not match the selected project and id".into(),
             ));
@@ -193,6 +206,7 @@ pub async fn apply(
             &detail.project,
             request.project_name,
             request.slug,
+            &creator_user_id,
         ) != MarkerClassification::Unmarked
         {
             return Err(AppError::Reconciliation(
@@ -226,7 +240,10 @@ pub async fn apply(
             [single] => {
                 let list_ability = prove_write(&single.user_abilities, "Workflow")?;
                 let detail = fetch_detail(client, base_url, &single.id).await?;
-                if detail.id != single.id || detail.project != request.project_name {
+                if detail.id != single.id
+                    || detail.project != request.project_name
+                    || detail.created_by.id != creator_user_id
+                {
                     return Err(AppError::Reconciliation(
                         "workflow detail no longer matches the resolved identity".into(),
                     ));
@@ -236,6 +253,7 @@ pub async fn apply(
                     &detail.project,
                     request.project_name,
                     request.slug,
+                    &creator_user_id,
                 ) != MarkerClassification::Exact
                 {
                     return Err(AppError::Reconciliation(
@@ -270,7 +288,7 @@ pub async fn apply(
 
     let references = resolve_execution_references(client, base_url, request.declaration).await?;
 
-    let plan = project_with_workflow_references(
+    let mut plan = project_with_workflow_references(
         request.declaration,
         existing_entity.as_ref(),
         request.adopt_workflow_id,
@@ -278,6 +296,7 @@ pub async fn apply(
         request.follow_symlinks,
         Some(&references.map),
     )?;
+    bind_creator_marker(&mut plan, &creator_user_id)?;
 
     let resolution = CompletedResolution {
         effective_project: request.project_name.to_owned(),
@@ -289,20 +308,50 @@ pub async fn apply(
         _write_abilities: write_abilities,
         _adoption: adoption,
     };
-    let prepared = PreparedWrite::workflow(visibility, resolution, plan)?;
-    dispatch(client, base_url, prepared).await
+    let visibility = preflight_visibility(client, base_url, request.project_name).await?;
+    let prepared = PreparedWrite::workflow(client, visibility, resolution, plan)?;
+    dispatch(prepared).await
 }
 
-async fn dispatch(
-    client: &ApiClient,
-    base_url: &ValidatedUrl,
-    prepared: PreparedWrite,
-) -> Result<ApplyResult, AppError> {
+fn bind_creator_marker(plan: &mut WritePlan, creator_user_id: &str) -> Result<(), AppError> {
+    let request = match plan {
+        WritePlan::Create { request } | WritePlan::Update { request, .. } => request,
+    };
+    let RequestBody::Json(body) = request else {
+        return Err(AppError::Internal(
+            "Workflow projection must be JSON".into(),
+        ));
+    };
+    let raw = body
+        .get("meta_config")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            AppError::Internal("Workflow projection omitted identity metadata".into())
+        })?;
+    let mut value: serde_json::Value = parse_strict_json(raw).map_err(|_| {
+        AppError::Internal("Workflow projection emitted invalid identity metadata".into())
+    })?;
+    value
+        .get_mut(IDENTITY_KEY)
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or_else(|| AppError::Internal("Workflow projection omitted reserved identity".into()))?
+        .insert(
+            "creator_user_id".into(),
+            serde_json::Value::String(creator_user_id.to_owned()),
+        );
+    body["meta_config"] = serde_json::Value::String(
+        serde_json::to_string(&value)
+            .map_err(|_| AppError::Internal("Workflow identity encoding failed".into()))?,
+    );
+    Ok(())
+}
+
+async fn dispatch(prepared: PreparedWrite<'_>) -> Result<ApplyResult, AppError> {
     let action = match prepared.target() {
         ResolutionTarget::Create => ApplyAction::Created,
         ResolutionTarget::Update { .. } => ApplyAction::Updated,
     };
-    let response = client.dispatch_prepared(base_url, prepared).await?;
+    let response = ApiClient::dispatch_prepared(prepared).await?;
     let response: WorkflowIdResponse = decode_write_response(response)?.ok_or_else(|| {
         AppError::Internal("Workflow modifying request cannot return a conflict signal".into())
     })?;
@@ -321,7 +370,16 @@ pub async fn verify_identity(
     slug: &str,
     expected_server_id: &str,
 ) -> Result<(), AppError> {
-    let scan = enumerate_all(client, base_url, project_name, slug, None).await?;
+    let membership = preflight_visibility(client, base_url, project_name).await?;
+    let scan = enumerate_all(
+        client,
+        base_url,
+        project_name,
+        slug,
+        membership.authenticated_user_id(),
+        None,
+    )
+    .await?;
     match scan.exact_matches.as_slice() {
         [single] if single.id == expected_server_id => Ok(()),
         _ => Err(AppError::Reconciliation(
@@ -450,6 +508,7 @@ async fn enumerate_all(
     base_url: &ValidatedUrl,
     project_name: &str,
     slug: &str,
+    creator_user_id: &str,
     authored_display_name: Option<&str>,
 ) -> Result<WorkflowScan, AppError> {
     let mut all_matches = Vec::new();
@@ -467,6 +526,7 @@ async fn enumerate_all(
             scope,
             project_name,
             slug,
+            creator_user_id,
             authored_display_name,
         )
         .await?;
@@ -496,6 +556,7 @@ async fn enumerate_pass(
     scope: Option<&'static str>,
     project_name: &str,
     slug: &str,
+    creator_user_id: &str,
     authored_display_name: Option<&str>,
 ) -> Result<PassResult, AppError> {
     let mut matches = Vec::new();
@@ -530,6 +591,11 @@ async fn enumerate_pass(
         let total_pages = resp.pagination.pages;
 
         for item in resp.data {
+            if item.created_by.id.is_empty() {
+                return Err(AppError::ApiIncompatible(
+                    "workflow creator id is empty".into(),
+                ));
+            }
             total_seen += 1;
             if total_seen > MAX_ITEMS {
                 return Err(AppError::ApiIncompatible(
@@ -542,11 +608,15 @@ async fn enumerate_pass(
                 ));
             }
             if item.project == project_name {
+                if item.created_by.id != creator_user_id {
+                    continue;
+                }
                 match classify_marker(
                     item.meta_config.0.as_deref(),
                     &item.project,
                     project_name,
                     slug,
+                    creator_user_id,
                 ) {
                     MarkerClassification::Exact => matches.push(item),
                     MarkerClassification::Unmarked
@@ -647,6 +717,7 @@ fn classify_marker(
     row_project: &str,
     desired_project: &str,
     desired_slug: &str,
+    creator_user_id: &str,
 ) -> MarkerClassification {
     let Some(raw) = meta_config else {
         return MarkerClassification::Unmarked;
@@ -663,10 +734,11 @@ fn classify_marker(
     let Some(identity) = identity.as_object() else {
         return MarkerClassification::Invalid;
     };
-    if identity.len() != 3
+    if identity.len() != 4
         || !identity.contains_key("version")
         || !identity.contains_key("project")
         || !identity.contains_key("slug")
+        || !identity.contains_key("creator_user_id")
     {
         return MarkerClassification::Invalid;
     }
@@ -676,14 +748,21 @@ fn classify_marker(
     let Some(slug) = identity.get("slug").and_then(serde_json::Value::as_str) else {
         return MarkerClassification::Invalid;
     };
-    if identity.get("version").and_then(serde_json::Value::as_u64) != Some(1)
+    let Some(creator) = identity
+        .get("creator_user_id")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return MarkerClassification::Invalid;
+    };
+    if identity.get("version").and_then(serde_json::Value::as_u64) != Some(2)
         || project.is_empty()
         || slug.is_empty()
         || project != row_project
+        || creator.is_empty()
     {
         return MarkerClassification::Invalid;
     }
-    if project == desired_project && slug == desired_slug {
+    if project == desired_project && slug == desired_slug && creator == creator_user_id {
         MarkerClassification::Exact
     } else {
         MarkerClassification::OtherValid
@@ -825,7 +904,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"is_admin":false,"is_maintainer":false,"projects":[{"name":"my-project","is_project_admin":true}]}"#,
+                r#"{"user_id":"user-1","is_admin":false,"is_maintainer":false,"projects":[{"name":"my-project","is_project_admin":true}]}"#,
             )
             .create_async()
     }
@@ -852,7 +931,9 @@ mod tests {
     }
 
     fn meta_config_for(project: &str, slug: &str) -> String {
-        format!(r#"{{"{IDENTITY_KEY}":{{"version":1,"project":"{project}","slug":"{slug}"}}}}"#)
+        format!(
+            r#"{{"{IDENTITY_KEY}":{{"version":2,"creator_user_id":"user-1","project":"{project}","slug":"{slug}"}}}}"#
+        )
     }
 
     fn empty_page() -> &'static str {
@@ -862,7 +943,7 @@ mod tests {
     fn one_match_page(id: &str, project: &str, slug: &str) -> String {
         let mc = meta_config_for(project, slug);
         format!(
-            r#"{{"data":[{{"id":"{id}","project":"{project}","name":"Workflow","meta_config":{mc_json},"user_abilities":["read","write"]}}],"pagination":{{"page":0,"per_page":100,"total":1,"pages":1}}}}"#,
+            r#"{{"data":[{{"id":"{id}","project":"{project}","name":"Workflow","meta_config":{mc_json},"created_by":{{"id":"user-1"}},"user_abilities":["read","write"]}}],"pagination":{{"page":0,"per_page":100,"total":1,"pages":1}}}}"#,
             mc_json = serde_json::to_string(&mc).unwrap()
         )
     }
@@ -871,8 +952,75 @@ mod tests {
         let mc = meta_config_for(project, slug);
         let mc_json = serde_json::to_string(&mc).unwrap();
         format!(
-            r#"{{"data":[{{"id":"id-1","project":"{project}","name":"Workflow 1","meta_config":{mc_json},"user_abilities":["write"]}},{{"id":"id-2","project":"{project}","name":"Workflow 2","meta_config":{mc_json},"user_abilities":["write"]}}],"pagination":{{"page":0,"per_page":100,"total":2,"pages":1}}}}"#
+            r#"{{"data":[{{"id":"id-1","project":"{project}","name":"Workflow 1","meta_config":{mc_json},"created_by":{{"id":"user-1"}},"user_abilities":["write"]}},{{"id":"id-2","project":"{project}","name":"Workflow 2","meta_config":{mc_json},"created_by":{{"id":"user-1"}},"user_abilities":["write"]}}],"pagination":{{"page":0,"per_page":100,"total":2,"pages":1}}}}"#
         )
+    }
+
+    #[tokio::test]
+    async fn inline_skill_reference_creator_scope_request_count_matrix() {
+        for (rows, expected_id) in [
+            (vec![("foreign", "user-2")], None),
+            (vec![("foreign", "user-2"), ("own", "user-1")], Some("own")),
+            (vec![("own", "user-1")], Some("own")),
+            (vec![("own-1", "user-1"), ("own-2", "user-1")], None),
+        ] {
+            let mut server = mockito::Server::new_async().await;
+            let user = user_ok_mock(&mut server).await;
+            let body = serde_json::json!({
+                "skills": rows.iter().map(|(id, creator)| serde_json::json!({
+                    "id": id, "name": "my-skill", "project": "my-project",
+                    "created_by": {"id": creator}, "user_abilities": ["read"]
+                })).collect::<Vec<_>>(),
+                "page": 0, "perPage": 100, "total": rows.len(),
+                "pages": if rows.is_empty() { 0 } else { 1 }
+            })
+            .to_string();
+            let scan = server
+                .mock("GET", mockito::Matcher::Regex(r"^/v1/skills\?".to_owned()))
+                .with_status(200)
+                .with_body(body)
+                .expect(1)
+                .create_async()
+                .await;
+            let post = server
+                .mock("POST", mockito::Matcher::Any)
+                .expect(0)
+                .create_async()
+                .await;
+            let put = server
+                .mock("PUT", mockito::Matcher::Any)
+                .expect(0)
+                .create_async()
+                .await;
+            let patch = server
+                .mock("PATCH", mockito::Matcher::Any)
+                .expect(0)
+                .create_async()
+                .await;
+            let delete = server
+                .mock("DELETE", mockito::Matcher::Any)
+                .expect(0)
+                .create_async()
+                .await;
+
+            let result = skill::resolve_reference(
+                &test_client(&server.url()),
+                &test_url(&server.url()),
+                "my-project",
+                "my-skill",
+            )
+            .await;
+            match expected_id {
+                Some(id) => assert_eq!(result.expect("one own reference must resolve"), id),
+                None => assert!(matches!(result, Err(AppError::Reconciliation(_)))),
+            }
+            user.assert_async().await;
+            scan.assert_async().await;
+            post.assert_async().await;
+            put.assert_async().await;
+            patch.assert_async().await;
+            delete.assert_async().await;
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -993,7 +1141,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(format!(
-                r#"{{"id":"wf-exist","project":"my-project","name":"Workflow","meta_config":{},"user_abilities":["read","write"]}}"#,
+                r#"{{"id":"wf-exist","project":"my-project","name":"Workflow","meta_config":{},"created_by":{{"id":"user-1"}},"user_abilities":["read","write"]}}"#,
                 serde_json::to_string(&meta_config_for("my-project", "my-slug")).unwrap()
             ))
             .create_async()
@@ -1041,7 +1189,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"is_admin":false,"is_maintainer":false,"projects":[{"name":"other-project","is_project_admin":true}]}"#,
+                r#"{"user_id":"user-1","is_admin":false,"is_maintainer":false,"projects":[{"name":"other-project","is_project_admin":true}]}"#,
             )
             .expect(1)
             .create_async()
@@ -1196,7 +1344,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"data":[{"id":"same","project":"my-project","name":"Other A","meta_config":null,"user_abilities":["read"]},{"id":"same","project":"my-project","name":"Other B","meta_config":null,"user_abilities":["read"]}],"pagination":{"page":0,"per_page":100,"total":2,"pages":1}}"#,
+                r#"{"data":[{"id":"same","project":"my-project","name":"Other A","meta_config":null,"created_by":{"id":"user-1"},"user_abilities":["read"]},{"id":"same","project":"my-project","name":"Other B","meta_config":null,"created_by":{"id":"user-1"},"user_abilities":["read"]}],"pagination":{"page":0,"per_page":100,"total":2,"pages":1}}"#,
             )
             .expect(1)
             .create_async()
@@ -1243,7 +1391,7 @@ mod tests {
                 "project": "my-project",
                 "name": "Workflow",
                 "meta_config": null,
-                "user_abilities": ["write"]
+                "created_by":{"id":"user-1"},"user_abilities": ["write"]
             }],
             "pagination": {"page": 0, "pages": 1, "total": 1, "per_page": 100}
         });
@@ -1253,7 +1401,7 @@ mod tests {
                 "project": "my-project",
                 "name": "Workflow",
                 "meta_config": null,
-                "user_abilities": ["write"],
+                "created_by":{"id":"user-1"},"user_abilities": ["write"],
                 "future_entity": true
             }],
             "pagination": {"page": 0, "pages": 1, "total": 1, "per_page": 100, "future_page": 7},
@@ -1368,6 +1516,7 @@ mod tests {
     #[tokio::test]
     async fn verify_identity_traverses_zero_based_workflow_pages_and_both_scopes() {
         let mut server = mockito::Server::new_async().await;
+        let _user = user_ok_mock(&mut server).await;
         let first_page_items = (0..100)
             .map(|index| {
                 json!({
@@ -1375,7 +1524,7 @@ mod tests {
                     "project": "other-project",
                     "name": "Other Workflow",
                     "meta_config": null,
-                    "user_abilities": ["read"]
+                    "created_by":{"id":"user-1"},"user_abilities": ["read"]
                 })
             })
             .collect::<Vec<_>>();
@@ -1389,6 +1538,7 @@ mod tests {
                 "project": "my-project",
                 "name": "Workflow",
                 "meta_config": meta_config_for("my-project", "my-slug"),
+                "created_by": {"id": "user-1"},
                 "user_abilities": ["write"]
             }],
             "pagination": {"page": 1, "per_page": 100, "total": 101, "pages": 2}
@@ -1464,6 +1614,7 @@ mod tests {
     #[tokio::test]
     async fn verify_identity_rejects_nonzero_origin_without_modification() {
         let mut server = mockito::Server::new_async().await;
+        let _user = user_ok_mock(&mut server).await;
         let page_zero = server
             .mock(
                 "GET",
@@ -1610,7 +1761,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"id":"adopt-wf-id","project":"my-project","name":"Workflow","meta_config":"{\"other\":true}","user_abilities":["write"]}"#,
+                r#"{"id":"adopt-wf-id","project":"my-project","name":"Workflow","meta_config":"{\"other\":true}","created_by":{"id":"user-1"},"user_abilities":["write"]}"#,
             )
             .create_async()
             .await;
@@ -1654,7 +1805,7 @@ mod tests {
             "not-json",
             "[]",
             r#"{"codemie.epam.com/gitops/workflow-identity":{"version":"1","project":"my-project","slug":"my-slug"}}"#,
-            r#"{"codemie.epam.com/gitops/workflow-identity":{"version":1,"project":"my-project","slug":"my-slug"},"codemie.epam.com/gitops/workflow-identity":{"version":1,"project":"my-project","slug":"my-slug"}}"#,
+            r#"{"codemie.epam.com/gitops/workflow-identity":{"version":2,"creator_user_id":"user-1","project":"my-project","slug":"my-slug"},"codemie.epam.com/gitops/workflow-identity":{"version":2,"creator_user_id":"user-1","project":"my-project","slug":"my-slug"}}"#,
         ];
 
         for marketplace_scope in [false, true] {
@@ -1662,7 +1813,7 @@ mod tests {
                 let mut server = mockito::Server::new_async().await;
                 let _user = user_ok_mock(&mut server).await;
                 let invalid_page = format!(
-                    r#"{{"data":[{{"id":"wf-invalid-{case_index}","project":"my-project","name":"Workflow","meta_config":{},"user_abilities":["write"]}}],"pagination":{{"page":0,"per_page":100,"total":1,"pages":1}}}}"#,
+                    r#"{{"data":[{{"id":"wf-invalid-{case_index}","project":"my-project","name":"Workflow","meta_config":{},"created_by":{{"id":"user-1"}},"user_abilities":["write"]}}],"pagination":{{"page":0,"per_page":100,"total":1,"pages":1}}}}"#,
                     serde_json::to_string(marker).unwrap()
                 );
                 let project_body = if marketplace_scope {
@@ -1797,7 +1948,7 @@ mod tests {
                 "project": project,
                 "name": "Workflow",
                 "meta_config": meta_config,
-                "user_abilities": abilities,
+                "created_by":{"id":"user-1"},"user_abilities": abilities,
             });
             let detail = server
                 .mock(
@@ -1929,7 +2080,7 @@ mod tests {
 
     #[tokio::test]
     async fn unmarked_same_display_name_row_does_not_veto_explicit_adoption() {
-        let unmarked_page = r#"{"data":[{"id":"other-legacy","project":"my-project","name":"Test Workflow","meta_config":null,"user_abilities":["write"]}],"pagination":{"page":0,"per_page":100,"total":1,"pages":1}}"#;
+        let unmarked_page = r#"{"data":[{"id":"other-legacy","project":"my-project","name":"Test Workflow","meta_config":null,"created_by":{"id":"user-1"},"user_abilities":["write"]}],"pagination":{"page":0,"per_page":100,"total":1,"pages":1}}"#;
 
         for marketplace_scope in [false, true] {
             let mut server = mockito::Server::new_async().await;
@@ -1974,7 +2125,7 @@ mod tests {
                 .with_status(200)
                 .with_header("content-type", "application/json")
                 .with_body(
-                    r#"{"id":"candidate","project":"my-project","name":"Candidate","meta_config":null,"user_abilities":["write"]}"#,
+                    r#"{"id":"candidate","project":"my-project","name":"Candidate","meta_config":null,"created_by":{"id":"user-1"},"user_abilities":["write"]}"#,
                 )
                 .expect(1)
                 .create_async()
@@ -2031,7 +2182,7 @@ mod tests {
 
     #[tokio::test]
     async fn unmarked_authored_display_name_blocks_create_when_name_differs_from_slug() {
-        let unmarked_page = r#"{"data":[{"id":"legacy","project":"my-project","name":"Test Workflow","meta_config":null,"user_abilities":["read","write"]}],"pagination":{"page":0,"per_page":100,"total":1,"pages":1}}"#;
+        let unmarked_page = r#"{"data":[{"id":"legacy","project":"my-project","name":"Test Workflow","meta_config":null,"created_by":{"id":"user-1"},"user_abilities":["read","write"]}],"pagination":{"page":0,"per_page":100,"total":1,"pages":1}}"#;
 
         for marketplace_scope in [false, true] {
             let mut server = mockito::Server::new_async().await;
@@ -2128,7 +2279,7 @@ mod tests {
     fn marker_classification_exact() {
         let mc = meta_config_for("proj", "sl");
         assert_eq!(
-            classify_marker(Some(&mc), "proj", "proj", "sl"),
+            classify_marker(Some(&mc), "proj", "proj", "sl", "user-1"),
             MarkerClassification::Exact
         );
     }
@@ -2137,7 +2288,7 @@ mod tests {
     fn marker_classification_conflicting_row_project_is_invalid() {
         let mc = meta_config_for("other", "sl");
         assert_eq!(
-            classify_marker(Some(&mc), "proj", "proj", "sl"),
+            classify_marker(Some(&mc), "proj", "proj", "sl", "user-1"),
             MarkerClassification::Invalid
         );
     }
@@ -2146,7 +2297,7 @@ mod tests {
     fn marker_classification_other_valid_slug() {
         let mc = meta_config_for("proj", "other");
         assert_eq!(
-            classify_marker(Some(&mc), "proj", "proj", "sl"),
+            classify_marker(Some(&mc), "proj", "proj", "sl", "user-1"),
             MarkerClassification::OtherValid
         );
     }
@@ -2154,7 +2305,13 @@ mod tests {
     #[test]
     fn marker_classification_missing_reserved_key_is_unmarked() {
         assert_eq!(
-            classify_marker(Some(r#"{"other": "value"}"#), "proj", "proj", "sl"),
+            classify_marker(
+                Some(r#"{"other": "value"}"#),
+                "proj",
+                "proj",
+                "sl",
+                "user-1"
+            ),
             MarkerClassification::Unmarked
         );
     }
@@ -2166,11 +2323,11 @@ mod tests {
             "[]",
             r#"{"codemie.epam.com/gitops/workflow-identity":null}"#,
             r#"{"codemie.epam.com/gitops/workflow-identity":{"version":"1","project":"proj","slug":"sl"}}"#,
-            r#"{"codemie.epam.com/gitops/workflow-identity":{"version":1,"project":"proj","slug":"sl","extra":true}}"#,
-            r#"{"codemie.epam.com/gitops/workflow-identity":{"version":1,"project":"proj","slug":"sl"},"codemie.epam.com/gitops/workflow-identity":{"version":1,"project":"proj","slug":"sl"}}"#,
+            r#"{"codemie.epam.com/gitops/workflow-identity":{"version":2,"creator_user_id":"user-1","project":"proj","slug":"sl","extra":true}}"#,
+            r#"{"codemie.epam.com/gitops/workflow-identity":{"version":2,"creator_user_id":"user-1","project":"proj","slug":"sl"},"codemie.epam.com/gitops/workflow-identity":{"version":2,"creator_user_id":"user-1","project":"proj","slug":"sl"}}"#,
         ] {
             assert_eq!(
-                classify_marker(Some(raw), "proj", "proj", "sl"),
+                classify_marker(Some(raw), "proj", "proj", "sl", "user-1"),
                 MarkerClassification::Invalid,
                 "raw={raw}"
             );
@@ -2180,7 +2337,7 @@ mod tests {
     #[test]
     fn marker_classification_null_container_is_unmarked() {
         assert_eq!(
-            classify_marker(None, "proj", "proj", "sl"),
+            classify_marker(None, "proj", "proj", "sl", "user-1"),
             MarkerClassification::Unmarked
         );
     }

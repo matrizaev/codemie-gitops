@@ -2,7 +2,7 @@
 
   ## 1. Document status
 
-  * **Status:** DRAFT — v29 — **READY FOR IMPLEMENTATION**
+  * **Status:** DRAFT — v32 — **READY FOR ARCHITECTURE PLANNING; DOWNSTREAM ARTIFACT REFRESH REQUIRED**
   * **Tool name:** `codemie-gitops`
   * **Owner:** Product Specification Owner (pending assignment to a named product owner)
   * **Source request:** User-provided request on 2026-08-06: "create a CI/CD tool for the CodeMie platform that will be able to store assistants, workflows, datasources, and skills in YAML files, lint them, and create/update on the server side."
@@ -12,7 +12,7 @@
     * `https://github.com/codemie-ai/codemie` — server (FastAPI + LangChain/LangGraph + PostgreSQL/SQLModel + Elasticsearch)
     * `https://github.com/codemie-ai/codemie-ui` — UI (out of scope for this tool)
     * `https://github.com/codemie-ai/codemie-code` — **different, existing** local-agent CLI; not to be confused with `codemie-gitops`
-  * **Last reviewed:** 2026-08-11 (v29)
+  * **Last reviewed:** 2026-08-12 (v32)
   * **Revision history:**
     * v1 (2026-08-06 15:27 UTC+3) — initial DRAFT, based on public docs only.
     * v2 (2026-08-06 15:53 UTC+3) — post-repo-analysis: schema, identity, cross-entity refs, auth resolved or narrowed.
@@ -43,6 +43,11 @@
     * v27 (2026-08-11) — Clarified per-file lint warning scope: after validating the complete repository closure, lint emits secret-like and deprecation warnings only for the declaration selected by `--file`, in deterministic warning-code/canonical-field-path order. Failed lint emits no warnings and uses only the failure diagnostic contract. FR-014 and AC-FR-014-01 updated.
     * v28 (2026-08-11) — Resolved the target-compatibility identity conflict: the source-derived contract pinned to backend tag `2.42.0`, commit `2a481c290c99bf30ef80aadafa03d876a7f5f732`, is the compatibility baseline. `GET /v1/info.version` is semantic application-version observability, not source/API identity, and MUST NOT be compared with the pinned Git SHA or independently accept/reject `apply`. The exact pinned clone remains compatible when its operation-applicable pre-write contract evidence passes even though it reports `APP_VERSION=0.16.0`. Missing or invalid required consumed-contract evidence still fails as `E_API_INCOMPATIBLE`, exit 2, before any modifying request. Added SC-021, IR-011/012, AC-IR-011-01, and AC-IR-012-01.
     * v29 (2026-08-11) — Clarified provider-safe CI token delivery without changing the CLI authentication contract. A protected GitHub Actions job may acquire one fresh token with `codemie-gitops login` only when it immediately registers that value with GitHub's native runtime masking control before any later command or output. A protected GitLab CI job consumes a pre-supplied, environment-scoped protected+masked `CODEMIE_TOKEN` because current GitLab has no stable provider-native runtime add-mask control for a freshly generated value. The GitLab example does not invoke `login`, persist or re-emit the token, or invent a masking fallback. Updated SC-011 and IR-006; added QR-012 and AC-QR-012-01.
+    * v30 (2026-08-12) — Corrected complete-visibility qualification for a principal's own personal project. Workflow, Skill, and Datasource may use a narrowly bounded personal-owner path only when strict, non-mutating evidence proves the authenticated `GET /v1/user.user_id`, exactly one membership for the effective project, an exact visibility-filtered `GET /v1/projects/{projectName}` result with `name` equal to that project, `project_type="personal"`, `created_by` equal to the authenticated `user_id`, and exactly one member record for that user. The member's `is_project_admin=false` is valid for this path because the pinned server deliberately creates personal owners as non-admin members. Shared-project/global-admin rules, per-entity write checks, exhaustive resolution, Assistant least privilege, strict consumed-field decoding, additive-unconsumed tolerance, and the zero-write failure boundary are unchanged. Added SC-022, FR-037, DR-013, IR-013, BR-007, PA-008, VR-017, AC-FR-037-01/02/03, C-14, and traceability/handoff updates.
+    * v31 (2026-08-12) — Closed the personal-owner complete-visibility gap identified by Q-009 follow-up and the pending security-review checkpoint. Exact project detail `members[]` MUST contain exactly one total entry, and that sole entry's `user_id` MUST equal the authenticated `/v1/user.user_id`; a boolean `is_project_admin=false` remains valid. A structurally valid empty array, any second member (including a duplicate current-user row or another user), or a sole mismatched member is `E_VISIBILITY_UNPROVEN`; malformed consumed fields, empty consumed strings, or duplicate JSON object keys are `E_API_INCOMPATIBLE`. Every consumed `/v1/user.projects[].name` remains explicitly non-empty. The proof, resolver, write-ability evidence, and any write remain bound to one invocation-scoped API client, target origin, token, and session; exact project detail uses one percent-encoded route segment. Personal-project/type/creator/membership equality, unchanged shared/global rules, Assistant exclusion, separate write authorization, no inference, and zero writes on failed qualification remain unchanged. Updated SC-022, FR-037, DR-013, IR-013, PA-008, VR-017, AC-FR-037-01/02/03, edge cases, traceability, and architecture handoff.
+    * v32 (2026-08-12) — **Supersedes v30–v31 personal-project/admin qualification.** Exact effective-project membership qualifies create for every entity; administration is optional. Exact server-returned `write` ability gates update. Assistant retains exact `(project, slug)` lookup. Skill uses creator-scoped `(project, authenticated-user-id, name)` identity. Workflow uses a creator-scoped v2 marker because pinned source guarantees visibility of the principal's own rows; v1/unmarked rows require explicit same-creator adoption and same-principal races remain post-write detectable. Datasource partial lists never prove absence; project-wide server HTTP 409 is authoritative collision evidence. FR-037/DR-013/IR-013/BR-007/PA-005/PA-008/VR-017 and acceptance criteria are redefined around this model. Strict decoding, zero unauthorized writes, post-write verification, safe diagnostics, and Assistant least privilege remain unchanged.
+    * v32.1 (2026-08-12) — Closed Q010-002 by making the authenticated creator dimension explicit in Skill target and reference acceptance criteria. Other creators' same-name Skills are distinct and ignored; duplicates within the current creator scope are ambiguous. Target zero/one means create/write-gated update; reference zero/one means fail/read-only resolution, and references never create or update.
+    * v32.2 (2026-08-12) — Resolved Q010-POST-001. Pinned Skill create returns HTTP 409 only when exact `(name, authenticated user ID, project)` already exists, so one POST-409 permits exactly one bounded, exhaustive, read-only same-creator re-resolution from page 0. The invocation remains an exit-1 conflict and never sends a second POST or a PUT: converting the race to update could overwrite concurrently authored state. The re-read classifies one exact match as a stable same-creator collision, multiple as same-creator ambiguity, and incompatible/connectivity evidence under the existing exit taxonomy. A later fresh invocation may resolve one writable row and perform the ordinary update.
 
   ---
 
@@ -61,11 +66,13 @@
   * **Non-interactive and CI-first:** `lint` (offline), `apply` (online), `login` (token acquisition).
   * **Stable exit taxonomy:** 0 = success; 1 = entity reconciliation or server-side failure after valid local input; 2 = local parsing/schema/validation/configuration failure, authentication/authorization precondition, connectivity/compatibility failure, or fatal error. (FR-011)
   * **Source-derived target compatibility:** the exact pinned CodeMie backend source is the phase-1 compatibility baseline. Its semantic `APP_VERSION=0.16.0` is not a Git/API identity and cannot by itself reject the target. Before any modifying request, `apply` must still establish every operation-applicable compatibility fact available from the required non-mutating contract evidence; missing or invalid required evidence fails closed. (IR-011, IR-012)
+  * **Member creation and exact-entity updates:** Exact effective-project membership qualifies creation for Assistant, Workflow, Skill, and Datasource. Global or project administration may expose more rows but is not required for member creation. An update is reachable only after the exact server-returned entity advertises `write` in `user_abilities`; list membership, project membership, creator metadata, and HTTP success alone do not substitute for that evidence. (FR-033, PA-005)
+  * **Kind-specific safe resolution:** Assistant uses exact project/slug lookup. Skill reconciles only `(project, authenticated creator ID, name)`. Workflow uses a creator-scoped v2 marker and never claims project-wide absence. Datasource visible rows may support exact update selection, while a miss permits only a create attempt whose project-wide collision outcome is decided authoritatively by the server, including HTTP 409. (FR-028–FR-033, FR-037)
   * **Safe output boundary:** successful outcomes go to stdout; all failure/error diagnostics go to stderr and leave stdout empty. Raw bodies, payloads, credentials, tokens, authorization/cookie data, secret fields, and secret-like values are never logged or persisted. Diagnostics use only explicitly allowlisted non-sensitive fields. Successful `login` token stdout is the sole intentional exception. (FR-011, FR-016, FR-024, FR-026, QR-007)
   * **Provider-safe CI token delivery:** first-class CI examples use only a token path that their provider can keep masked without persistence. GitHub may capture one fresh `login` token and immediately register it with the native runtime masking control before any later command or output. GitLab consumes a pre-supplied, environment-scoped protected+masked `CODEMIE_TOKEN` directly in the protected job and does not invoke `login`. No example may emulate a missing masking capability or fall back to an unmasked fresh token. (IR-006, QR-012)
   * **No deletes** in phase 1. (FR-008)
 
-  **Status:** `READY FOR ARCHITECTURE PLANNING`. Workflow/Skill identity, always-write apply behavior, omission-to-null payload semantics, target compatibility identity, exit codes, safe diagnostics, Workflow reference shapes, inline assistants, and generic Datasource authoring are product-approved. Every authorable Datasource kind uses its ordinary existing create/update format with field requiredness/nullability pinned under DR-012. Implementation remains gated on the pinned source-derived target contract and proof of the required pre-write response, visibility, pagination, metadata-preservation, and authorization behavior.
+  **Status:** `READY FOR ARCHITECTURE PLANNING`. The member-creation boundary, exact-entity write gate, Assistant identity, creator-scoped Skill identity, creator-scoped Workflow identity, and authoritative Datasource collision behavior are product-approved. Workflow's lack of atomic uniqueness remains an explicit residual race handled by serialization and post-write verification, not an unresolved product choice. Downstream architecture, contracts, tasks, reviews, and implementation remain stale and are not changed by this product-spec revision.
 
   ---
 
@@ -79,7 +86,7 @@
 
   ### Repository / web sources — CodeMie server (`github.com/codemie-ai/codemie`)
 
-  Retrieved and analyzed from the reference-only source on 2026-08-06–09:
+  Retrieved and analyzed from the reference-only source on 2026-08-06–09 and 2026-08-12:
 
   * `pyproject.toml` — package `codemie` v0.8.0, Python ≥3.12, FastAPI 0.133, Pydantic 2.9, SQLAlchemy 2.0, LangChain 1.2.15, LangGraph 1.1.6. Persistence: PostgreSQL (via SQLModel) with `sqlalchemy.dialects.postgresql.JSONB` for complex fields.
   * `config/templates/assistant/` (24 files) — assistants already stored as YAML as bootstrap templates.
@@ -101,6 +108,15 @@
   * `Makefile` — has `import-katas` target; no general-purpose apply target.
   * `codemie/src/codemie/rest_api/models/index.py`, `core/models.py`, `rest_api/routers/index.py`, `service/provider/datasource/`, `service/aws_bedrock/`, `codemie-ui/src/constants/dataSources.ts`, `codemie-ui/src/pages/dataSources/components/DataSourceForm/hooks/{useCreateIndex,useEditPopupForm}.ts`, and `codemie-ui/src/types/entity/dataSource.ts` (reference-only, inspected 2026-08-09) — current Datasource support is a discriminated family of per-kind request/read formats rather than one uniform subtype object. The inspected UI enumerates git, SVN, Confluence, Jira, Xray, file, Google Docs, Azure DevOps Wiki/Work Item, SharePoint, provider-backed, and Bedrock kinds. Each kind has its own exact field names, requiredness, mutability, integration-reference form, and ordinary CRUD availability; the inventory in §15 records this without introducing a client alias layer.
   * `codemie/src/codemie/core/workflow_models/workflow_models.py`, `workflows/execution_config_schema.yaml`, `workflows/validation/resources.py`, and `codemie-ui/src/types/workflowEditor/configuration.ts` (reference-only, inspected 2026-08-09) — `execution_config.assistants[].id` is a workflow-local actor ID referenced by `states[].assistant_id`; a persisted actor uses server `assistant_id`, while an inline actor omits it and supplies `system_prompt`. Skill and Datasource server IDs are stored as `skill_ids[]` and `datasource_ids[]` on each assistant entry. Current runtime resource use confirms those lists configure inline/virtual assistants.
+  * `codemie/src/codemie/service/project/personal_project_service.py` and `codemie/tests/codemie/service/project/test_personal_project_service.py` (reference-only, pinned tag `2.42.0`, commit `2a481c290c99bf30ef80aadafa03d876a7f5f732`, inspected 2026-08-12) — personal-project creation sets the project name from the user's email, `project_type="personal"`, `created_by=user_id`, and an exact user-project membership with `is_project_admin=false`; the source explicitly states that personal projects are non-collaborative and need no admin permission. The tests pin those fields and the non-admin owner mapping.
+  * `codemie/src/codemie/rest_api/routers/user.py` and `codemie/src/codemie/core/models.py` (`UserResponse` / `ProjectInfoResponse`) (reference-only, pinned `2.42.0`, inspected 2026-08-12) — authenticated `GET /v1/user` returns the principal's `user_id`, email, global role flags, and project memberships as exact `{name, is_project_admin}` entries.
+  * `codemie/src/codemie/rest_api/routers/projects.py`, `codemie/src/codemie/service/project/project_visibility_service.py`, and `codemie/src/codemie/repository/application_repository.py` (reference-only, pinned `2.42.0`, inspected 2026-08-12) — `GET /v1/projects/{projectName}` is an exact-name, visibility-filtered detail read. Its response exposes exact `name`, `project_type`, `created_by`, and `members`; non-admin personal-project visibility is granted only when `applications.created_by` equals the authenticated user ID, while shared-project visibility uses membership. Invisible or missing projects return 404.
+  * `codemie/src/codemie/rest_api/security/authentication.py` and `codemie/src/codemie/rest_api/routers/{assistant,workflow}.py` plus the create routes in `routers/index.py` and `routers/skill.py` (reference-only, pinned `2.42.0`, inspected 2026-08-12) — creation is guarded by access to the requested project, not by project-administrator status. This is the source basis for exact membership qualifying creation.
+  * `codemie/src/codemie/core/ability.py`, `codemie/src/codemie/rest_api/routers/{assistant,workflow,index}.py`, `codemie/src/codemie/rest_api/routers/skill.py`, and `codemie/src/codemie/service/skill_service.py` (reference-only, pinned `2.42.0`, inspected 2026-08-12) — exact entity reads/list items expose `user_abilities`; the update routes independently require `Ability(...).can(Action.WRITE, entity)`. Skill update explicitly states and enforces owner write access. The product therefore requires exact server-reported `write` ability before update.
+  * `codemie/src/codemie/rest_api/routers/assistant.py` and the Assistant persistence constraint (reference-only, pinned `2.42.0`, inspected 2026-08-12) — `GET /v1/assistants/slug/{assistant_slug}?project=<exact-project>` is the exact least-privilege lookup, and `(project, slug)` collisions are server constrained.
+  * `codemie/src/codemie/repository/skill_repository.py` and `codemie/src/codemie/service/skill_service.py` (reference-only, pinned `2.42.0`, inspected 2026-08-12) — an ordinary member sees their own Skills of any visibility plus project-visible Skills; create rejects only an existing exact `(name, current author ID, project)` and update preserves that creator scope. This supports creator-scoped reconciliation, not project-wide Skill absence.
+  * `codemie/src/codemie/service/workflow_config/workflow_config_index_service.py` and `codemie/src/codemie/rest_api/routers/workflow.py` (reference-only, pinned `2.42.0`, inspected 2026-08-12) — a non-admin member sees their own Workflows, shared Workflows in member projects, and all Workflows in admin projects; another member's unshared Workflow is hidden. Create checks project access; update checks exact-entity write ability. The source provides neither native slug lookup nor atomic creator-scoped slug uniqueness.
+  * `codemie/src/codemie/rest_api/models/index.py` and `codemie/src/codemie/rest_api/routers/index.py` (reference-only, pinned `2.42.0`, inspected 2026-08-12) — an ordinary member's Datasource list is partial (own plus project-space-visible rows), list/detail output carries abilities, and `_index_unique_check(project_name, repo_name)` performs a project-wide collision query and returns HTTP 409. Therefore a partial list cannot prove absence, while server 409 is authoritative collision evidence.
 
   ### Repository — architecture and contract evidence
 
@@ -111,6 +127,8 @@
   * `specs/codemie-cicd-tool/adr/004-openapi-subset-compatibility-gate.md`, `contracts/source-baseline.md`, and `contracts/http-adapter.md` — pin backend tag `2.42.0`, commit `2a481c290c99bf30ef80aadafa03d876a7f5f732`, as the source-derived consumed-contract baseline; record that its package, tag, and default `APP_VERSION=0.16.0` disagree; treat `/v1/info` as observability only; and retain strict non-mutating compatibility evidence before writes.
   * `specs/codemie-cicd-tool/plan.md`, `data-model.md`, `research.md`, `tasks.md`, and `contracts/{cli,declaration-v1alpha1,http-adapter}.md` — trace the identity decisions to visibility, pagination, failure, concurrency, output, and operational prerequisites.
   * `specs/codemie-cicd-tool/contracts/outcome.schema.json` — Workflow and Skill outcomes use authored natural keys and omit server IDs.
+  * `specs/codemie-cicd-tool/Q-009-verification-report.md` (2026-08-12) — found inconsistent downstream treatment of empty `/v1/user.projects[].name` values and required a uniform product decision. DR-013 remains authoritative: every consumed membership name is non-empty and an empty value is incompatible.
+  * **Pending security-review checkpoint supplied by the user on 2026-08-12** — found that v30's “exactly one matching current-user member” allowed additional project members. Under the pinned non-admin list semantics, another member's private Workflow, Skill, or Datasource rows may be hidden, so ownership alone does not prove the complete identity namespace when legacy state or database drift violates the normal non-collaborative invariant. The checkpoint requires exactly one total project-detail member, the authenticated user.
 
   ### User-provided decisions
   * Target entity types: assistants, workflows, datasources, skills.
@@ -119,7 +137,7 @@
   * **Authentication (platform team response, 2026-08-07, resolves A-3; endpoint configuration refined by product decision v24):** CI auth uses Keycloak OIDC `client_credentials` grant exclusively. Service account credentials (`client_id` + `client_secret`) are obtained by raising a request at `https://epa.ms/codemie-support`. The platform response showed a deployment endpoint shaped like `https://auth.<codemie-domain>/realms/codemie-prod/protocol/openid-connect/token`; this is evidence, not a derivation convention. The operator must explicitly configure the actual endpoint under v24. Token lifetime ~8 h; should be cached. The Bearer token is then passed as `Authorization: Bearer <token>` on every API call. **Critical operational constraint:** service-account credentials operate under their own service account — only Project-level integrations (Jira, Git, etc.) are accessible; personal integrations are silently ignored. Teams must migrate any personal integrations to project level before using the tool.
   * **Local dev auth (product decision, 2026-08-07, v13):** `POST /v1/local-auth/login` (email + password) MUST also be supported in the `login` command for local development against a dev server configured with `ENABLE_USER_MANAGEMENT=True` and `IDP_PROVIDER="local"`. CI pipelines MUST use Keycloak; local-auth is for development use only.
   * **Workflow identity (product decision, 2026-08-09, v14):** authored identity remains exact `(project, slug)`. The tool persists that identity server-side only for Workflow in a reserved `meta_config` record. Workflow server UUIDs are internal transport handles and MUST NOT be authored or reported. An unmarked legacy Workflow may be adopted in place only when the operator explicitly supplies its current server UUID; adoption persists the slug identity record and reconciles desired state. Ordinary reconciliation MUST NOT select by display name and MUST fail safely for invalid or duplicate identity records.
-  * **Skill identity (product decision, 2026-08-09, v14; apply behavior refined v22):** authored identity remains exact `(project, name)`. The tool resolves it by exhausting every page of the compatible list/read API and client-filtering exact project and name. Zero exact matches creates; one updates on every valid invocation; multiple exact matches fail as ambiguous. Returned server UUIDs are internal only. Because uniqueness is client-enforced rather than server-enforced, complete manager/admin visibility, serialized CI, governed UI/other-client writes, post-create verification, and visible residual-race failure are required.
+  * **Skill identity (superseded by v32):** authored/reported identity remains `(project, name)`, while safe server reconciliation is scoped to `(project, authenticated creator ID, name)`, matching pinned uniqueness. Only current-principal rows participate; same-name rows from another creator are distinct.
   * **Exit taxonomy (product decision, 2026-08-09, v15):** 0 success; 1 entity reconciliation/server-side failure after valid local input; 2 local parsing/schema/validation/configuration, authentication/authorization/visibility, compatibility/connectivity, or fatal failure.
   * **Safe output boundary (product decision, 2026-08-09, v16):** all failures use stderr and leave stdout empty in text and JSON modes. Diagnostics are allowlist-constructed and never reproduce bodies, server error text, payloads, credentials, security headers/cookies, secret fields, or secret-like values. Successful `login` token stdout is the sole intentional exception.
   * **Datasource and Workflow authoring closure (product decisions, 2026-08-09, v17–v23):** Workflow uses the exact natural-reference forms established in FR-035 and retains inline assistants. Datasource is one of the four entities; its server-supported kinds use their existing per-kind CodeMie formats without client-invented aliases or a privileged subtype. Optional authorable fields follow DR-012. Provisioning integrations or granting access to them is uniformly out of scope.
@@ -129,6 +147,7 @@
   * **Explicit Keycloak endpoint (product decision, 2026-08-09, v24):** Keycloak `login` requires a token endpoint supplied through `--auth-url`, `CODEMIE_AUTH_URL`, or `.codemie/config.yaml` `auth_url`. The CLI never derives this URL from the CodeMie API URL or a domain/path convention. The endpoint is non-secret; client IDs, client secrets, bearer tokens, email addresses, and passwords remain flag/environment inputs only and are prohibited from repository configuration.
   * **Pinned-source compatibility (user decision, 2026-08-11, v28):** the CLI is built against the currently pinned reference-only backend source at tag `2.42.0`, commit `2a481c290c99bf30ef80aadafa03d876a7f5f732`. That exact source baseline MUST be treated as compatible even though its `/v1/info` response reports semantic `APP_VERSION=0.16.0` rather than the Git SHA. The semantic version MUST NOT independently gate `apply`; all operation-applicable, source-derived non-mutating contract evidence remains required before a modifying request.
   * **CI provider token masking (user-provided operational constraint and product decision, 2026-08-11, v29):** GitHub Actions has a stable provider-native runtime add-mask control suitable for a freshly captured token. Current GitLab supports preconfigured environment-scoped protected+masked variables but has no stable provider-native runtime add-mask command for a freshly generated `login` token. Therefore the phase-1 GitHub example uses fresh login plus immediate native masking, while the GitLab example uses a pre-supplied protected+masked `CODEMIE_TOKEN` in process memory and does not invoke `login`. This provider-specific split preserves the same no-output/no-persistence security outcome and has no insecure fallback.
+  * **Member creation and kind-specific reconciliation (user directive, 2026-08-12, v32; supersedes v30–v31):** project membership/access qualifies creation; administration may provide complete project visibility but is optional. Exact entity server-reported write ability gates update. Assistant uses exact project/slug lookup; Skill identity is creator-scoped; Workflow must not claim project-wide absence from an ordinary-member list; Datasource treats server 409 as authoritative project-wide collision evidence and never treats a partial list as absence.
 
   ---
 
@@ -177,7 +196,7 @@
   |---|---|---|---|
   | **Platform asset author** | Define/change assets declaratively | Edit YAML in Git; open PRs | Correct, reviewable declarations with required fields and intentional optional omissions |
   | **Reviewer / approver** | Approve changes before rollout | Approve PRs; access CI logs | Enforce standards, catch regressions |
-  | **CI runner (service account)** | Apply approved declarations | API token scoped to target environment | Non-interactive apply, produces logs |
+  | **CI runner (service account)** | Apply approved declarations | API token with membership in the target project and entity-specific rights | Non-interactive apply; proves membership for create and exact-entity `write` ability for update |
   | **Platform administrator** | Ensure environments stay consistent | Full control; manages tokens; can override | Governance, secret rotation, access control |
   | **Local developer** | Iterate on YAML before opening a PR | Run tool locally against a dev environment | Fast feedback via lint + optional apply |
   | **Auditor** | Verify who changed what outside the CLI | Read access to Git history, CI logs, and platform audit records | Compliance; does not rely on CLI provenance output |
@@ -257,6 +276,8 @@
   | **Workflow identity record** | The Workflow-only reserved `meta_config` member that persists the authored `(project, slug)` on the server. It is identity metadata, not a generic management or ownership marker. |
   | **Workflow adoption** | An explicit, one-invocation operation that selects an unmarked legacy Workflow by a supplied current server UUID, persists its Workflow identity record, and reconciles it. The UUID is not written to YAML, local state, or outcomes. |
   | **Ambiguous identity** | More than one exact server match for an authored natural key. The tool fails and selects none. |
+  | **Creator-scoped identity** | A Workflow or Skill identity whose server reconciliation includes the authenticated principal's exact creator ID. Other creators' visible or hidden same-name rows are distinct identities. |
+  | **Partial visibility** | The pinned ordinary-member list behavior for Workflow and Datasource: some other principals' unshared/private rows are omitted. A partial-list miss is never called project-wide absence. |
   | **Envelope** | The top-level YAML structure: `apiVersion`, `kind`, `metadata` (identity), `spec` (configuration). |
   | **Safe diagnostic** | A tool-authored failure description built only from the FR-016 allowlist. It is not copied from a request/response body, server error string, declaration value, credential source, or exception dump. |
   | **Sensitive material** | Tokens, passwords, client secrets, credentials, authorization/proxy-authorization headers, cookies/set-cookie values, values under secret-classified fields, and complete request/response bodies or payloads. Diagnostics omit all non-allowlisted values rather than attempting to discover every arbitrary secret in free-form content. |
@@ -287,6 +308,12 @@
   | Skill | The server uniqueness key includes creator: `(project, created_by.id, name)`. It does **not** enforce the authored `(project, name)` identity. The client must exhaustively resolve and reject multiple exact matches. |
   | Datasource (`IndexInfo`) | `(project_name, repo_name)` |
   | Workflow | Persisted Workflows have no native slug lookup or uniqueness constraint. The tool stores `(project, slug)` in the reserved Workflow `meta_config` identity record and resolves it client-side. |
+
+  ### Personal-project ownership and visibility
+  * The pinned personal-project service creates or repairs a personal project with `name=<user email>`, `project_type="personal"`, `created_by=<user_id>`, and a user-project member mapping whose `is_project_admin` is deliberately `false`.
+  * `GET /v1/user` exposes the authenticated `user_id`, global role flags, and project memberships. The personal owner therefore appears as an exact project member but not as a project administrator.
+  * Exact `GET /v1/projects/{projectName}` is visibility-filtered. For a non-global administrator, the pinned repository returns a personal project only when its `created_by` equals the authenticated user ID. The detail response includes exact project `name`, `project_type`, `created_by`, and member records.
+  * v32 supersedes the v30–v31 owner/admin qualification: exact membership is the create boundary; exact entity ability is the update boundary; identity safety is kind-specific.
 
   ### Cross-entity references (as observed today)
   Existing workflow templates embed server-generated UUIDs for datasource references (e.g. `datasource_ids: [72817832-970e-4dde-aad4-c81d73c82b54]`). This is fragile across environments. The tool replaces this with natural-key references — see FR-004, DR-003.
@@ -397,9 +424,9 @@
   ### SC-013 — Reconcile a Workflow by persisted slug identity
   * **Actor:** CI runner
   * **Trigger:** A Workflow declaration is applied and the server contains exactly one valid Workflow identity record for its exact `(project, slug)`.
-  * **Preconditions:** The CI principal can prove complete project visibility and write permission.
-  * **Main flow:** The tool exhaustively examines every relevant Workflow result page, selects only the exact identity record, and sends the declaration's update projection.
-  * **Failure flows:** An invalid identity record, duplicate exact identity record, or entity-resolution instability in otherwise compatible server responses is an entity-reconciliation failure (exit 1). Incomplete visibility or missing write permission is an authorization/precondition failure (exit 2). A connectivity or response-contract compatibility failure while enumerating is exit 2. No ordinary reconciliation write occurs.
+  * **Preconditions:** The principal has exact effective-project membership.
+  * **Main flow:** The tool exhaustively examines the current principal's own Workflow results and selects only one valid exact `(project, authenticated-principal, slug)` identity record. Before update, the selected exact entity must advertise `write` in its server-returned `user_abilities`.
+  * **Failure flows:** An invalid or duplicate exact creator-scoped identity record, or unstable result set, is an exit-1 reconciliation failure. Missing project membership or missing exact-entity `write` ability is exit 2. Another principal's hidden unshared Workflow is neither absence evidence nor an update candidate.
   * **Expected outcome:** The intended Workflow is reconciled; its server UUID remains absent from authored YAML and normal outcome identity.
 
   ### SC-014 — Explicitly adopt an unmarked legacy Workflow
@@ -413,15 +440,22 @@
   ### SC-015 — Skill natural-key resolution
   * **Actor:** CI runner
   * **Trigger:** A Skill declaration is applied.
-  * **Preconditions:** The CI principal can prove complete project visibility and write permission for an existing match.
-  * **Main flow:** The tool exhausts every compatible Skill list page and exact-filters decoded `(project, name)`. Zero exact matches creates; one updates on every invocation; more than one fails as ambiguous and selects none.
-  * **Failure flows:** Multiple matches or entity-resolution instability in otherwise compatible server responses is an entity-reconciliation failure (exit 1). Incomplete visibility or missing write permission is an authorization/precondition failure (exit 2). Connectivity or response-contract compatibility failure is exit 2.
+  * **Preconditions:** The principal has exact effective-project membership.
+  * **Main flow:** The tool exhausts every compatible Skill list page scoped to the current principal's own rows and exact-filters decoded `(project, created_by.id, name)`. Zero exact creator-scoped matches creates; one whose exact response advertises `write` updates on every invocation; more than one fails as ambiguous and selects none.
+  * **Failure flows:** Another creator's same-name Skill is outside this identity and does not block creation. Multiple current-principal matches or instability is exit 1. Missing membership or exact-entity `write` ability is exit 2.
   * **Expected outcome:** The authored natural key remains the only declared and reported identity; any returned server UUID is invocation-local.
 
   ### SC-016 — Skill create race becomes visible
   * **Actor:** CI runner and another creator
-  * **Trigger:** Both create the same authored `(project, name)` after independently observing no match.
-  * **Expected outcome:** The tool re-resolves after its create. If multiple exact matches are then visible, it reports an exit-1 ambiguous failure and states that its create may already have committed. It performs no automatic delete, rollback, or tie-break. Serialized CI and governed UI/other-client writes are the required prevention controls.
+  * **Trigger:** Two writers acting as the same principal create the same `(project, author-id, name)` after independently observing no match.
+  * **Expected outcome:** After an initial complete same-creator miss, the tool sends exactly one POST. If it returns 409, the tool performs exactly one bounded exhaustive read-only same-creator re-resolution beginning at page 0, sends no second POST and no PUT, and exits 1. One exact match is a stable same-creator collision; multiple are ambiguity. Another principal's same `(project, name)` is distinct and excluded. A later fresh invocation may resolve and write-gate the row normally.
+
+  ### SC-016A — Resolve a creator-scoped Skill reference without mutation
+  * **Actor:** CI runner applying an Assistant or Workflow that references a Skill.
+  * **Trigger:** A natural Skill reference supplies exact project and name without an author selector.
+  * **Main flow:** The tool exhausts all compatible Skill pages and considers only rows whose exact `created_by.id` equals the authenticated `user_id`. One exact project/name match supplies an invocation-local server ID to the containing request.
+  * **Failure flows:** Zero current-creator matches fails the reference; multiple current-creator matches fail as ambiguous. Same-name rows from other creators are distinct and ignored. Search ranking, recency, abilities, and list order never select.
+  * **Expected outcome:** Reference resolution performs no Skill create or update. Only the containing entity's later write may occur after all its own gates pass.
 
   ### SC-017 — Omit an optional authorable field
   * **Actor:** Platform asset author
@@ -457,6 +491,15 @@
   * **Failure flow:** If a required consumed response field or other operation-applicable contract behavior is missing or invalid, the tool exits code 2 with `E_API_INCOMPATIBLE`, leaves stdout empty, emits only an FR-016-safe diagnostic to stderr, and makes no modifying request.
   * **Expected outcome:** The exact pinned source is not rejected because `0.16.0` differs from the pinned Git SHA. The semantic value neither overrides nor substitutes for the required pre-write contract evidence.
 
+  ### SC-022 — Ordinary project member creates or updates safely
+  * **Actor:** CI runner or authenticated human principal.
+  * **Trigger:** The principal applies an entity in an exact project they can access without being its administrator.
+  * **Preconditions:** Local input, authentication, target compatibility, and exact effective-project membership have passed under one invocation-scoped client/origin/token/session binding.
+  * **Main flow:** Creation follows the kind-specific identity contract and may be attempted without administrator status. Update is reachable only when a visible exact entity has been resolved safely and its strict server response advertises `write` in `user_abilities`.
+  * **Kind outcomes:** Assistant resolves directly by exact project/slug. Skill and Workflow resolve only the current principal's creator-scoped identity; hidden other-creator rows are distinct and never selected. Datasource may update one visible exact writable row; when no visible exact row exists it may attempt create, and server HTTP 409 is authoritative collision evidence rather than an invitation to discover or update the hidden row.
+  * **Failure flows:** Missing membership, malformed consumed evidence, missing `write` ability, ambiguity, or incompatible responses produce the existing safe exit category before unauthorized write. A Datasource 409 is exit 1 with safe diagnostics and no update retry. Raw bodies and server text are never emitted.
+  * **Expected outcome:** Ordinary members can create, and can update only entities the server explicitly reports writable, without requiring personal-project ownership or administrator visibility.
+
   ---
 
   ## 14. Functional requirements
@@ -490,15 +533,15 @@
   | **FR-025** | For `kind: Skill`, the `spec.content` markdown field MAY be expressed as a sidecar file reference using `spec.contentFrom: <relative path to .md file>` instead of inlining the content. `spec.content` and `spec.contentFrom` are mutually exclusive; both absent or both present is a local validation failure (exit 2). At lint time, the tool MUST verify the sidecar file exists relative to the YAML file; missing, unreadable, unsafe, invalid, or out-of-bounds sidecar content MUST use exit code 2. At apply time, the tool MUST inline the sidecar file content before constructing the API payload. | Long skill markdown is unreadable and un-diffable when inlined in YAML. Sidecar pattern preserves diff quality without changing the API contract. Q23. | SC-001, SC-003 |
   | **FR-026** | All commands that produce per-entity output MUST accept `--output text|json`. On success, text mode MUST emit one human-readable outcome line to stdout; JSON mode MUST emit one single-line JSON success object containing `action`, `kind`, `project`, and the natural-key field. Success output MUST NOT contain Git commit SHA, target environment origin, Git author, CI-run identity, or replacement provenance fields. On failure, stdout MUST be empty in both modes. Text mode MUST emit one or more safe human-readable diagnostics to stderr; JSON mode MUST emit a single-line safe diagnostic JSON object to stderr containing only FR-016-allowlisted fields, with `errorCode`, `category`, and `exitCode`. A failure diagnostic MUST NOT contain an outcome action, server message/body, payload, sensitive value, or external provenance. | Preserves machine-readable CI handling while keeping success identity, failures, and externally owned provenance separate. | SC-001–SC-006, SC-008, SC-009, SC-013–SC-016 |
   | **FR-027** | The tool MUST NOT enforce any file naming convention or directory structure. The entity identity is determined solely by the `kind`, `metadata` fields inside the YAML file, not by the filename or directory path. A recommended (non-enforced) convention is to organize files by kind (`assistants/`, `workflows/`, `skills/`, `datasources/`) with filenames matching the natural key. | Free-form layout accommodates monorepos, existing project structures, and refactoring. Q19, Q20. | FR-015 |
-  | **FR-028** | For Workflow only, `apply` MUST persist the exact authored identity in the reserved top-level `meta_config` member `codemie.epam.com/gitops/workflow-identity` with value `{version: 1, project: <effective-project>, slug: <metadata.slug>}`. | Gives persisted Workflows a portable slug identity without changing the server or authoring a UUID. | SC-013, SC-014 |
-  | **FR-029** | Ordinary Workflow reconciliation MUST exhaust all relevant visible result pages and select a target only by exact row project plus the valid reserved Workflow identity record. Zero exact records means missing, one means update, and more than one means ambiguous failure (exit 1). Any invalid reserved identity record or entity-resolution instability in otherwise compatible server responses that could affect the effective project MUST fail with exit 1 before a Workflow write. Incomplete visibility, missing write permission, connectivity failure, or response-contract incompatibility MUST fail with exit 2. Display name, creator, recency, and list order MUST NOT select a target. | Prevents accidental overwrite when the server has no native slug lookup or marker uniqueness constraint. | SC-013 |
-  | **FR-030** | An unmarked legacy Workflow MAY be adopted only when the operator explicitly supplies its current server UUID with `--adopt-workflow-id`. Invalid flag syntax is a local validation failure (exit 2). Adoption MUST validate that no matching identity record already exists, the candidate is in the exact project, writable, unmarked, and able to preserve its non-reserved metadata; it MUST then persist the identity record and reconcile desired state in the same operation. A wrong-project, already-marked, unmergeable, or adoption-required result is exit 1; insufficient visibility or write permission is exit 2. The supplied UUID MUST NOT be persisted in YAML, client state, or the normal outcome identity. Without the flag, one or more unmarked exact display-name matches MUST cause an adoption-required failure (exit 1) and MUST NOT be selected. | Enables safe in-place reconciliation of legacy Workflows while preserving history and avoiding name-based guesses. | SC-014 |
-  | **FR-031** | Skill target and Skill-reference resolution MUST exhaust every page returned by the compatible list API and client-filter exact decoded `(project, name)` values. Zero exact matches means create for a target, one means update for a target, and more than one means ambiguous failure (exit 1) with no target selected. Pagination/detail entity-resolution instability in otherwise compatible responses is exit 1; incomplete visibility, missing write permission, connectivity failure, or response-contract incompatibility is exit 2. A Skill reference requires exactly one match, never creates the referenced Skill, and reports a missing or ambiguous server reference as exit 1. | Implements the approved Skill natural key despite creator-scoped server uniqueness. | SC-015, SC-016 |
+  | **FR-028** | For Workflow only, `apply` MUST persist the creator-scoped authored identity in reserved top-level `meta_config` member `codemie.epam.com/gitops/workflow-identity` with closed value `{version: 2, project: <effective-project>, creator_user_id: <authenticated-user-id>, slug: <metadata.slug>}`. The creator ID is derived from the authenticated response, never authored or reported. | Aligns Workflow identity with the pinned visibility guarantee that every principal sees all of their own Workflows, without claiming visibility into another creator's hidden unshared rows. | SC-013, SC-014 |
+  | **FR-029** | Ordinary Workflow reconciliation MUST exhaust all visible pages, but only rows whose exact decoded `created_by.user_id` equals the authenticated user ID may enter the candidate set. Within that set it MUST match exact row project and one valid v2 record whose project, creator ID, and slug all agree. Zero same-creator exact records means creator-scoped missing and permits create; one requires exact server-returned `write` ability before update; more than one is exit-1 ambiguity. Other creators' rows, whether visible or hidden, cannot collide with this identity and MUST NOT be selected or used to claim project-wide absence. Invalid same-creator records or unstable same-creator enumeration fail exit 1. | Defines safe ordinary-member behavior from source-supported own-row completeness. | SC-013 |
+  | **FR-030** | An unmarked Workflow or legacy v1 `{version: 1, project, slug}` Workflow MAY be adopted/migrated only with `--adopt-workflow-id <current-server-uuid>`. Adoption MUST prove the exact entity's project, `created_by.user_id` equal to the authenticated user, exact `write` ability, absence of another same-creator v2 match, and preservation of non-reserved metadata; it then writes the v2 record and desired state. Ordinary reconciliation MUST NOT match or silently upgrade v1 records. A v1 or unmarked same-creator display-name hint may produce adoption-required guidance but never selects. A v1 record owned by another creator is never adoptable. | Makes the v31 identity transition explicit without turning ambiguous project-wide v1 markers into targets. | SC-014 |
+  | **FR-031** | Skill target and Skill-reference resolution MUST exhaust every page and client-filter exact decoded `(project, created_by.id, name)`, where `created_by.id` equals the authenticated user ID. Zero exact creator-scoped matches means create for a target, one requires exact `write` ability and means update, and more than one is exit-1 ambiguity. Another creator's same-name Skill is a distinct identity and is never selected. A Skill reference without an author selector resolves only the current principal's creator-scoped Skill; it never creates the reference. | Matches the pinned server's creator-scoped uniqueness and own-row visibility. | SC-015, SC-016 |
   | **FR-032** | Workflow and Skill server IDs returned during resolution MUST be used only as invocation-local request handles. They MUST NOT appear in declaration metadata, local persistent state, or normal outcome identity fields. | Keeps Git and reporting portable across environments. | SC-013–SC-016 |
-  | **FR-033** | Before resolving or writing a Workflow or Skill, the tool MUST verify that the current principal has complete visibility for the effective project; before updating or adopting an existing entity, it MUST verify write permission. If either guarantee cannot be demonstrated, the tool MUST fail with exit code 2 before the write. | Client-side exact resolution is unsafe when duplicates may be hidden; this is an authorization/precondition failure, not an entity reconciliation result. | SC-013–SC-015 |
+  | **FR-033** | Before any create, the tool MUST prove exact effective-project membership/access. Administrator status MUST NOT be required. Before update or Workflow adoption, it MUST strictly decode the exact resolved entity's `user_abilities` and require exact action `write`; no role, ownership, list visibility, or creator inference substitutes for this server-reported ability. Failure is exit 2 before write. Assistant retains its exact project/slug direct lookup; Workflow and Skill use their creator-scoped resolvers; Datasource follows FR-037. | Mirrors the pinned create and update authorization boundaries while enforcing zero unauthorized writes. | SC-013–SC-015, SC-022 |
   | **FR-034** | After creating or updating a Workflow, creating a Skill, or adopting a Workflow, the tool MUST re-resolve the authored natural key. It MUST report success only when exactly one match identifies the just-written entity. A missing, invalid, ambiguous, or otherwise compatible but unstable identity result MUST fail with exit code 1 and state that a write may already have committed. A connectivity or response-contract compatibility failure during verification MUST use exit code 2 and also state that commit status is uncertain. The tool MUST NOT automatically retry the create, choose a match, delete, or roll back an entity. | Makes residual no-server-constraint races observable without destructive recovery while preserving the exit taxonomy. | SC-014, SC-016 |
   | **FR-035** | Each Workflow `spec.execution_config.assistants[]` entry MUST have a unique workflow-local `id` and exactly one actor form: **persisted**, using `assistantRef: {project, slug}`; or **inline**, omitting `assistantRef` and supplying the schema-valid inline definition including `system_prompt`. Inline entries MAY use `skillRefs: [{project, name}]` and `datasourceRefs: [{project, repo_name}]`; those fields MUST be absent from persisted entries because the current server applies them only to inline/virtual assistants. Authored `assistant_id`, `skill_ids`, and `datasource_ids` are prohibited at these server-resource positions. `states[].assistant_id` remains authored and MUST resolve to a workflow-local `assistants[].id`. Apply MUST replace the three natural-reference properties with the server ID-bearing properties only in the invocation payload. | Makes the source-observed Workflow actor/resource model portable without confusing graph-local IDs with server asset IDs. | SC-019 |
-  | **FR-036** | Datasource apply MUST use the compatible selected kind's existing ordinary create or update format, including supported source/content/file fields. Optional authorable body fields follow FR-021/022; the tool MUST NOT omit such a field to invoke a server default. It MUST classify the result from the synchronous CRUD response under FR-011. It MUST NOT expose a dedicated Datasource lifecycle-control command or flag or call a dedicated lifecycle-control endpoint. A supplied lifecycle-control option MUST fail local validation with exit code 2 before any server call. | Keeps Datasource authoring aligned with the existing CodeMie CRUD contract and phase-1 command scope. | SC-001, SC-002, SC-017 |
+  | **FR-037** | Datasource reconciliation MUST exhaust the principal's visible rows and exact-filter `(project, repo_name)`. Exactly one visible match requires exact `write` ability before update; multiple visible matches fail exit 1. Zero visible matches MUST NOT be described as project-wide absence; after membership proof it permits one create attempt. HTTP 409 from create is authoritative project-wide collision evidence: the tool MUST fail exit 1, MUST NOT retry create, discover a hidden entity by guessing, or convert the request to update. After create/update, an exact readable result identifying the written entity and expected identity MUST be verified; inability to verify yields a safe uncertain-commit failure. | Preserves project-wide server collision semantics without relying on a partial ordinary-member list. | SC-022 |
 
   ---
 
@@ -527,12 +570,13 @@
   * **DR-004** — Secret values MUST NOT be embedded in YAML files. External-service credentials MUST be managed through the platform's integration configuration. The tool provides no secret interpolation syntax in phase 1. Lint warns on suspicious high-entropy values in credential fields without reproducing the value (FR-014).
   * **DR-005** — The tool MUST NOT persist a local state database or environment-specific ID mapping. Identity is derivable from authored natural keys plus server state; the Workflow identity record is stored on the Workflow server entity, not by the client.
   * **DR-006** — Command output MUST be CI-log-friendly (line-oriented, no interactive UI). Successful outcomes use stdout; warnings and failure diagnostics use stderr. A failed invocation produces no stdout record. Successful per-entity output contains only the FR-026 reconciliation fields and no Git commit SHA, target environment origin, Git author, CI-run identity, or substitute provenance. The tool MUST NOT create or retain its own output log. Retention and provenance correlation performed by Git, the invoking shell/CI system, or the platform are outside the tool's control.
-  * **DR-007** — The Workflow identity record MUST use reserved key `codemie.epam.com/gitops/workflow-identity`. Its value MUST be a closed object containing integer `version: 1` and exact, non-empty `project` and `slug` strings. User-authored Workflow `spec.meta_config` MAY contain non-reserved members but MUST NOT contain the reserved key. Existing non-reserved server members MUST be preserved unless an authored value explicitly replaces the same member. Phase 1 provides no syntax for deleting an unmentioned non-reserved member.
+  * **DR-007** — The Workflow identity record MUST use reserved key `codemie.epam.com/gitops/workflow-identity`. Its current value MUST be a closed object containing integer `version: 2` and exact non-empty `project`, `creator_user_id`, and `slug` strings. `creator_user_id` comes only from the authenticated principal response. Version 1 records are legacy adoption evidence, never ordinary matches. User-authored `spec.meta_config` MAY contain non-reserved members but MUST NOT contain the reserved key. Existing non-reserved members MUST be preserved.
   * **DR-008** — Workflow and Skill resolution evidence, including returned server ID, permissions, and pagination metadata, is invocation-local. It MUST NOT be written to the declaration, repository config, outcome identity, or a client state file.
   * **DR-009** — Credentials, tokens, authorization headers, cookies, request payloads, secret-classified fields, secret-like values, and complete request/response bodies MAY be held transiently only as needed to validate input, authenticate, or perform the intended server operation. The tool MUST NOT persist copies of them in files, caches, client state, outcome records, diagnostics, or tool-created logs. Declaration and sidecar values MUST NOT be copied into diagnostics. This does not prohibit writing declared desired state to the target server or reporting the non-sensitive success identity required by FR-026. The successful `login` token line required by FR-024 is the sole intentional sensitive-output exception. Diagnostic safety MUST be achieved by constructing output from the FR-016 allowlist, not by attempting to discover and redact every arbitrary secret after composing a message.
   * **DR-010** — A Datasource declaration MUST be a closed discriminated union selected by `spec.index_type`. For every selected kind, the declaration MUST use the exact existing CodeMie authoring field names, casing, nesting, enum values, requiredness, and validation constraints recorded in the ordinary per-kind inventory in §15. The tool MUST NOT invent a common integration-reference object, rename a kind's fields for consistency, or accept fields belonging to another kind. `metadata.repo_name` and the effective project remain the tool envelope identity and are projected to the exact identity inputs required by that kind's request.
   * **DR-011** — Datasource create and update MUST use the selected kind's pinned ordinary request formats. Apply MUST construct the exact operation-specific request projection from the declaration and send it on every valid invocation; it MUST NOT read current Datasource configuration to compute a difference or skip an update. Optional authorable fields materialize under DR-012 in both operations. A field exposed only by the create format is projected on create and is not invented in the update format. Integration identifiers exposed by a kind's ordinary authoring request are opaque configuration values, not managed-entity identity or cross-entity references; the tool sends them as authored and does not provision integrations, grant integration access, retrieve credentials, or invent a resolver. Secret-bearing request members remain prohibited from YAML by DR-004/009.
   * **DR-012** — For every field in each entity and per-kind Datasource schema, the pinned applicable create and update contracts MUST identify whether the field is: (a) authoring-required, (b) optional authorable and null-accepting, (c) authoring-only and transformed, (d) operation-inapplicable, (e) tool-owned or mixed-ownership, or (f) read-only/prohibited. A field may be classified as optional authorable only when every request operation in which its direct or transformed outbound property exists accepts JSON null. Omission or explicit YAML null for that class MUST serialize as an explicit JSON property with value null. If any operation containing the outbound property rejects null, the corresponding YAML field MUST instead be authoring-required, and omission or explicit null MUST fail locally before target existence changes the applicable operation. An authoring-only selector with no outbound property, such as the unused side of the `content`/`contentFrom` choice, is transformed away without a fabricated null; a natural-reference field that maps to an outbound ID property inherits that target property's requiredness/nullability. Create-only fields are absent from an update projection because they are operation-inapplicable there, not because their omission invokes a default. The Workflow `meta_config` container is mixed-ownership because FR-028 requires the reserved identity member and DR-007 preserves existing non-reserved members; its outbound container is assembled under those rules rather than treated as a wholly authorable optional field.
+  * **DR-013** — Membership, creator, identity, and ability evidence MUST be strictly decoded with duplicate-key rejection. Consumed identifiers and project/name/slug values MUST be non-empty exact strings; `user_abilities` MUST be an array of exact supported action values. Missing, null, empty, duplicate-key, or wrong-type consumed evidence is `E_API_INCOMPATIBLE`, exit 2. Additional unconsumed fields remain tolerated under IR-012. Values and bodies remain process-local and absent from safe diagnostics.
 
   ### Per-entity field lists
 
@@ -619,12 +663,13 @@
     * **Provider-safe CI delivery:** A CI example MAY acquire a fresh token with `login` only when its provider exposes a stable native runtime masking control that is invoked immediately after capture and before any later command or output; the token MUST remain only in the same protected shell/step memory. Otherwise the example MUST consume a pre-supplied environment-scoped protected+masked `CODEMIE_TOKEN` and MUST NOT invoke `login`. Accordingly, the phase-1 GitHub Actions example uses one fresh login followed immediately by GitHub native runtime masking, while the GitLab CI example consumes a pre-supplied environment-scoped protected+masked `CODEMIE_TOKEN`. Neither path may persist, re-emit, or transfer the token, and no simulated or unmasked fallback is permitted.
     * **Not supported:** browser-redirect / OAuth2 authorization-code flow; static API keys. `POST /v1/local-auth/login` is supported but **only for local dev** (see mode (b) above); MUST NOT be used in CI pipelines.
     * **Project integrations constraint (A-3):** Service-account credentials access only Project-level integrations. Personal integrations (user's own Jira/Git connections) are silently ignored by the server. This is an operational prerequisite, not a tool behavior. Teams MUST migrate personal integrations to project level before the tool's datasource apply will function correctly.
-  * **IR-007** — The tool MUST NOT retry create requests on 4xx responses. On 400/409/422, it MUST emit an FR-016-safe rejection diagnostic to stderr, leave stdout empty, and exit code 1.
+  * **IR-007** — The tool MUST NOT retry a create request on a 4xx response. A 400 or 422 is terminal exit 1 with no further identity read caused by that response. Datasource 409 follows FR-037. **Skill create 409 exception:** because the pinned create service emits 409 only for an existing exact `(name, authenticated user ID, project)`, the tool MUST perform exactly one bounded exhaustive, read-only FR-031 re-resolution from page 0 under the same client/origin/token/session binding. It MUST send no second POST, PUT, PATCH, DELETE, or other modifying request. One exact same-creator match produces exit-1 `E_SERVER_REJECTED` collision; multiple produce exit-1 `E_AMBIGUOUS_IDENTITY`; zero after a compatible stable scan produces exit-1 `E_RESOLUTION_UNSTABLE`. Compatibility/connectivity failure remains exit 2. Every outcome leaves stdout empty and emits only an FR-016-safe diagnostic that may state no tool write committed; it MUST NOT claim the concurrent row's state as applied. A later fresh invocation follows ordinary zero/one/multiple resolution and may update only after exact `write` evidence.
   * **IR-008** — Every Datasource write MUST use the selected kind's compatible ordinary create/update route and operation-specific request format. Optional authorable request properties MUST be present as explicit null under FR-021/DR-012 rather than omitted to select a server default.
-  * **IR-009** — The target CodeMie deployment MUST expose list/read responses sufficient for the tool to prove complete Workflow and Skill visibility, enumerate every result page, exact-filter the approved natural key, verify write permission, and detect post-write ambiguity. If the compatible API cannot supply that evidence, Workflow or Skill apply MUST fail before the affected write.
+  * **IR-009** — The target MUST expose complete current-principal Workflow/Skill rows, stable pagination, exact creator/identity fields, exact entity abilities, and applicable post-write reads. Datasource must expose visible rows and preserve authoritative project-wide create collision responses. No requirement claims complete ordinary-member visibility of other creators' Workflow or Datasource rows.
   * **IR-010** — The target Workflow API MUST preserve the reserved Workflow identity record and unrelated `meta_config` members on create/update and return them on every response used for exhaustive identity resolution. The target Skill API MUST return stable pagination, exact project/name values, permissions, and server IDs for exhaustive resolution. These are compatibility prerequisites, not permissions to modify the server implementation from this repository.
   * **IR-011** — The source-derived consumed contract pinned to CodeMie backend tag `2.42.0`, commit `2a481c290c99bf30ef80aadafa03d876a7f5f732`, MUST be the phase-1 target compatibility baseline. A deployment built from that exact source MUST NOT fail compatibility solely because `GET /v1/info.version` reports semantic `APP_VERSION=0.16.0` rather than the pinned Git SHA. The tool MUST treat `/v1/info.version` as observability only: it MUST NOT compare that value with the Git SHA or use that value alone to accept or reject `apply`.
   * **IR-012** — Before any POST, PUT, or other modifying request, `apply` MUST establish every compatibility fact for the requested operation that the pinned consumed contract requires and that can be checked through non-mutating target responses, including required consumed response fields, response shapes, and pagination behavior. A missing or invalid required fact MUST produce `E_API_INCOMPATIBLE`, exit code 2, empty stdout, an FR-016-safe stderr diagnostic, and no modifying request. Additional unconsumed response fields and `/v1/info.version` variation alone MUST NOT fail compatibility or expand the declaration/request contract.
+  * **IR-013** — One invocation-scoped API client bound to one authorized target origin, bearer token, authenticated principal, and session MUST obtain strict membership, creator, identity, exact-entity ability, reconciliation, write, and verification evidence. A change of binding invalidates prior evidence. No modifying request may occur before the applicable membership and identity/write gates pass. Datasource HTTP 409 is consumed only as the fixed collision category and status; its body is neither decoded for identity nor emitted.
 
   ---
 
@@ -653,6 +698,7 @@
   * **BR-004** — The reserved Workflow identity record establishes identity only. It does not establish ownership or bypass server authorization.
   * **BR-005** — Changing Workflow project/slug or Skill project/name declares a new natural key. The tool reconciles or creates the new key and leaves the previous entity because automatic rename, move, and delete are out of scope. Renaming or moving only the YAML file does not change identity.
   * **BR-006** — Known duplicate Workflow identity records or duplicate exact Skill natural keys require manual platform remediation outside this CLI. Phase 1 MUST NOT choose or delete one automatically.
+  * **BR-007** — Project membership qualifies creation; it does not qualify update. Update authority exists only when the exact resolved entity advertises `write`. Administration may enlarge visibility but is not required for creation and MUST NOT be inferred from membership.
 
   ---
 
@@ -662,9 +708,10 @@
   * **PA-002** — The tool MUST NOT attempt to read/write assets outside the declared input file.
   * **PA-003** — For CI, a service account with only the read/create/update permissions required for in-scope entity types is REQUIRED. Provisioning is a platform-admin responsibility.
   * **PA-004** — Git history, CI logs, and CodeMie platform audit records independently own provenance and audit correlation. The CLI MUST expose none of their provenance fields and MUST NOT emit Git commit SHA, target environment origin, Git author, CI-run identity, or a replacement provenance field. Establishing a cross-system audit trail is outside the product scope. This does not remove the bounded request/correlation ID permitted for safe failure diagnosis by FR-016 and VR-011.
-  * **PA-005** — The Workflow/Skill CI principal MUST be able to prove complete visibility for the effective project (project manager/admin or an equivalent role in the pinned target contract). A principal with only creator-scoped or partial visibility is unsupported for Workflow/Skill apply.
+  * **PA-005** — An ordinary exact project member is supported for creation. Assistant uses exact direct lookup; Workflow and Skill restrict identity to the authenticated creator; Datasource accepts partial visibility and delegates project-wide create collision authority to the server. Administrators MAY use their broader visibility but the tool MUST NOT require administrator status for member creation.
   * **PA-006** — Only authorized platform operations may create, change, restore, or remove the reserved Workflow identity record outside the tool. The adopting team MUST maintain an inventory and a manual remediation path for invalid or duplicate records.
   * **PA-007** — Provisioning Datasource integrations, assigning access to them, and retrieving their credentials are outside the tool's entity-management scope for every Datasource kind. Apply sends only the non-secret integration configuration exposed by the selected kind's ordinary authoring format; the server enforces integration existence, type, ownership/access, and use permission. A server rejection after locally valid input follows FR-011 and never reproduces the submitted value or server body.
+  * **PA-008** — Every update and Workflow adoption requires exact `write` in the selected entity's server-returned abilities under the same invocation binding. Zero unauthorized writes is mandatory. Assistant retains PA-003 least privilege and MUST NOT be routed through an administrator-only qualification path.
 
   ---
 
@@ -690,6 +737,7 @@
   * **VR-014** — Datasource declarations and CLI arguments MUST reject dedicated lifecycle-control commands, flags, and endpoint-operation fields. A supplied `--reindex-datasources` or equivalent unknown/forbidden option is a local CLI usage/validation failure (exit 2). Ordinary per-kind source/content/file and scheduling fields remain valid when they are members of that kind's existing create/update request.
   * **VR-015** — A Datasource declaration MUST satisfy the selected kind's exact DR-010/§15 field names, casing, nesting, required/optional rules, enum values, and constraints. Fields from another kind, client-invented aliases/wrappers, runtime/read-only fields, and secret-bearing request members MUST be rejected locally with exit code 2. A locally valid opaque integration identifier rejected by the server is an exit-1 server rejection; the diagnostic MUST NOT reproduce the identifier or server body.
   * **VR-016** — For each direct or transformed create/update request property, validation MUST use pinned operation nullability rather than infer optionality from the existence of a server default. If JSON null is accepted in every operation containing the property, omission and explicit YAML null are valid and project to JSON null. If null is rejected in any operation containing the property, the corresponding field is authoring-required in YAML; omission or explicit YAML null is exit code 2 before any server call. Authoring-only fields with no outbound property, operation-inapplicable fields, tool-owned/mixed-ownership structures, and read-only fields follow DR-012 and MUST NOT receive a fabricated null property.
+  * **VR-017** — Membership, creator, marker, and natural-key equality MUST use exact decoded strings without trimming, case folding, normalization, substring matching, display-name substitution, or role inference. Workflow/Skill candidates whose creator ID differs from the authenticated user ID MUST be excluded, not treated as ambiguity. `write` MUST be present as an exact supported ability value on the selected entity before update.
 
   ---
 
@@ -1159,7 +1207,7 @@
   And no unmarked exact display-name candidate requires adoption review
   When the Workflow declaration is applied
   Then the created Workflow contains meta_config member codemie.epam.com/gitops/workflow-identity
-  And that member equals {version: 1, project: "example", slug: "release-flow"}
+  And that member equals {version: 2, project: "example", creator_user_id: <authenticated-user-id>, slug: "release-flow"}
   And the declaration and outcome contain no Workflow server UUID
   ```
 
@@ -1213,28 +1261,105 @@
 
   ### AC-FR-031-01 — Skill exhaustive resolution handles zero, one, and multiple matches
   ```gherkin
+  Given the authenticated user_id is U1
   Given compatible Skill results span more than one server page
-  When apply exhausts all pages and exact-filters project and name
-  Then zero exact matches causes one create attempt
-  And one exact match causes one update attempt on every invocation
-  And multiple exact matches cause an exit-1 ambiguous failure with no match selected
+  And results may contain the same exact project and name for creators other than U1
+  When target apply exhausts all pages and exact-filters project, created_by.id equal to U1, and name
+  Then rows whose created_by.id differs from U1 are distinct identities and are ignored
+  And zero exact U1 matches causes one create attempt
+  And one exact U1 match whose exact response advertises write causes one update attempt on every invocation
+  And one exact U1 match without write causes exit code 2 before any modifying request
+  And multiple exact U1 matches cause an exit-1 ambiguous failure with no match selected and no modifying request
   ```
 
-  ### AC-FR-031-02 — Skill search hints do not define identity
+  ### AC-FR-031-02 — Skill reference resolution is creator-scoped and read-only
   ```gherkin
-  Given the server search response contains case-insensitive, substring, or differently scoped Skill candidates
-  When Skill identity is resolved
-  Then only exact decoded project and name equality counts as a match
-  And creator, recency, write ability, relevance, and list order are not tiebreakers
+  Given the authenticated user_id is U1
+  And a declaration contains a Skill reference by project and name without an author selector
+  And compatible results may contain case-insensitive, substring, or same-name Skills created by another user
+  When the reference resolver exhausts all pages
+  Then only exact decoded project, created_by.id equal to U1, and name count as a match
+  And other creators' rows are distinct identities and are ignored
+  And zero exact U1 matches fails the reference with exit code 1
+  And one exact U1 match resolves its server ID for the containing request without updating the Skill
+  And multiple exact U1 matches fail as ambiguous with exit code 1
+  And reference resolution never creates or updates a Skill
+  And recency, write ability, relevance, and list order are not tiebreakers
   ```
 
-  ### AC-FR-033-01 — Incomplete visibility prevents Workflow or Skill writes
+  ### AC-IR-007-01 — Skill create 409 performs one read-only classification scan
   ```gherkin
-  Given the current principal cannot prove complete visibility for the effective project
-  When Workflow or Skill apply is invoked
-  Then the tool exits code 2 before create, update, or adoption
+  Given the authenticated user_id is U1
+  And initial exhaustive Skill resolution requests pages 0 through N and finds zero exact (project, U1, name) matches
+  When the tool sends one Skill POST and the server returns HTTP 409
+  Then the tool sends no second POST and no PUT, PATCH, or DELETE
+  And it performs exactly one additional exhaustive Skill scan beginning at page 0 under the same invocation binding
+  And one exact (project, U1, name) match yields exit code 1 with a safe server-collision category
+  And multiple exact (project, U1, name) matches yield exit code 1 with a safe ambiguity category
+  And zero exact matches after a compatible stable scan yields exit code 1 with a safe resolution-instability category
+  And a compatibility or connectivity failure during that scan yields exit code 2
+  And every outcome leaves stdout empty and does not claim the concurrent row contains the declaration's desired state
+  And rows with another created_by.id are ignored in every count
+  ```
+
+  ### AC-IR-007-02 — Other create rejections do not acquire the Skill exception
+  ```gherkin
+  Given a locally valid create request receives HTTP 400 or 422
+  When the rejection is handled
+  Then no retry or rejection-triggered identity scan occurs
+  And the invocation exits code 1 with safe diagnostics
+
+  Given a Datasource create receives HTTP 409
+  Then FR-037's authoritative collision behavior applies
+  And no Skill re-resolution behavior is used
+  ```
+
+  ### AC-FR-033-01 — Membership permits create and exact ability gates update
+  ```gherkin
+  Given an authenticated ordinary member of the exact effective project
+  And the kind-specific resolver safely yields no creator-scoped or exact visible target
+  When apply is invoked
+  Then administrator status is not required for the permitted create path
+
+  Given a safely resolved exact entity whose strict user_abilities omits write
+  When apply would otherwise update or adopt it
+  Then the tool exits code 2 before any modifying request
   And stdout is empty
-  And a safe stderr diagnostic explains that identity visibility is unproven
+  And the safe diagnostic reveals no response body or entity value
+  ```
+
+  ### AC-FR-037-01 — Datasource partial-list miss delegates collision authority to create
+  ```gherkin
+  Given an ordinary project member
+  And exhaustive visible Datasource results contain no exact project and repo_name match
+  When Datasource apply runs
+  Then the tool does not report or rely on project-wide absence
+  And it makes one ordinary create attempt
+  And an HTTP 409 response produces exit code 1 with a fixed safe collision diagnostic
+  And it does not retry create or convert the request into an update
+  ```
+
+  ### AC-FR-037-02 — Visible Datasource update requires write ability
+  ```gherkin
+  Given exhaustive visible Datasource results contain exactly one exact match
+  When its strict server-returned user_abilities contains write
+  Then apply sends one update and verifies the exact written identity
+
+  Given that exact match omits write or returns malformed abilities
+  Then apply sends no modifying request and exits code 2
+  ```
+
+  ### AC-FR-037-03 — Workflow creator scope handles hidden rows and legacy markers
+  ```gherkin
+  Given an ordinary member sees all of their own Workflows and only some other creators' Workflows
+  When ordinary reconciliation runs
+  Then only exact same-creator v2 markers can match
+  And hidden or visible other-creator rows do not collide and are never selected
+  And zero same-creator v2 matches permits creator-scoped create without claiming project-wide absence
+
+  Given a same-creator Workflow contains a v1 marker or no marker
+  Then ordinary reconciliation does not select or upgrade it
+  And only explicit UUID adoption may replace it with v2 after exact project, creator, write-ability, and no-existing-v2 checks
   ```
 
   ### AC-FR-034-01 — Post-write ambiguity is visible and non-destructive
@@ -1311,6 +1436,10 @@
   * **Invalid Workflow identity record** → Workflow apply fails with exit code 1 before ordinary reconciliation writes; the tool does not repair, ignore, or reinterpret the record automatically.
   * **Duplicate Workflow identity records or Skill natural keys** → apply fails with exit code 1, reports ambiguity, and selects none. Cleanup is a manual authorized platform operation outside this CLI.
   * **Workflow/Skill principal has partial visibility** → apply fails with exit code 2 before write because absence or uniqueness cannot be proven.
+  * **Ordinary member creates** → exact project membership is sufficient; administrator status is not required.
+  * **Visible exact entity lacks `write` ability** → exit 2 and zero modifying requests.
+  * **Datasource visible list has no match but create returns 409** → exit 1 authoritative collision; no guessed lookup or update fallback.
+  * **Personal-owner response has missing, null, empty, or wrong-type consumed fields** → `E_API_INCOMPATIBLE`, exit 2, before entity resolution or modification; additional unconsumed fields alone remain compatible.
   * **Malformed `--adopt-workflow-id`** → local CLI validation fails with exit code 2 before network access.
   * **Workflow adoption selector names wrong-project, marked, or unmergeable entity** → adoption fails with exit code 1 and no write. An unauthorized candidate fails with exit code 2. Display name is not a fallback selector.
   * **Workflow slug/project or Skill name/project changes** → declares a new entity identity; the prior entity remains because delete and automatic rename are out of scope.
@@ -1348,7 +1477,7 @@
   | API tokens / service-account model | CodeMie platform team | Required for non-interactive CI use. | Blocking for apply |
   | Exact Keycloak token endpoint | CodeMie platform team supplies it; adopting team configures it | Required by Keycloak `login`; the CLI does not derive or discover it. | Blocking for Keycloak login; not for lint or apply with a pre-issued token |
   | Test/dev CodeMie environment for CI | CodeMie platform team | Needed for apply on PRs. | Blocking for CI workflow; not for lint |
-  | Pinned Workflow/Skill identity API evidence | CodeMie platform team | Must prove complete manager/admin visibility, exhaustive stable pagination, exact identity fields, permissions, Workflow `meta_config` preservation, and post-write reads on the target deployment. | **Blocking for Workflow/Skill implementation and verification** |
+  | Pinned membership, creator, ability, pagination, and collision evidence | CodeMie platform team | Must prove exact membership, own-row completeness for Workflow/Skill, strict `user_abilities`, Datasource 409 behavior, metadata preservation, and post-write reads on the target deployment. | **Blocking for implementation and verification** |
   | Serialized CI and governed UI/other-client writes | Adopting team and platform administrator | Prevents duplicate Workflow identity records and creator-scoped Skill duplicates that the server cannot atomically prevent. | **Blocking operational prerequisite for Workflow/Skill production use** |
   | Manual identity-remediation procedure | Platform administrator | Invalid/duplicate Workflow records and duplicate Skill keys cannot be repaired by this non-destructive CLI. | Blocking for production support readiness |
   | Pinned Datasource CRUD contracts | CodeMie platform team | Must fix every authorable Datasource kind's ordinary create/update/read field shape, exact discriminator, requiredness, nullability, validation constraints, mutability, and integration-identifier form. Provider-defined kinds require a bundleable offline schema; a server-visible kind without ordinary CRUD cannot be invented by the tool. | **Blocking for Datasource implementation and verification** |
@@ -1393,13 +1522,14 @@
   * **C-4 — Datasource-UUID fragility in existing templates (RESOLVED in tool design):** `codemie-gitops` YAML rejects UUID references in favour of `{project, repo_name}` natural-key refs. Migration path: a converter script — see §29.
   * **C-5 — Omitted-field semantics: RESOLVED in v23 (VER-012), superseding the earlier mandatory-completeness rule.** Required and null-rejecting fields remain authored. A wholly authorable optional request field may be omitted and is then sent as explicit null in each applicable create/update payload; explicit YAML null behaves identically where accepted. Operation-inapplicable and mixed-ownership fields follow DR-012 rather than receiving a fabricated null.
   * **C-6 — Generic management marker vs. Workflow identity metadata: RESOLVED in v14.** Generic management/ownership markers remain excluded. Workflow alone persists the reserved `meta_config` identity record defined by FR-028 so `(project, slug)` can be resolved without a server change. The record is not an ownership claim. `custom_metadata` on Assistant remains ordinary user-authored data and is not used for bookkeeping.
-  * **C-7 — Skill server uniqueness: RESOLVED at product level in v14.** The server does not enforce `(project, name)` globally because its constraint includes creator. The product accepts exhaustive client resolution, ambiguity refusal, privileged complete visibility, serialized writers, governed UI/API creation, post-create verification, and a residual different-principal race. This resolution does not claim server-enforced uniqueness.
+  * **C-7 — Skill server uniqueness: SUPERSEDED in v32.** Safe identity is creator-scoped `(project, authenticated creator ID, name)`, matching the server check. Another creator's same-name row is distinct, not a duplicate race.
   * **C-8 — Local validation exit code: RESOLVED in v15.** All failures determined from CLI arguments, repository configuration, declaration/sidecar files, or bundled schemas use exit code 2 and occur before network access. Exit code 1 begins only after valid local input reaches entity reconciliation or server-side processing. Authorization/visibility/write-permission, connectivity, compatibility, and fatal failures remain exit 2.
   * **C-9 — Failure output and sensitive data: RESOLVED in v16.** Failures emit only safe synthesized diagnostics to stderr and leave stdout empty in text and JSON modes. Server error text and bodies, request payloads, credentials, security headers/cookies, declaration/sidecar values, and other non-allowlisted data never enter failure diagnostics, and sensitive transport/authentication artifacts are not persistently copied by the tool. Diagnostic safety is allowlist-based and has no debug/verbose exception. The successful `login` token line is the sole intentional sensitive-output exception.
   * **C-10 — Datasource authoring surface: RESOLVED in v22/v23, superseding the v17–v19 interpretations.** The tool uses ordinary create/update formats, including supported source/content/file fields, and applies DR-012 to optional authorable properties. No product behavior is defined for server-internal processing.
   * **C-11 — Datasource integrations vs. managed-asset natural references: RESOLVED generically in v20.** Opaque integration identifiers exposed by an existing per-kind Datasource request are ordinary configuration values, not one of the four managed entities and not cross-entity references. The tool sends the exact non-secret per-kind value without inventing an alias/resolver. Integration provisioning, access grants, and credential acquisition remain uniformly out of scope.
   * **C-12 — Explicit versus derived Keycloak endpoint: RESOLVED in v24.** The explicit-only alternative is approved. Keycloak `login` uses `--auth-url`, then `CODEMIE_AUTH_URL`, then config `auth_url`; it never derives or probes an endpoint from the CodeMie API URL or a convention. Architecture language that retains a possible future derivation branch is superseded and requires refresh, not another product decision.
   * **C-13 — Semantic APP_VERSION versus pinned source identity: RESOLVED in v28.** The exact pinned backend source reports `APP_VERSION=0.16.0` while its Git identity is tag `2.42.0`, commit `2a481c290c99bf30ef80aadafa03d876a7f5f732`. `/v1/info.version` is observability only and MUST NOT be compared with the Git SHA or independently gate `apply`. Compatibility is established from the requested operation's required source-derived contract evidence; missing or invalid required evidence still fails before write under IR-012.
+  * **C-14 — Personal-owner/admin gate: SUPERSEDED in v32.** Exact membership qualifies creation for personal and shared projects. Exact server-reported entity ability independently gates update.
 
   ---
 
@@ -1443,6 +1573,8 @@
   | OQ-34 | Does apply compare current state and skip an equal write? | ✅ RESOLVED (v22; ARCH-B01) | No. Each valid invocation creates a missing entity or updates an existing entity, reports `created` or `updated`, and never reports `unchanged`. | SC-005, FR-005/006/012/029/031/036, DR-011, QR-002 | — |
   | OQ-35 | What happens when YAML omits an optional server-request field? | ✅ RESOLVED (v23; VER-012) | The applicable create/update payload includes the property as explicit JSON null. Explicit YAML null is equivalent where accepted. A field whose pinned applicable contract rejects null is authoring-required and omission/null fails locally with exit code 2. | SC-017, FR-021/022, DR-001/012, VR-003/016 | — |
   | OQ-36 | How is the Keycloak token endpoint determined? | ✅ RESOLVED (v24) | It is explicitly supplied as `--auth-url`, `CODEMIE_AUTH_URL`, or `.codemie/config.yaml` `auth_url`, in that precedence order. The CLI never derives it from a CodeMie API URL or convention. Missing explicit configuration fails locally with exit code 2 before network access. | SC-011, FR-017/024, IR-006 | — |
+  | OQ-37 | Is personal-project ownership or administration required for creation? | ✅ SUPERSEDED / RESOLVED (v32) | No. Exact effective-project membership/access qualifies creation for all four kinds; exact entity `write` ability separately gates update. | SC-022, FR-033, PA-005/008 | — |
+  | OQ-38 | How can an ordinary member safely identify a Workflow when other members' unshared rows are hidden? | ✅ RESOLVED (v32) | Use creator-scoped v2 identity `(project, authenticated creator ID, slug)`. Pinned source shows the principal always sees own Workflows and create records that principal as creator. Other creators' rows are distinct. v1/unmarked rows require explicit same-creator adoption; same-creator races remain visible through post-write verification. | SC-013/014/022, FR-028–030/033/034, DR-007 | — |
 
   ---
 
@@ -1461,11 +1593,12 @@
   | Product decision v24 (explicit Keycloak endpoint) | SC-011 | FR-017/024; IR-006 | AC-FR-017-01/02, AC-FR-024-01/03/07 |
   | Product decision v26 (Keycloak ROPC Mode (c)) | SC-020 | FR-017/024; IR-006; QR-007 | AC-FR-024-08 |
   | User-provided provider constraint and product decision v29 | SC-011 | IR-006; QR-007/012 | AC-FR-024-01/03, AC-QR-012-01 |
+  | Pinned CodeMie 2.42.0 personal-project/user/project-detail source; user decision and read-only enterprise validation 2026-08-12 | SC-022 | FR-033/037; DR-013; IR-009/013; BR-007; PA-005/008; VR-017 | AC-FR-033-01, AC-FR-037-01/02/03 |
   | Product decision v23 (VER-012; supersedes Q4 completeness rule) | SC-003, SC-017 | FR-021/022; DR-001/012; VR-003/016 | AC-FR-021-01/02, AC-FR-022-01/04 |
   | Reference source plus product decisions v20/v22 (OQ-16/OQ-32) | SC-001, SC-002, SC-005 | FR-036; DR-010/011; IR-008; VR-014/015 | AC-IR-008-01, AC-DR-010-01/02, AC-DR-011-01 |
   | Product decision v14; ADR-008 feasibility evidence | SC-013 | FR-028, FR-029, FR-032, FR-033; DR-007/008 | AC-FR-028-01/02, AC-FR-029-01/02, AC-FR-033-01 |
   | Product decision v14; ADR-008 feasibility evidence | SC-014 | FR-030, FR-034; BR-004/006 | AC-FR-030-01/02, AC-FR-034-01 |
-  | Product decision v14; ADR-007 feasibility evidence | SC-015 | FR-031–033; DR-008 | AC-FR-031-01/02, AC-FR-033-01 |
+  | Product decisions v32.1/v32.2; Q010-002/Q010-POST-001; pinned creator-scoped Skill source evidence | SC-015, SC-016, SC-016A | FR-031–034; DR-008/013; IR-007; VR-017 | AC-FR-031-01/02, AC-IR-007-01/02, AC-FR-033-01, AC-FR-034-01 |
   | Product decision v14; accepted residual race | SC-010, SC-016 | FR-034, QR-010/011, BR-006 | AC-FR-034-01, AC-QR-010-01 |
   | Product decision v15 (OQ-28) | SC-003/004/006/008/009/013–016 | FR-003/004/011/022/023/025/029–034; VR-005/010 | AC-FR-003-01, AC-FR-004-01, AC-FR-009-01, AC-FR-011-01–04, AC-FR-022-01/03, AC-FR-025-01/03, AC-FR-029-02, AC-FR-030-02, AC-FR-031-01, AC-FR-033-01, AC-FR-034-01 |
   | Product decision v16 (OQ-29) | SC-002/006/008/009/011/012 | FR-011/014/016/024/026; DR-004/006/009; IR-007; QR-004/007/011; VR-011/012 | AC-FR-003-01, AC-FR-004-01, AC-FR-009-01, AC-FR-011-01–04, AC-FR-014-01, AC-QR-007-01, AC-FR-024-01/02/04/05/06, AC-FR-026-02, AC-FR-029-02, AC-FR-033-01, AC-FR-034-01 |
@@ -1488,10 +1621,10 @@
   * Phase 1: `codemie` assistant type only. CI docs: GitHub Actions + GitLab CI.
   * Kubernetes-style envelope: `apiVersion` / `kind` / `metadata` (identity) / `spec` (config).
   * Config file at **`.codemie/config.yaml`** (not a flat dotfile): non-secret `url`, `auth_url`, and optional `project` default; no credentials. `metadata.project` may be omitted from YAML when config provides the default. Keycloak endpoint precedence is `--auth-url` > `CODEMIE_AUTH_URL` > config `auth_url`; it is never derived from `url`.
-  * **Workflow identity:** authored/reported identity is exact `(project, slug)`. Workflow alone persists that identity in reserved `meta_config` member `codemie.epam.com/gitops/workflow-identity` with `{version: 1, project, slug}`. Ordinary reconciliation exhausts all relevant pages and selects only an exact valid record; invalid or duplicate records fail. Display name never selects.
+  * **Workflow identity:** authored/reported identity is `(project, slug)`; server reconciliation is creator-scoped by reserved v2 marker `{version: 2, project, creator_user_id, slug}`. Only exact current-principal rows match. Other creators' hidden or visible rows are distinct; v1/unmarked rows require explicit adoption.
   * **Workflow legacy adoption:** an unmarked Workflow is adopted only through `--adopt-workflow-id <current-server-uuid>`, with exact project, visibility, write, unmarked, metadata-preservation, and zero-existing-marker checks. Adoption persists the record and reconciles in one operation. The UUID remains absent from YAML, state, and outcomes.
-  * **Skill identity:** authored/reported identity is exact `(project, name)`. The tool exhausts all compatible list pages and exact-filters client-side: zero creates, one updates, multiple fails ambiguous. Server uniqueness remains creator-scoped; returned UUIDs are internal only.
-  * **Operational identity controls:** Workflow/Skill apply requires provably complete manager/admin visibility, write permission for existing targets, post-write re-resolution, serialized CI per environment, governed UI/other-client writes, and manual duplicate remediation. Residual races may be detected after a write committed; the CLI never chooses, deletes, or rolls back automatically.
+  * **Skill identity:** authored/reported identity is exact `(project, name)`; reconciliation additionally requires `created_by.id` equal to the authenticated `user_id`. For a target, zero current-creator matches creates, one writable match updates, and multiple fail ambiguous. For a reference, zero fails, one resolves read-only, multiple fail ambiguous, and no Skill mutation occurs. Other creators' same-name rows are distinct and ignored.
+  * **Operational identity controls:** membership qualifies create; exact entity `write` ability qualifies update. Workflow/Skill resolve within the authenticated creator namespace and retain post-write verification and same-principal writer serialization. Datasource never treats a partial-list miss as absence and treats create 409 as authoritative collision.
   * **Workflow execution references:** `assistants[].id` and `states[].assistant_id` are workflow-local. Persisted entries use `assistantRef`; inline `system_prompt` entries may use `skillRefs` and `datasourceRefs`. Server ID-bearing fields exist only in the invocation payload.
   * **No generic management/ownership marker or generic adoption command.** The Workflow identity record/adoption path is the only phase-1 exception. Assistant `custom_metadata` remains user data, not tool bookkeeping.
   * Exit codes: 0 = success; 1 = entity reconciliation or server-side failure after valid local input; 2 = local parsing/schema/validation/configuration, authentication/authorization/visibility, compatibility/connectivity, or fatal failure.
@@ -1517,7 +1650,8 @@
   * MUST NOT collide with `codemie-code` naming.
   * MUST NOT discover, copy, or invoke server defaults for omitted optional authorable fields; those fields become explicit JSON null under FR-021/DR-012. Fields whose pinned applicable request rejects null remain authoring-required.
   * MUST keep Workflow/Skill server IDs out of declarations, persistent client state, and normal outcomes.
-  * MUST fail safely on incomplete visibility, invalid/duplicate Workflow records, and ambiguous Skill identity.
+  * MUST fail safely on malformed/duplicate same-creator identity, missing exact `write` ability, and Datasource collision/verification uncertainty.
+  * MUST accept exact ordinary membership for creation and MUST NOT impose an owner/admin prerequisite.
   * MUST NOT compare `GET /v1/info.version` with the pinned Git SHA or use it alone to accept or reject `apply`; it is semantic observability only.
 
   **Decisions the architect must make:**
@@ -1526,6 +1660,7 @@
   * `apiVersion`/`metadata` envelope treatment — client-side strip before API call vs. server-aware (OQ-18).
   * Strategy for keeping bundled Rust schema in sync with server Pydantic model changes.
   * The exact composition and scheduling of non-mutating, operation-specific contract probes that satisfy IR-012. `GET /v1/info.version` is not eligible as source/API identity or as an independent compatibility gate.
+  * How to bind authenticated identity, membership, creator-scoped enumeration, exact entity abilities, write, and verification to one invocation without broadening the product rules.
   * **Token reuse in CI:** The tool itself MUST NOT cache tokens across invocations (stateless binary). The examples must retain one token only in the protected process boundary: GitHub assigns a freshly acquired and immediately native-masked token once in its protected step; GitLab consumes the pre-supplied protected+masked `CODEMIE_TOKEN` already present in its protected job. The architect must preserve this provider-specific split.
   * Pin and contract-test requiredness, nullability, operation applicability, and the ordinary create/update/read request, response, discriminator, validation, integration-reference, and mutability shape for every entity and authorable Datasource kind. Do not infer a format for a provider-defined or import/read-only kind.
 
@@ -1534,7 +1669,8 @@
   * Adding a generic management-marker or ownership-tracking system. The required Workflow identity record is not optional and MUST NOT be generalized or reinterpreted as ownership.
   * Replacing Workflow identity with a client-authored/deterministic UUID, selecting a Workflow by display name, or persisting the adoption UUID.
   * Assuming the server enforces Skill `(project, name)` uniqueness, or selecting a Skill by owner/newest/first when multiple exact matches exist.
-  * Removing the Workflow/Skill complete-visibility, serialized-CI, governed-writer, post-write verification, or visible residual-race requirements without product sign-off.
+  * Reintroducing a personal-project-only, administrator, or complete-project-visibility prerequisite for member creation; weakening exact-entity `write` gating; treating a Datasource partial-list miss as project-wide absence; or removing post-write verification without product sign-off.
+  * Adding an admin prerequisite to Assistant or weakening its exact project/slug least-privilege path.
   * Adding desired/current comparison, skipped-write behavior, an `unchanged` outcome, or another no-op action. A safely resolved existing entity receives an update on every valid invocation.
   * Omitting an optional authorable property from an outbound payload, replacing omission with a concrete server default, or allowing a null-rejecting field to be omitted. Apply the DR-012 classification and omission-to-null rule identically to applicable create and update requests.
   * Reclassifying a local validation failure as exit 1 or an online identity ambiguity as exit 2. Authentication/authorization, visibility/write-permission, response-contract compatibility, connectivity, and fatal failures remain exit 2 under FR-011 and are distinct from identity ambiguity.
@@ -1562,7 +1698,7 @@
   Specification status: READY FOR ARCHITECTURE PLANNING
   ```
 
-  Product behavior is now bounded and testable: the four-entity model, Workflow/Skill identity, always-write apply semantics, omission-to-null payload semantics, source-derived target compatibility, explicit Keycloak endpoint configuration, provider-safe CI token delivery, adoption, ambiguity, visibility, serialization, governance, residual races, exit codes, safe non-provenance output, Workflow resource-reference shapes, inline assistants, per-kind ordinary Datasource CRUD, and the three-mode login command including Mode (c) Keycloak ROPC are approved. PRODUCT-OQ-01/VER-011, ARCH-B01, VER-012, OQ-36, and C-13 are resolved, and no open product question blocks architecture planning. The pinned target contract and deployment evidence in §23 remain implementation/verification gates. Pre-implementation verification next assesses the refreshed artifact set, followed by the required security review; a future review artifact is not required to exist before product readiness or architecture planning. Architecture must preserve operation-specific field nullability, explicit non-derived authentication endpoint resolution, source-derived pre-write compatibility evidence, provider-specific safe CI token delivery, and each Datasource kind's existing format while keeping integration provisioning outside the tool.
+  Product behavior is bounded and testable: exact project membership qualifies creation; exact server-reported entity `write` ability gates update; Assistant uses exact project/slug lookup; Workflow and Skill reconcile in the authenticated creator namespace; legacy Workflow v1/unmarked state requires explicit adoption; Datasource partial-list misses never prove absence and HTTP 409 is authoritative collision evidence. Strict decoding, zero unauthorized writes, post-write verification, safe diagnostics, and Assistant least privilege remain mandatory. OQ-37/OQ-38 and C-14 are resolved, and no open product question blocks architecture planning. The solution architect must refresh all downstream artifacts for v32 before implementation readiness is reclaimed.
 
   ### Closed product decisions
 
@@ -1617,11 +1753,11 @@
   **Product decision (2026-08-07, v13):**
   * `POST /v1/local-auth/login` re-added as a supported local dev auth path in the `login` command. CI MUST use Keycloak. Mode is selected by which credential flags are present. SC-012 added; AC-FR-024-04/05/06 added.
 
-  **Product decisions (2026-08-09, v14):**
+  **Historical product decisions (2026-08-09, v14; identity/visibility portions superseded by v32):**
   * Workflow authored/reported identity remains `(project, slug)` and is persisted in the Workflow-only reserved `meta_config` identity record. Ordinary reconciliation uses exhaustive exact record resolution, never display name, and fails on invalid or duplicate records.
   * An unmarked legacy Workflow can be adopted in place only through an explicitly supplied current server UUID. Adoption persists the natural-key record and reconciles desired state; the UUID remains ephemeral and unreported.
   * Skill authored/reported identity remains `(project, name)` and is enforced by exhaustive paginated client resolution: zero/create, one/update, multiple/ambiguous failure. No server-global uniqueness is claimed. v22 later established that the one-match update occurs on every valid invocation.
-  * Workflow/Skill use requires complete manager/admin visibility, serialized per-environment CI, governed UI/other-client writes, post-write exact re-resolution, visible residual-race failure, and manual duplicate remediation. The CLI never automatically chooses, deletes, or rolls back an ambiguous entity.
+  * Historical v14 required complete manager/admin visibility. **Superseded by v32:** membership qualifies creation; Workflow/Skill use creator-scoped identity; exact entity ability gates update. Same-principal serialization, post-write verification, visible residual-race failure, and non-destructive remediation remain.
 
   **Product decision (2026-08-09, v15):**
   * OQ-28 resolved with one exit taxonomy: 0 success; 1 entity reconciliation/server-side failure after valid local input; 2 local parsing/schema/validation/configuration, authentication/authorization/visibility, compatibility/connectivity, or fatal failure. Online identity ambiguity, invalid server identity evidence, or otherwise compatible entity-resolution instability is exit 1; inability to prove visibility or write permission is exit 2.
@@ -1667,7 +1803,7 @@
 
   ### External dependencies (platform team)
   * Qualify each target CodeMie deployment against the pinned source-derived consumed contract; `/v1/info.version` is not deployment/source identity.
-  * Prove complete Workflow/Skill manager/admin visibility, exhaustive stable pagination, exact identity/permission fields, Workflow `meta_config` preservation, and post-write read behavior in the target deployment.
+  * Prove exact membership, complete current-principal Workflow/Skill enumeration, stable pagination, exact creator/identity/ability fields, Workflow v2 `meta_config` preservation, Datasource authoritative 409 behavior, and post-write reads in the target deployment.
   * Pin ordinary Datasource CRUD/read shapes, discriminators, requiredness, nullability, validation, mutability, and non-secret integration configuration uniformly for every authorable kind. Provider-defined or import/read-only kinds require explicit target evidence; the tool does not invent missing formats.
   * Provide the test environment and service account required to verify the four entity types.
 

@@ -1,16 +1,23 @@
 # HTTP adapter contract
 
-Source: product specification v28, IR-001–012,
-FR-005/006/011/016/017/021/022/024, FR-028–036, DR-003–012, and VR-016.
+Source: product specification v32, IR-001–013,
+FR-005/006/011/016/017/021/022/024, FR-028–037, DR-003–013, and VR-016/017.
 
 Status: NORMATIVE against backend tag `2.42.0`, commit
 `2a481c290c99bf30ef80aadafa03d876a7f5f732`. Exact consumed routes and field
 projections are in
 [`adapter-manifest-v2.42.0.json`](adapter-manifest-v2.42.0.json).
 
-Version: v28 (source-derived compatibility and exact-effective-project pre-write
-evidence clarification; prior SEC-001/SEC-002/SEC-003 remediation and Mode (c)
-Keycloak ROPC retained). See ADR-004/012 for compatibility/visibility and
+The manifest's top-level `manifestVersion: 3` versions this consumed adapter
+contract. V-000 sanitized evidence must identify it as
+`adapterManifestVersion: 3`; evidence `schemaVersion: 1` independently versions
+the evidence envelope. The legacy V-000 field/value `manifestVersion: 2` names
+no approved independent contract and must be rejected rather than translated.
+
+Version: v32 (member-create, exact-ability-update, creator-scoped identity,
+Datasource authoritative collision;
+source-derived compatibility, prior SEC remediation, and Mode (c) retained).
+See ADR-004/012/013 for compatibility/visibility and
 ADR-011 for credential input, ValidatedUrl, TLS, and redirect policy.
 
 ## 1. Boundary and protocol
@@ -40,11 +47,29 @@ The transport write entry point accepts only a prepared write carrying a sealed
 `PrewriteEvidence` value for the same entity kind and effective project. That
 value is constructible only after the operation-applicable preflight and every
 operation-applicable identity, reference, detail/preservation, response-shape,
-and pagination check have succeeded. Workflow, Skill, and Datasource require
-the exact-project capability predicate. Assistant instead requires its strict
-direct `(project, slug)` lookup result and does not call `GET /v1/user`. No
+and pagination check have succeeded. Every kind requires exact effective-
+project membership from `GET /v1/user`; administration is optional. Assistant
+then requires strict direct `(project,slug)` lookup. No
 adapter may call POST/PUT while evidence is partial or directly from a
 resolve/read error branch.
+
+### 1.1 Authorization applicability and order
+
+| Entity operation | Exact membership | Identity scope | Exact `write` ability |
+|---|---|---|---|
+| Assistant create/update | required | exact `(project,slug)` | update only |
+| Workflow create/update/adopt | required | v2 `(project,user_id,slug)`; v1/unmarked adoption-only | update/adoption only |
+| Skill create/update | required | `(project,user_id,name)` | update only |
+| Datasource create/update | required | visible exact row or visible miss | update only |
+
+All applicable reads and any later write use one opaque invocation-scoped
+`ApiClient` capability owning the validated target origin, bearer token, and
+internal session identity:
+local validation -> authentication -> strict `/v1/user` exact membership ->
+kind-specific resolution -> exact selected-row write evidence when applicable
+-> request projection -> sealed
+`PreparedWrite` -> POST/PUT. Dispatch takes the capability from the seal and
+accepts no separately supplied client, origin/base URL, token, or session.
 
 ## 2. Transport and compatibility
 
@@ -266,20 +291,21 @@ are hints; exact client filtering uses effective project plus:
 
 ```json
 "codemie.epam.com/gitops/workflow-identity": {
-  "version": 1,
+  "version": 2,
   "project": "<effective-project>",
+  "creator_user_id": "<authenticated-user-id>",
   "slug": "<slug>"
 }
 ```
 
-- zero exact valid markers: inspect unmarked exact display-name rows only as a
-  nonselecting adoption-required guard; otherwise create;
-- one: prove exact project, complete visibility and write capability, read the
+- zero exact current-creator v2 markers: create; v1/unmarked rows are explicit
+  adoption candidates only;
+- one: prove exact project and exact write capability, read the
   detail required for metadata preservation, and update by server ID;
 - more than one: `E_AMBIGUOUS_IDENTITY`, exit 1, no write;
 - malformed/conflicting reserved member affecting the project:
   `E_IDENTITY_MARKER_INVALID`, exit 1, no write; and
-- incomplete visibility/write evidence: exit 2 before write.
+- missing membership/write authorization: exit 2 before write.
 
 Page cycles, repeated IDs, unstable totals/cursors, or incompatible pre/post
 identity snapshots fail closed. Create/update merges the reserved member while
@@ -295,9 +321,9 @@ BOM, and no non-finite numbers. A malformed value is
 
 ### 5.2 Explicit adoption
 
-With `--adopt-workflow-id`, first prove there is no existing exact identity
-record, then fetch only the supplied canonical UUID. Require exact project,
-complete visibility, write permission, no reserved identity member, and safely
+With `--adopt-workflow-id`, first prove there is no existing exact current-user
+v2 record, then fetch only the supplied canonical UUID. Require exact project,
+same authenticated creator, exact `write`, a v1 or unmarked candidate, and safely
 mergeable non-reserved metadata. Persist the marker and authored state with one
 PUT. Another unmarked row with the same mutable display name neither selects nor
 vetoes this explicit candidate. Without the flag, unmarked exact display-name
@@ -318,17 +344,30 @@ reference fields are removed from the request.
 
 ## 6. Skill
 
-1. Enumerate every `GET /v1/skills` page with `per_page=100`, project,
+1. Strict exact effective-project membership from the same invocation-bound
+   `GET /v1/user` qualifies create and supplies authenticated `user_id`.
+   Administration is optional and is not a resolver or mutation gate.
+2. Enumerate every `GET /v1/skills` page with `per_page=100`, project,
    marketplace-inclusive, and search hints where compatible. Skill pagination
    is zero-indexed: always request page 0 first; for `pages > 0` request exactly
    `0..pages-1`; for `pages == 0` stop after page 0.
-2. Client-filter exact decoded `(project,name)` over the complete visible set.
-3. Zero creates once. One requires write proof and required detail, then always
-   updates by returned ID. More than one is `E_AMBIGUOUS_IDENTITY`, exit 1,
-   with no write.
-4. Never select current-principal, newest, first, or list-order duplicate.
-5. A same-principal create 409 permits one full re-resolution and never a
-   second POST. Post-write resolution must find exactly one identity.
+3. Strictly decode every candidate's `id`, `project`, `name`, `created_by`, and
+   `user_abilities`; client-filter exact
+   `(project,authenticated_user_id,name)`. A foreign creator is excluded, not
+   treated as ambiguity or an update candidate.
+4. Zero exact current-creator matches creates once. One requires exact string
+   `write` in that selected row's `user_abilities` plus required detail, then
+   always updates by returned ID. More than one same-creator exact match is
+   `E_AMBIGUOUS_IDENTITY`, exit 1, with no write.
+5. Never select newest, first, list-order, or foreign-creator rows. Membership,
+   creator equality, visibility, roles, and HTTP success never substitute for
+   update `write` authorization.
+6. A Skill create 409 triggers exactly one exhaustive page-0-origin read-only
+   scan filtered to `(project,authenticated_user_id,name)`. It sends no second
+   POST and no PUT/PATCH/DELETE. Exactly one collision returns `ServerRejected`,
+   exit 1; more than one returns `E_AMBIGUOUS_IDENTITY`, exit 1; stable zero
+   returns reconciliation instability, exit 1; compatibility or connectivity
+   failure returns exit 2. Post-write resolution must find exactly one identity.
 
 Every Skill page must echo the requested zero-based `page`, return
 `perPage=100`, satisfy `pages=ceil(total/perPage)`, and report `pages==0` iff
@@ -339,10 +378,17 @@ accumulated count different from `total` is entity-resolution instability,
 exit 1 before write. Initial, post-write, and create-409 re-resolution use this
 same scan.
 
-The server uniqueness tuple is creator-scoped, so complete manager/admin
-visibility, serialized per-environment CI, governed concurrent writers, and a
-duplicate-remediation runbook are normative controls. Different-principal races
-can leave duplicates and are reported without rollback.
+The server uniqueness tuple is creator-scoped. Different creators' same-name
+rows are distinct identities. Same-principal writers remain serialized;
+post-write same-principal ambiguity is reported without rollback and requires
+manual remediation.
+
+Workflow inline `skillRefs` resolve through the same exact
+`(project,authenticated_user_id,name)` resolver and capability binding. A
+foreign-creator same-name row never satisfies a reference. Zero exact current-
+creator rows is an unresolved reference; one supplies an invocation-local Skill
+ID; multiple same-creator rows are ambiguous. Reference reads require
+membership but not Skill `write`, because they do not mutate the Skill.
 
 `contentFrom` resolves relative to the declaring YAML and is sent only as inline
 `content`; path and content never cross the diagnostic boundary.
@@ -395,22 +441,28 @@ encoded parameters for non-ASCII basenames, that behavior must be verified and
 documented as a pinned library feature. If the library does not provide this
 guarantee, restrict basenames to printable ASCII only.
 
-Before Workflow, Skill, or Datasource resolution, `GET /v1/user` must prove
-either global admin/maintainer status or an entry where
-`projects[].name` equals the declaration's exact effective project and that same
-entry has `projects[].is_project_admin=true`. Project-admin status for any other
-project is insufficient. Per-row `user_abilities` must additionally contain
-write for an existing target where the pinned entity contract consumes that
-field. Missing or invalid consumed role/project fields are
-`E_API_INCOMPATIBLE`; a valid response that fails the predicate is
-`E_VISIBILITY_UNPROVEN`. Both are exit 2 before any modifying request. These
-capability checks cannot widen visibility by themselves.
+Before any kind's resolution, strictly decode `GET /v1/user`: non-empty string
+`user_id`, array `projects`, and every entry's non-empty string `name`. At least
+one exact name equal to the effective project qualifies creation. Role/admin
+fields are optional, unconsumed visibility context and never authorization
+gates. No project-detail request is made.
 
-Assistant is not subject to this complete-visibility admin prerequisite. Its
-operation-applicable evidence is the strictly decoded direct
+Security-document parsing rejects duplicate keys in every consumed JSON object
+before DTO conversion; missing/null/empty/wrong-type consumed evidence is
+`E_API_INCOMPATIBLE`. A valid response without exact membership is
+`E_AUTHORIZATION`. Both are exit 2 before mutation. Additional unconsumed
+fields alone are tolerated. Every update/adoption strictly decodes the selected
+entity's `user_abilities` and requires exact string `write`; creator, membership,
+role, ownership, and successful HTTP reads never supply it.
+
+Assistant's operation-applicable evidence is the strictly decoded direct
 `GET /v1/assistants/slug/{slug}?project={effective_project}` result plus any
-required write evidence from that response. This preserves PA-003 least
-privilege while retaining the same sealed `PreparedWrite` boundary.
+required exact write evidence from that response.
+
+Datasource visible-list miss authorizes exactly one create attempt. HTTP 409
+is authoritative collision: exit 1, no retry, no fallback lookup, no guessed
+update, and no response-body disclosure. An optional admin session may expose
+more rows for diagnostics, but follows the same mutation matrix.
 
 The CLI has no dedicated Datasource lifecycle command, flag, or endpoint.
 

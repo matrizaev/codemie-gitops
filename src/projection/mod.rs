@@ -648,7 +648,7 @@ fn merge_meta_config(
     }
 
     // Step 3: install exact reserved identity record
-    // WorkflowIdentityV1 = {version: 1, project: NonEmptyString, slug: NonEmptyString}
+    // WorkflowIdentityV2 is completed by the adapter with the authenticated creator.
     let project = metadata
         .get("project")
         .and_then(|v| v.as_str())
@@ -665,7 +665,7 @@ fn merge_meta_config(
     let identity = serde_json::json!({
         "project": project,
         "slug": slug,
-        "version": 1
+        "version": 2
     });
     merged.insert(workflow::RESERVED_KEY.to_owned(), identity);
 
@@ -1326,7 +1326,7 @@ mod tests {
         let reserved = obj[workflow::RESERVED_KEY].as_object().unwrap();
         assert_eq!(reserved["project"].as_str().unwrap(), "p");
         assert_eq!(reserved["slug"].as_str().unwrap(), "s");
-        assert_eq!(reserved["version"].as_u64().unwrap(), 1);
+        assert_eq!(reserved["version"].as_u64().unwrap(), 2);
         // No other keys
         assert_eq!(obj.as_object().unwrap().len(), 1);
     }

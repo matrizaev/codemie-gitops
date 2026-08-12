@@ -55,7 +55,6 @@ struct WriteAbilityEvidence {
 /// Operation-specific capability evidence established before identity reads.
 #[derive(Debug)]
 enum OperationPreflight {
-    AssistantAdminPreflightNotRequired,
     ExactProjectVisibility(ExactProjectVisibility),
 }
 
@@ -104,7 +103,8 @@ impl CompletedResolution {
 /// can consume this value, but no caller can manufacture it from a raw path and
 /// body. It owns capability, completed reads, projected request, and (for File
 /// Datasource) the successfully read multipart bytes.
-pub(crate) struct PreparedWrite {
+pub(crate) struct PreparedWrite<'a> {
+    client: &'a crate::http::ApiClient,
     plan: WritePlan,
     evidence: PrewriteEvidence,
     file_parts: Option<Vec<(String, Vec<u8>)>>,
@@ -144,17 +144,20 @@ pub(crate) enum PreparedWriteResponse {
     Conflict,
 }
 
-impl PreparedWrite {
+impl<'a> PreparedWrite<'a> {
     fn target(&self) -> &ResolutionTarget {
         self.evidence.resolution.target()
     }
 
     fn assistant(
+        client: &'a crate::http::ApiClient,
+        visibility: ExactProjectVisibility,
         resolution: assistant::CompletedResolution,
         plan: WritePlan,
     ) -> Result<Self, AppError> {
-        Self::seal(
-            OperationPreflight::AssistantAdminPreflightNotRequired,
+        Self::visible(
+            client,
+            visibility,
             CompletedResolution::Assistant(resolution),
             plan,
             None,
@@ -162,11 +165,13 @@ impl PreparedWrite {
     }
 
     fn workflow(
+        client: &'a crate::http::ApiClient,
         visibility: ExactProjectVisibility,
         resolution: workflow::CompletedResolution,
         plan: WritePlan,
     ) -> Result<Self, AppError> {
         Self::visible(
+            client,
             visibility,
             CompletedResolution::Workflow(resolution),
             plan,
@@ -175,11 +180,13 @@ impl PreparedWrite {
     }
 
     fn skill(
+        client: &'a crate::http::ApiClient,
         visibility: ExactProjectVisibility,
         resolution: skill::CompletedResolution,
         plan: WritePlan,
     ) -> Result<Self, AppError> {
         Self::visible(
+            client,
             visibility,
             CompletedResolution::Skill(resolution),
             plan,
@@ -188,12 +195,14 @@ impl PreparedWrite {
     }
 
     fn datasource(
+        client: &'a crate::http::ApiClient,
         visibility: ExactProjectVisibility,
         resolution: datasource::CompletedResolution,
         plan: WritePlan,
         file_parts: Option<Vec<(String, Vec<u8>)>>,
     ) -> Result<Self, AppError> {
         Self::visible(
+            client,
             visibility,
             CompletedResolution::Datasource(resolution),
             plan,
@@ -202,23 +211,20 @@ impl PreparedWrite {
     }
 
     fn visible(
+        client: &'a crate::http::ApiClient,
         visibility: ExactProjectVisibility,
         resolution: CompletedResolution,
         plan: WritePlan,
         file_parts: Option<Vec<(String, Vec<u8>)>>,
     ) -> Result<Self, AppError> {
         let effective_project = resolution.effective_project();
-        if resolution.kind() == EntityKind::Assistant {
-            return Err(AppError::Internal(
-                "Assistant cannot use the complete-visibility preflight".into(),
-            ));
-        }
         if !visibility.matches(effective_project) {
             return Err(AppError::Internal(
                 "visibility proof project does not match prepared write".into(),
             ));
         }
         Self::seal(
+            client,
             OperationPreflight::ExactProjectVisibility(visibility),
             resolution,
             plan,
@@ -227,6 +233,7 @@ impl PreparedWrite {
     }
 
     fn seal(
+        client: &'a crate::http::ApiClient,
         operation_preflight: OperationPreflight,
         resolution: CompletedResolution,
         plan: WritePlan,
@@ -243,6 +250,7 @@ impl PreparedWrite {
             ));
         }
         Ok(Self {
+            client,
             plan,
             evidence: PrewriteEvidence {
                 operation_preflight,
@@ -254,7 +262,10 @@ impl PreparedWrite {
 
     /// Validate and consume the seal, yielding the sole request shape accepted
     /// by the raw HTTP send primitives.
-    pub(crate) fn into_request(self) -> Result<PreparedRequest, AppError> {
+    pub(crate) fn into_request(
+        self,
+    ) -> Result<(&'a crate::http::ApiClient, PreparedRequest), AppError> {
+        let client = self.client;
         let PrewriteEvidence {
             operation_preflight,
             resolution,
@@ -262,10 +273,8 @@ impl PreparedWrite {
         let kind = resolution.kind();
         let project = resolution.effective_project().to_owned();
         match operation_preflight {
-            OperationPreflight::AssistantAdminPreflightNotRequired
-                if kind == EntityKind::Assistant => {}
             OperationPreflight::ExactProjectVisibility(visibility)
-                if kind != EntityKind::Assistant && visibility.matches(&project) => {}
+                if visibility.matches(&project) => {}
             _ => {
                 return Err(AppError::Internal(
                     "prepared write evidence does not match its entity kind or project".into(),
@@ -306,7 +315,7 @@ impl PreparedWrite {
             }
         };
 
-        match request {
+        let request = match request {
             RequestBody::Json(body) => {
                 if self.file_parts.is_some() {
                     return Err(AppError::Internal(
@@ -314,8 +323,10 @@ impl PreparedWrite {
                     ));
                 }
                 Ok(PreparedRequest::Json {
-                    conflict_is_resolution_signal: kind == EntityKind::Skill
-                        && matches!(method, ModificationMethod::Post),
+                    conflict_is_resolution_signal: matches!(
+                        kind,
+                        EntityKind::Skill | EntityKind::Datasource
+                    ) && matches!(method, ModificationMethod::Post),
                     method,
                     path,
                     body,
@@ -346,7 +357,8 @@ impl PreparedWrite {
                     file_parts,
                 })
             }
-        }
+        }?;
+        Ok((client, request))
     }
 }
 
@@ -565,15 +577,9 @@ mod tests {
                 .pointer("/capabilityPreflight/appliesToEntityKinds")
                 .and_then(serde_json::Value::as_array)
                 .expect("capability applicability must be an array"),
-            serde_json::json!(["Workflow", "Datasource", "Skill"])
+            serde_json::json!(["Assistant", "Workflow", "Datasource", "Skill"])
                 .as_array()
                 .expect("expected fixture must be an array")
-        );
-        assert_eq!(
-            manifest
-                .pointer("/capabilityPreflight/projectAdminMustMatchEffectiveProject")
-                .and_then(serde_json::Value::as_bool),
-            Some(true)
         );
         for pointer in [
             "/entities/Workflow/pagination/pageBase",

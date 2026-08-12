@@ -17,7 +17,7 @@ use serde::Deserialize;
 
 use crate::config::ValidatedUrl;
 use crate::error::AppError;
-use crate::http::{ApiClient, encode_query_value};
+use crate::http::{ApiClient, encode_query_value, preflight_visibility};
 use crate::parse::ParsedDeclaration;
 use crate::projection::{ExistingEntity, project};
 
@@ -84,6 +84,7 @@ pub async fn apply(
     repo_root: &Path,
     follow_symlinks: bool,
 ) -> Result<ApplyResult, AppError> {
+    let visibility = preflight_visibility(client, base_url, project_name).await?;
     // Step 1: Resolve identity.
     let resolve_path = format!(
         "/v1/assistants/slug/{}?project={}",
@@ -126,20 +127,16 @@ pub async fn apply(
 
     // Step 3: seal the completed direct-lookup evidence with projection. The
     // modifying dispatcher accepts no raw or partial-evidence `WritePlan`.
-    let prepared = PreparedWrite::assistant(resolution, plan)?;
-    dispatch(client, base_url, prepared).await
+    let prepared = PreparedWrite::assistant(client, visibility, resolution, plan)?;
+    dispatch(prepared).await
 }
 
-async fn dispatch(
-    client: &ApiClient,
-    base_url: &ValidatedUrl,
-    prepared: PreparedWrite,
-) -> Result<ApplyResult, AppError> {
+async fn dispatch(prepared: PreparedWrite<'_>) -> Result<ApplyResult, AppError> {
     let action = match prepared.target() {
         ResolutionTarget::Create => ApplyAction::Created,
         ResolutionTarget::Update { .. } => ApplyAction::Updated,
     };
-    let response = client.dispatch_prepared(base_url, prepared).await?;
+    let response = ApiClient::dispatch_prepared(prepared).await?;
     let response: AssistantWriteResponse = decode_write_response(response)?.ok_or_else(|| {
         AppError::Internal("Assistant modifying request cannot return a conflict signal".into())
     })?;
@@ -211,6 +208,15 @@ mod tests {
             .expect("ApiClient must construct in tests")
     }
 
+    async fn membership(server: &mut mockito::ServerGuard) -> mockito::Mock {
+        server
+            .mock("GET", "/v1/user")
+            .with_status(200)
+            .with_body(r#"{"user_id":"user-1","projects":[{"name":"my-project"}]}"#)
+            .create_async()
+            .await
+    }
+
     fn assistant_decl(project: &str, slug: &str) -> ParsedDeclaration {
         ParsedDeclaration {
             kind: EntityKind::Assistant,
@@ -241,6 +247,7 @@ mod tests {
     #[tokio::test]
     async fn apply_creates_when_not_found() {
         let mut server = mockito::Server::new_async().await;
+        let _membership = membership(&mut server).await;
 
         let _resolve = server
             .mock("GET", "/v1/assistants/slug/my-assistant?project=my-project")
@@ -285,6 +292,7 @@ mod tests {
     #[tokio::test]
     async fn apply_updates_when_found() {
         let mut server = mockito::Server::new_async().await;
+        let _membership = membership(&mut server).await;
 
         let _resolve = server
             .mock("GET", "/v1/assistants/slug/my-assistant?project=my-project")
@@ -327,6 +335,7 @@ mod tests {
     #[tokio::test]
     async fn apply_rejects_missing_lookup_abilities_before_any_write() {
         let mut server = mockito::Server::new_async().await;
+        let _membership = membership(&mut server).await;
         let resolve = server
             .mock("GET", "/v1/assistants/slug/my-assistant?project=my-project")
             .with_status(200)
@@ -377,6 +386,7 @@ mod tests {
             r#"{"id":"assistant","user_abilities":[1]}"#,
         ] {
             let mut server = mockito::Server::new_async().await;
+            let _membership = membership(&mut server).await;
             let lookup = server
                 .mock("GET", "/v1/assistants/slug/my-assistant?project=my-project")
                 .with_status(200)
@@ -432,6 +442,7 @@ mod tests {
     #[tokio::test]
     async fn apply_rejects_nonwriting_lookup_abilities_before_put() {
         let mut server = mockito::Server::new_async().await;
+        let _membership = membership(&mut server).await;
         let resolve = server
             .mock("GET", "/v1/assistants/slug/my-assistant?project=my-project")
             .with_status(200)
@@ -525,6 +536,7 @@ mod tests {
     #[tokio::test]
     async fn apply_propagates_auth_error_from_resolve() {
         let mut server = mockito::Server::new_async().await;
+        let _membership = membership(&mut server).await;
 
         let _mock = server
             .mock("GET", "/v1/assistants/slug/my-assistant?project=my-project")
@@ -559,6 +571,7 @@ mod tests {
     #[tokio::test]
     async fn apply_schema_error_on_missing_required_field() {
         let mut server = mockito::Server::new_async().await;
+        let _membership = membership(&mut server).await;
 
         let _resolve = server
             .mock("GET", "/v1/assistants/slug/my-assistant?project=my-project")

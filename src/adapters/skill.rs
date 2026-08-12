@@ -1,7 +1,7 @@
 /// Skill entity adapter — S-001.
 ///
 /// Exhaustive `(project, name)` resolution via paginated `GET /v1/skills?filters=...`.
-/// Zero matches → POST with one 409 re-resolution attempt.
+/// Zero matches → one POST. A server collision is terminal.
 /// One match  → unconditional PUT.
 /// Many matches → `AppError::Reconciliation`.
 use std::path::Path;
@@ -10,7 +10,7 @@ use serde::Deserialize;
 
 use crate::config::ValidatedUrl;
 use crate::error::AppError;
-use crate::http::{ApiClient, ExactProjectVisibility, encode_query_value, preflight_visibility};
+use crate::http::{ApiClient, encode_query_value, preflight_visibility};
 use crate::parse::ParsedDeclaration;
 use crate::projection::{ExistingEntity, project};
 
@@ -38,26 +38,13 @@ struct SkillItem {
     name: String,
     project: String,
     #[serde(rename = "created_by")]
-    _created_by: RequiredNullableObject,
+    created_by: Creator,
     user_abilities: Vec<String>,
 }
 
-#[derive(Clone)]
-struct RequiredNullableObject(Option<serde_json::Map<String, serde_json::Value>>);
-
-impl<'de> Deserialize<'de> for RequiredNullableObject {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        match serde_json::Value::deserialize(deserializer)? {
-            serde_json::Value::Null => Ok(Self(None)),
-            serde_json::Value::Object(value) => Ok(Self(Some(value))),
-            _ => Err(serde::de::Error::custom(
-                "created_by must be an object or null",
-            )),
-        }
-    }
+#[derive(Deserialize, Clone)]
+struct Creator {
+    id: String,
 }
 
 #[derive(Deserialize)]
@@ -110,8 +97,9 @@ pub async fn apply(
     repo_root: &Path,
     follow_symlinks: bool,
 ) -> Result<ApplyResult, AppError> {
-    let visibility = preflight_visibility(client, base_url, project_name).await?;
-    let enumeration = enumerate(client, base_url, project_name, skill_name).await?;
+    let initial_visibility = preflight_visibility(client, base_url, project_name).await?;
+    let creator = initial_visibility.authenticated_user_id().to_owned();
+    let enumeration = enumerate(client, base_url, project_name, skill_name, &creator).await?;
     match enumeration.matches.as_slice() {
         [] => {
             create_with_reresolution(
@@ -121,9 +109,9 @@ pub async fn apply(
                     declaration: decl,
                     project_name,
                     skill_name,
+                    creator_user_id: &creator,
                     repo_root,
                     follow_symlinks,
-                    visibility,
                     initial_scan: enumeration.evidence,
                 },
             )
@@ -145,8 +133,9 @@ pub async fn apply(
                 _scan: enumeration.evidence,
                 _write_ability: Some(write_ability),
             };
-            let prepared = PreparedWrite::skill(visibility, resolution, plan)?;
-            dispatch_update(client, base_url, prepared).await
+            let visibility = preflight_visibility(client, base_url, project_name).await?;
+            let prepared = PreparedWrite::skill(client, visibility, resolution, plan)?;
+            dispatch_update(prepared).await
         }
         _ => Err(AppError::Reconciliation(format!(
             "Skill: {} matches for (name={skill_name:?}, project={project_name:?}); \
@@ -164,7 +153,15 @@ pub async fn resolve_reference(
     project_name: &str,
     skill_name: &str,
 ) -> Result<String, AppError> {
-    let enumeration = enumerate(client, base_url, project_name, skill_name).await?;
+    let visibility = preflight_visibility(client, base_url, project_name).await?;
+    let enumeration = enumerate(
+        client,
+        base_url,
+        project_name,
+        skill_name,
+        visibility.authenticated_user_id(),
+    )
+    .await?;
     match enumeration.matches.as_slice() {
         [single] => Ok(single.id.clone()),
         [] => Err(AppError::Reconciliation(
@@ -203,6 +200,7 @@ async fn enumerate(
     base_url: &ValidatedUrl,
     project_name: &str,
     skill_name: &str,
+    creator_user_id: &str,
 ) -> Result<Enumeration, AppError> {
     let filter = serde_json::to_string(&serde_json::json!({
         "project": project_name,
@@ -233,7 +231,11 @@ async fn enumerate(
         for item in resp.skills {
             // `created_by` participates in the pinned creator-scoped identity
             // shape. Its value may be null, but the member itself is required.
-            let _creator_is_present = item._created_by.0.is_some();
+            if item.created_by.id.is_empty() {
+                return Err(AppError::ApiIncompatible(
+                    "skill creator id is empty".into(),
+                ));
+            }
             total_seen += 1;
             if total_seen > MAX_ITEMS {
                 return Err(AppError::ApiIncompatible(
@@ -245,7 +247,10 @@ async fn enumerate(
                     "skill enumeration repeated an entity id".into(),
                 ));
             }
-            if item.name == skill_name && item.project == project_name {
+            if item.name == skill_name
+                && item.project == project_name
+                && item.created_by.id == creator_user_id
+            {
                 all_matches.push(item);
             }
         }
@@ -309,16 +314,16 @@ fn validate_pagination(
 }
 
 // ---------------------------------------------------------------------------
-// Create with one 409 re-resolution (S-001)
+// Create
 // ---------------------------------------------------------------------------
 
 struct CreateRequest<'a> {
     declaration: &'a ParsedDeclaration,
     project_name: &'a str,
     skill_name: &'a str,
+    creator_user_id: &'a str,
     repo_root: &'a Path,
     follow_symlinks: bool,
-    visibility: ExactProjectVisibility,
     initial_scan: ScanEvidence,
 }
 
@@ -341,64 +346,40 @@ async fn create_with_reresolution(
         _scan: request.initial_scan,
         _write_ability: None,
     };
-    let prepared = PreparedWrite::skill(request.visibility.clone(), resolution, plan)?;
-    match dispatch_create(client, base_url, prepared).await? {
+    let visibility = preflight_visibility(client, base_url, request.project_name).await?;
+    let prepared = PreparedWrite::skill(client, visibility, resolution, plan)?;
+    match dispatch_create(prepared).await? {
         Some(resp) => Ok(ApplyResult {
             action: ApplyAction::Created,
             server_id: resp.id,
         }),
         None => {
-            // 409: re-enumerate once; no second POST attempt (S-001)
-            let second =
-                enumerate(client, base_url, request.project_name, request.skill_name).await?;
-            match second.matches.as_slice() {
-                [single] => {
-                    let write_ability = prove_write(&single.user_abilities, "Skill")?;
-                    let existing = ExistingEntity {
-                        server_id: single.id.clone(),
-                        meta_config: None,
-                    };
-                    let update_plan = project(
-                        request.declaration,
-                        Some(&existing),
-                        None,
-                        request.repo_root,
-                        request.follow_symlinks,
-                    )?;
-                    let resolution = CompletedResolution {
-                        effective_project: request.project_name.to_owned(),
-                        _name: request.skill_name.to_owned(),
-                        target: ResolutionTarget::Update {
-                            server_id: single.id.clone(),
-                        },
-                        _scan: second.evidence,
-                        _write_ability: Some(write_ability),
-                    };
-                    let prepared =
-                        PreparedWrite::skill(request.visibility, resolution, update_plan)?;
-                    dispatch_update(client, base_url, prepared).await
-                }
-                [] => Err(AppError::Reconciliation(
-                    "skill: POST returned 409 but re-enumeration found no match; \
-                     unstable server state"
+            let collision = enumerate(
+                client,
+                base_url,
+                request.project_name,
+                request.skill_name,
+                request.creator_user_id,
+            )
+            .await?;
+            match collision.matches.len() {
+                1 => Err(AppError::ServerRejected(
+                    "Skill create collided with an existing same-creator identity".into(),
+                )),
+                0 => Err(AppError::Reconciliation(
+                    "Skill create conflict could not be resolved by the bounded same-creator scan"
                         .into(),
                 )),
                 _ => Err(AppError::Reconciliation(
-                    "skill: POST returned 409 and re-enumeration found multiple matches; \
-                     manual resolution required"
-                        .into(),
+                    "Skill create conflict resolved to multiple same-creator identities".into(),
                 )),
             }
         }
     }
 }
 
-async fn dispatch_create(
-    client: &ApiClient,
-    base_url: &ValidatedUrl,
-    prepared: PreparedWrite,
-) -> Result<Option<SkillIdResponse>, AppError> {
-    let response = client.dispatch_prepared(base_url, prepared).await?;
+async fn dispatch_create(prepared: PreparedWrite<'_>) -> Result<Option<SkillIdResponse>, AppError> {
+    let response = ApiClient::dispatch_prepared(prepared).await?;
     decode_write_response(response)
 }
 
@@ -406,17 +387,13 @@ async fn dispatch_create(
 // Update dispatch
 // ---------------------------------------------------------------------------
 
-async fn dispatch_update(
-    client: &ApiClient,
-    base_url: &ValidatedUrl,
-    prepared: PreparedWrite,
-) -> Result<ApplyResult, AppError> {
+async fn dispatch_update(prepared: PreparedWrite<'_>) -> Result<ApplyResult, AppError> {
     if !matches!(prepared.target(), ResolutionTarget::Update { .. }) {
         return Err(AppError::Internal(
             "skill update dispatcher requires update resolution evidence".into(),
         ));
     }
-    let response = client.dispatch_prepared(base_url, prepared).await?;
+    let response = ApiClient::dispatch_prepared(prepared).await?;
     let response: SkillIdResponse = decode_write_response(response)?
         .ok_or_else(|| AppError::Internal("Skill update cannot return a conflict signal".into()))?;
     Ok(ApplyResult {
@@ -455,7 +432,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"is_admin":false,"is_maintainer":false,"projects":[{"name":"my-project","is_project_admin":true}]}"#,
+                r#"{"user_id":"user-1","is_admin":false,"is_maintainer":false,"projects":[{"name":"my-project","is_project_admin":true}]}"#,
             )
             .create_async()
     }
@@ -486,14 +463,122 @@ mod tests {
 
     fn one_match_page(id: &str, name: &str, project: &str) -> String {
         format!(
-            r#"{{"skills":[{{"id":"{id}","name":"{name}","project":"{project}","created_by":{{"id":"creator"}},"user_abilities":["read","write"]}}],"page":0,"perPage":100,"total":1,"pages":1}}"#
+            r#"{{"skills":[{{"id":"{id}","name":"{name}","project":"{project}","created_by":{{"id":"user-1"}},"user_abilities":["read","write"]}}],"page":0,"perPage":100,"total":1,"pages":1}}"#
         )
     }
 
     fn two_match_page(project: &str, name: &str) -> String {
         format!(
-            r#"{{"skills":[{{"id":"id-1","name":"{name}","project":"{project}","created_by":null,"user_abilities":["write"]}},{{"id":"id-2","name":"{name}","project":"{project}","created_by":{{"id":"creator"}},"user_abilities":["write"]}}],"page":0,"perPage":100,"total":2,"pages":1}}"#
+            r#"{{"skills":[{{"id":"id-1","name":"{name}","project":"{project}","created_by":{{"id":"user-1"}},"user_abilities":["write"]}},{{"id":"id-2","name":"{name}","project":"{project}","created_by":{{"id":"user-1"}},"user_abilities":["write"]}}],"page":0,"perPage":100,"total":2,"pages":1}}"#
         )
+    }
+
+    fn creator_matrix_page(creators: &[(&str, &str)]) -> String {
+        serde_json::json!({
+            "skills": creators.iter().map(|(id, creator)| serde_json::json!({
+                "id": id,
+                "name": "my-skill",
+                "project": "my-project",
+                "created_by": {"id": creator},
+                "user_abilities": ["write"]
+            })).collect::<Vec<_>>(),
+            "page": 0,
+            "perPage": 100,
+            "total": creators.len(),
+            "pages": if creators.is_empty() { 0 } else { 1 }
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn target_creator_scope_request_count_matrix() {
+        for (rows, expected_action, expected_put) in [
+            (
+                vec![("foreign", "user-2")],
+                Some(ApplyAction::Created),
+                None,
+            ),
+            (
+                vec![("foreign", "user-2"), ("own", "user-1")],
+                Some(ApplyAction::Updated),
+                Some("/v1/skills/own"),
+            ),
+            (
+                vec![("own", "user-1")],
+                Some(ApplyAction::Updated),
+                Some("/v1/skills/own"),
+            ),
+            (vec![("own-1", "user-1"), ("own-2", "user-1")], None, None),
+        ] {
+            let mut server = mockito::Server::new_async().await;
+            let user = server
+                .mock("GET", "/v1/user")
+                .with_status(200)
+                .with_header("content-type", "application/json")
+                .with_body(
+                    r#"{"user_id":"user-1","is_admin":false,"is_maintainer":false,"projects":[{"name":"my-project","is_project_admin":true}]}"#,
+                )
+                .expect(if expected_action.is_some() { 2 } else { 1 })
+                .create_async()
+                .await;
+            let scan = server
+                .mock("GET", mockito::Matcher::Regex(r"^/v1/skills\?".to_owned()))
+                .with_status(200)
+                .with_body(creator_matrix_page(&rows))
+                .expect(1)
+                .create_async()
+                .await;
+            let post = server
+                .mock("POST", "/v1/skills")
+                .with_status(201)
+                .with_body(r#"{"id":"created-own"}"#)
+                .expect(usize::from(matches!(
+                    expected_action,
+                    Some(ApplyAction::Created)
+                )))
+                .create_async()
+                .await;
+            let put = server
+                .mock("PUT", expected_put.unwrap_or("/never-put"))
+                .with_status(200)
+                .with_body(r#"{"id":"own"}"#)
+                .expect(usize::from(expected_put.is_some()))
+                .create_async()
+                .await;
+            let patch = server
+                .mock("PATCH", mockito::Matcher::Any)
+                .expect(0)
+                .create_async()
+                .await;
+            let delete = server
+                .mock("DELETE", mockito::Matcher::Any)
+                .expect(0)
+                .create_async()
+                .await;
+
+            let result = apply(
+                &test_client(&server.url()),
+                &test_url(&server.url()),
+                &skill_decl("my-project", "my-skill"),
+                "my-project",
+                "my-skill",
+                Path::new("."),
+                false,
+            )
+            .await;
+            match expected_action {
+                Some(action) => {
+                    assert_eq!(result.expect("matrix apply must succeed").action, action)
+                }
+                None => assert!(matches!(result, Err(AppError::Reconciliation(_)))),
+            }
+            user.assert_async().await;
+            scan.assert_async().await;
+            post.assert_async().await;
+            put.assert_async().await;
+            patch.assert_async().await;
+            delete.assert_async().await;
+        }
     }
 
     #[tokio::test]
@@ -605,7 +690,7 @@ mod tests {
                     "id": format!("other-{index}"),
                     "name": format!("other-{index}"),
                     "project": "my-project",
-                    "created_by": null,
+                    "created_by":{"id":"user-1"},
                     "user_abilities": ["read"]
                 })
             })
@@ -682,7 +767,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"is_admin":false,"is_maintainer":false,"projects":[{"name":"other-project","is_project_admin":true}]}"#,
+                r#"{"user_id":"user-1","is_admin":false,"is_maintainer":false,"projects":[{"name":"other-project","is_project_admin":true}]}"#,
             )
             .expect(1)
             .create_async()
@@ -846,7 +931,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"skills":[{"id":"same","name":"other-a","project":"my-project","created_by":null,"user_abilities":["read"]},{"id":"same","name":"other-b","project":"my-project","created_by":null,"user_abilities":["read"]}],"page":0,"perPage":100,"total":2,"pages":1}"#,
+                r#"{"skills":[{"id":"same","name":"other-a","project":"my-project","created_by":{"id":"user-1"},"user_abilities":["read"]},{"id":"same","name":"other-b","project":"my-project","created_by":{"id":"user-1"},"user_abilities":["read"]}],"page":0,"perPage":100,"total":2,"pages":1}"#,
             )
             .expect(1)
             .create_async()
@@ -901,7 +986,7 @@ mod tests {
                 "id":"skill",
                 "name":"name",
                 "project":"project",
-                "created_by":null,
+                "created_by":{"id":"user-1"},
                 "user_abilities":["write"]
             }],
             "page":0,
@@ -914,7 +999,7 @@ mod tests {
                 "id":"skill",
                 "name":"name",
                 "project":"project",
-                "created_by":null,
+                "created_by":{"id":"user-1"},
                 "user_abilities":["write"],
                 "future_entity":true
             }],
@@ -1045,6 +1130,7 @@ mod tests {
     #[tokio::test]
     async fn verify_identity_uses_page_zero_and_stops_after_one_page() {
         let mut server = mockito::Server::new_async().await;
+        let _user = user_ok_mock(&mut server).await;
         let page_zero = server
             .mock(
                 "GET",
@@ -1082,6 +1168,7 @@ mod tests {
     #[tokio::test]
     async fn verify_identity_rejects_nonzero_origin_without_modification() {
         let mut server = mockito::Server::new_async().await;
+        let _user = user_ok_mock(&mut server).await;
         let page_zero = server
             .mock(
                 "GET",
@@ -1179,7 +1266,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_resolves_409_via_reenumeration() {
+    async fn apply_409_rereads_once_and_reports_same_creator_collision_without_update() {
         let mut server = mockito::Server::new_async().await;
         let _user = user_ok_mock(&mut server).await;
 
@@ -1199,7 +1286,6 @@ mod tests {
             .create_async()
             .await;
 
-        // Second enumerate after 409: one match
         let _enum2 = server
             .mock("GET", mockito::Matcher::Regex(r"^/v1/skills\?".to_string()))
             .with_status(200)
@@ -1214,6 +1300,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"id":"conflict-id"}"#)
+            .expect(0)
             .create_async()
             .await;
 
@@ -1221,7 +1308,7 @@ mod tests {
         let client = test_client(&server.url());
         let decl = skill_decl("my-project", "my-skill");
 
-        let result = apply(
+        let error = apply(
             &client,
             &url,
             &decl,
@@ -1231,15 +1318,13 @@ mod tests {
             false,
         )
         .await
-        .expect("409 re-resolution must succeed");
-
-        assert_eq!(result.action, ApplyAction::Updated);
-        assert_eq!(result.server_id, "conflict-id");
+        .expect_err("409 must be terminal");
+        assert!(matches!(error, AppError::ServerRejected(_)));
         _create.assert_async().await;
     }
 
     #[tokio::test]
-    async fn apply_409_reresolution_rejects_nonzero_origin_without_second_write() {
+    async fn apply_409_incompatible_reread_is_exit_two_without_second_write() {
         let mut server = mockito::Server::new_async().await;
         let _user = user_ok_mock(&mut server).await;
         let initial = server
@@ -1290,7 +1375,7 @@ mod tests {
             false,
         )
         .await
-        .expect_err("409 re-resolution must validate page-zero origin");
+        .expect_err("incompatible collision scan must fail");
 
         assert!(matches!(error, AppError::ApiIncompatible(_)));
         initial.assert_async().await;
@@ -1299,5 +1384,71 @@ mod tests {
         put.assert_async().await;
         patch.assert_async().await;
         delete.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn apply_409_zero_and_multiple_reread_are_terminal_without_second_write() {
+        for (collision_page, expected_fragment) in [
+            (empty_page().to_owned(), "could not be resolved"),
+            (two_match_page("my-project", "my-skill"), "multiple"),
+        ] {
+            let mut server = mockito::Server::new_async().await;
+            let _user = user_ok_mock(&mut server).await;
+            let scan = server
+                .mock("GET", mockito::Matcher::Regex(r"^/v1/skills\?".to_owned()))
+                .with_status(200)
+                .with_body(empty_page())
+                .expect(1)
+                .create_async()
+                .await;
+            let create = server
+                .mock("POST", "/v1/skills")
+                .with_status(409)
+                .expect(1)
+                .create_async()
+                .await;
+            let reread = server
+                .mock("GET", mockito::Matcher::Regex(r"^/v1/skills\?".to_owned()))
+                .with_status(200)
+                .with_body(collision_page)
+                .expect(1)
+                .create_async()
+                .await;
+            let put = server
+                .mock("PUT", mockito::Matcher::Any)
+                .expect(0)
+                .create_async()
+                .await;
+            let patch = server
+                .mock("PATCH", mockito::Matcher::Any)
+                .expect(0)
+                .create_async()
+                .await;
+            let delete = server
+                .mock("DELETE", mockito::Matcher::Any)
+                .expect(0)
+                .create_async()
+                .await;
+
+            let error = apply(
+                &test_client(&server.url()),
+                &test_url(&server.url()),
+                &skill_decl("my-project", "my-skill"),
+                "my-project",
+                "my-skill",
+                Path::new("."),
+                false,
+            )
+            .await
+            .expect_err("collision reread must remain a failure");
+            assert!(matches!(error, AppError::Reconciliation(_)));
+            assert!(format!("{error:?}").contains(expected_fragment));
+            scan.assert_async().await;
+            create.assert_async().await;
+            reread.assert_async().await;
+            put.assert_async().await;
+            patch.assert_async().await;
+            delete.assert_async().await;
+        }
     }
 }

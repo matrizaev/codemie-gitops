@@ -5,9 +5,9 @@ reference-only evidence and are not product build or runtime dependencies.
 
 ## Revisions
 
-| Reference checkout | Tag | Commit | Audit state (2026-08-09) |
+| Reference checkout | Tag | Commit | Audit state |
 |---|---|---|---|
-| `codemie/` backend | `2.42.0` | `2a481c290c99bf30ef80aadafa03d876a7f5f732` | clean |
+| `codemie/` backend | `2.42.0` | `2a481c290c99bf30ef80aadafa03d876a7f5f732` | clean; v32 membership/creator/ability/collision evidence reinspected 2026-08-12 |
 | `codemie-ui/` | `2.42.0` | `55945d075d82e771c4a2f4238afec1eb4c79d1e1` | clean |
 
 Backend package `0.8.0`, UI package `0.0.0`, and default
@@ -43,18 +43,24 @@ unsupported.
 | Entity | Evidence-backed resolution and write boundary |
 |---|---|
 | Assistant | direct slug/project read, POST, PUT-by-ID; partial unique project/slug persistence constraint |
-| Workflow | zero-indexed full-list pagination starts at `page=0` and uses `offset=page*per_page`; exhaustive pages expose editable persisted string `meta_config`, project, ID and abilities; POST/PUT preserve identity record; no record uniqueness/conditional write |
-| Skill | zero-indexed list pagination starts at `page=0` and uses `offset=page*per_page`; the CLI pins `per_page=100`; list/detail/POST/PUT plus creator-scoped uniqueness `(name, creator, project)` require exhaustive, ambiguity-refusing resolution |
-| Datasource | zero-indexed `GET /v1/index` pages return `data` plus `pagination`; detail and ordinary per-kind create/update exist; no database natural-key uniqueness evidenced and `find_id` returns a first row, so exhaustive resolution is required |
+| Workflow | the principal sees its own rows; create records the principal as creator; zero-indexed enumeration exposes `created_by`, editable string `meta_config`, ID, project, and `user_abilities`; v2 reconciliation is creator-scoped and has no marker uniqueness/conditional-write guarantee |
+| Skill | zero-indexed list/detail/POST/PUT expose creator and abilities; persistence uniqueness is `(name, created_by.id, project)`, so reconciliation is exact `(project,current user_id,name)` |
+| Datasource | zero-indexed `GET /v1/index` is visibility-filtered and cannot prove project-wide absence; ordinary create is the authority and HTTP 409 is a collision; a visible exact row may select update only with exact `write` ability |
 
-Capability preflight is `GET /v1/user`, whose pinned response exposes
-`is_admin`, `is_maintainer`, and `projects[].{name,is_project_admin}`. Existing
-entity write proof additionally consumes per-row `user_abilities`. For
-Workflow, Skill, and Datasource, project-admin evidence qualifies only when `projects[].name`
-equals the declaration's exact effective project and that same entry has
-`is_project_admin=true`; an admin entry for another project is not evidence for
-the requested operation. Assistant uses its exact `(project, slug)` read and
-does not require `GET /v1/user` admin evidence.
+Capability preflight is `GET /v1/user`. The v32 contract consumes a non-empty
+`user_id` and `projects[].name`; an exact effective-project membership is the
+creation gate for all four kinds. Administration fields may be present and may
+broaden what the server returns, but they are not a client-side creation gate.
+The v30/v31 project-detail/personal-owner proof is superseded and the CLI does
+not call project detail for authorization.
+
+Every update and Workflow adoption separately consumes the selected entity's
+`user_abilities` and requires the exact supported string `write`. Membership,
+creator identity, role flags, list visibility, or a successful detail read do
+not imply write authorization. Assistant retains direct exact `(project,slug)`
+lookup. Workflow and Skill filter to the authenticated creator ID. Datasource
+uses visible rows only to select a possible update; a miss permits one create,
+and authoritative HTTP 409 fails without retry, guessed lookup, or update.
 
 The Keycloak token endpoint is not inferred from this source baseline,
 `GET /v1/info`, or an API hostname. Product specification v24 requires one

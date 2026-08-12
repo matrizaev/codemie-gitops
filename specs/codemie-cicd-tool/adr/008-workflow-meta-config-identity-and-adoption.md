@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted
+Accepted only for metadata codec/preservation and zero-based scanning;
+v1 identity/adoption semantics are superseded by ADR-016.
 
 Amended 2026-08-11 for the pinned Workflow pagination origin: both required
 enumeration passes are zero-based. The router defaults `page` to `0`, and the
@@ -76,6 +77,10 @@ generic omitted-field null loop.
 
 ### Normal resolution
 
+Before enumeration, ADR-015 exact membership qualifies creation. ADR-016
+restricts ordinary identity to current-principal v2 records. Existing
+update/adoption separately requires exact `write`.
+
 Exhaust every relevant Workflow list page across the project and
 marketplace-inclusive scopes defined by the source-pinned contract. Each pass
 starts at `page=0`: always request page 0 once; for `pages > 0`, request exactly
@@ -91,7 +96,7 @@ effective project and reserved record:
 - more than one -> `E_AMBIGUOUS_IDENTITY`, exit 1, no write;
 - any invalid/conflicting reserved member affecting the project ->
   `E_IDENTITY_MARKER_INVALID`, exit 1, no write;
-- incomplete visibility/write proof -> exit 2.
+- missing membership/write authorization -> exit 2.
 
 An invalid page origin, echo, size, or page-count formula is
 `E_API_INCOMPATIBLE`, exit 2 before write. Across individually compatible
@@ -174,7 +179,7 @@ identity. Workflow-local actor `id` fields are unrelated to this server UUID.
 
 ## References
 
-- Product specification v28: FR-021/022/028–030/032–034, IR-012,
+- Product specification v31: FR-021/022/028–030/032–034/037, IR-012/013,
   DR-007/008/012, PA-005/006, VR-007–010/016
 - Pinned source: `rest_api/routers/workflow.py:109-142` and
   `service/workflow_config/workflow_config_index_service.py:46-163,222-265`

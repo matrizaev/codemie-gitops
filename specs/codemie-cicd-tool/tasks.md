@@ -1,8 +1,9 @@
 # Implementation task breakdown
 
-Source: product specification v29 and this architecture set.
+Source: product specification v32 and this architecture set.
 
-Status: **V28 CORRECTIONS VERIFIED; LOCAL O-002/V-000 PREPARATION READY**.
+Status: **V32 ARCHITECTURE READY FOR Q-010 PRE-IMPLEMENTATION VERIFICATION;
+IMPLEMENTATION REMAINS BLOCKED ON Q-010 AND SEC-010**.
 Q-007/T-003/R-001 and Q-008/W-001/S-001 are implemented and independently
 verified; the final Q-007 security review is approved for the next stage.
 O-001 checked-in controls are also independently verified and security-approved,
@@ -10,8 +11,113 @@ but remote activation remains operationally incomplete. O-002A and V-000A
 below isolate the useful local work that can proceed now. O-002B, V-000B, and
 the later production/release gates still require external evidence and are not
 made complete by local examples, credentials, or smoke-harness preparation.
+All v30/v31 admin/personal-owner/project-detail implementation and evidence is
+invalid for v32. Q-009/T-004 are superseded by Q-010/T-005 below. V-000B and
+V-003 are reset; no prior record may be migrated or qualified by relabeling.
 
-## 1. Dependency policy
+## 0. V32 replacement gates
+
+### Q-010 — Pre-implementation v32 convergence verification
+
+- Eligibility: `ARCHITECTURE-REVIEW`.
+- Dependencies: ADR-014 through ADR-018 and refreshed plan/data/contracts.
+- Verify exact traceability to FR-028–034/037, strict decoders, one bound
+  capability, and these mutation matrices:
+  - all kinds: no exact membership -> zero mutations; create needs no admin;
+  - Assistant: miss -> one POST; exact row + `write` -> one PUT; exact row
+    without `write` -> zero mutations;
+  - Workflow: zero exact current-user v2 -> one POST; one writable -> one PUT;
+    multiple -> zero; v1/unmarked -> explicit same-creator adoption only;
+  - Skill: zero exact `(project,user_id,name)` -> one POST; one writable -> one
+    PUT; multiple same-creator -> zero; foreign creators excluded;
+  - Skill POST-409: exactly one exhaustive page-0-origin same-creator read-only
+    scan; one result -> `ServerRejected` exit 1; multiple -> ambiguity exit 1;
+    stable zero -> reconciliation instability exit 1; compatibility/connectivity
+    failure -> exit 2; every branch asserts one POST total and zero subsequent
+    POST/PUT/PATCH/DELETE;
+  - Workflow inline Skill references: foreign-only same-name -> unresolved and
+    zero mutations; one exact current-creator row -> its ID only; foreign plus
+    one current-creator row -> current-creator ID only; multiple exact current-
+    creator rows -> ambiguity and zero mutations; reference resolution requires
+    membership and same capability/session but does not require Skill `write`;
+  - Datasource: visible exact writable -> one PUT; visible exact non-writable or
+    ambiguous -> zero; visible miss -> one POST maximum; 409 -> failure with no
+    retry, lookup, or PUT.
+  - Multipart File Datasource miss/409: construct and send exactly one multipart
+    POST; authoritative 409 -> exit 1 with zero follow-up GET/POST/PUT/PATCH/
+    DELETE, no multipart replay, and no response-body or filename leakage.
+- Acceptance evidence: independent report; stale-term scan; JSON/link checks.
+- Completion: `READY` or `READY WITH NON-BLOCKING QUESTIONS` before T-005.
+
+### SEC-010 — V32 authorization and race security review
+
+- Eligibility: `ARCHITECTURE-REVIEW`.
+- Dependencies: Q-010.
+- Verify zero unauthorized writes, exact `user_abilities` handling, cross-user
+  exclusion, session/capability binding, safe diagnostics, adoption races,
+  Datasource 409 handling, and post-write ambiguity containment.
+- Completion: no open high/critical finding before T-005.
+
+### T-005 — Replace invalid v31 authorization and identity implementation
+
+- Eligibility: `IMPLEMENTATION`.
+- Dependencies: Q-010 and SEC-010.
+- Scope: remove project-detail/admin/personal-owner gates; introduce typed
+  membership and exact ability evidence; implement Workflow v2 migration path,
+  creator-scoped Skill, Datasource authoritative 409, and exact matrices above.
+- Tests: fake-server request sequence/count, strict malformed/additive JSON,
+  actor/token/origin/session mixing, post-write verification, race outcomes,
+  safe diagnostic snapshots, and the complete creator-scoped Workflow inline
+  `skillRefs` matrix from Q-010 (including no foreign-creator ID leakage).
+  Add executable Skill target and Workflow-reference fixtures for foreign-only,
+  foreign-plus-one-own, one-own, and multiple-same-creator result sets. Target
+  fixtures assert create/update/ambiguity and exact mutation counts; reference
+  fixtures assert unresolved/current-user-ID/ambiguity with zero Skill writes.
+  Add executable JSON and multipart Datasource 409 fixtures asserting exactly
+  one create request and no follow-up request of any method.
+- Recovery: feature branch rollback to no-release state; do not preserve v31
+  writes/evidence as valid v32 state. Existing Workflow v1/unmarked rows move
+  only through explicit ADR-016 adoption.
+
+### O-002C — Refresh local examples and runbooks for v32
+
+- Dependencies: verified T-005.
+- Remove role/personal-owner/project-detail prerequisites. Document membership,
+  exact row ability, Workflow v2 adoption, Skill creator scope, Datasource 409,
+  writer freeze, post-write checks, and safe remediation.
+- O-002 remains incomplete until remote O-002B is repeated with v32 artifacts.
+
+### V-000C — Rebuild target qualification for v32
+
+- Dependencies: verified T-005 and O-002C.
+- GET-only evidence must prove strict membership/user ID, own-row Workflow and
+  Skill creator/ability shapes, Datasource visible-list shape plus an approved
+  non-destructive fixture for authoritative 409 semantics, and post-write read
+  contracts. It must not call project detail or require admin.
+- A fresh V-000B execution from this harness is mandatory; old evidence is
+  rejected by schema/version and artifact digest.
+
+### V-003 — Execute authorized v32 mutation smoke
+
+- Status: **RESET; BLOCKED ON FRESH V-000B, O-002C, T-005 VERIFICATION, AND
+  EXPLICIT WRITE AUTHORIZATION**.
+- Use the exact staged digest and same principal/capability. Exercise Assistant,
+  Workflow v2, and Skill matrices with bounded disposable identities. Exercise
+  Datasource only when the user explicitly authorizes its one-create/collision
+  fixture. Verify every success and retain allowlisted evidence only.
+- Any stale v31 marker/evidence, digest/principal drift, absent membership,
+  absent exact `write`, or loss of writer exclusivity stops before mutation.
+
+## Historical v31 task ledger — superseded, non-normative
+
+Everything below this heading is retained only to preserve lifecycle evidence
+and task-ID history. It MUST NOT authorize implementation, qualification,
+deployment, or release. Where it conflicts with section 0, product spec v32, or
+ADR-014 through ADR-018, section 0 and the v32 artifacts govern. Q-009, T-004,
+the older V-000A/B and V-003 definitions, and their acceptance-ownership tables
+are closed as superseded; they cannot satisfy a v32 dependency.
+
+## 1. Historical dependency policy
 
 The checked-in normative inputs already exist:
 
@@ -217,6 +323,27 @@ Composite task policy:
   scope/order and failed-lint diagnostic exclusivity from AC-FR-014-01;
   critical/high findings closed or routed to the owning upstream role.
 - Completion: security reviewer approves implementation boundaries.
+
+### Q-009 — Verify v31 personal-owner architecture convergence
+
+- Eligibility: `ARCHITECTURE-REVIEW`.
+- Lifecycle: **READY**.
+- Objective: independently verify the bounded complete-visibility delta before
+  implementation.
+- Requirements: SC-022, FR-033/037, DR-013, IR-013, BR-007, PA-005/008,
+  VR-017, AC-FR-037-01/02/03.
+- Architecture: ADR-013; ADR-012 amendment; plan/data model; HTTP contract,
+  adapter manifest, source baseline, and this task graph.
+- Acceptance evidence: strict consumed routes/fields/types; Workflow/Skill/
+  Datasource applicability and Assistant exclusion; unchanged admin/shared
+  rules; exact same-session project/actor binding; malformed-versus-valid-
+  mismatch taxonomy; separate write evidence; state order and zero-write seal;
+  exclusive sole-member cardinality; duplicate-key rejection; one opaque
+  client/origin/token/session capability; final revalidation; structural
+  one-segment routing; source trace; fake-server mutation coverage; V-000B/
+  V-003 reset; and section 7 trace completeness.
+- Completion: no blocking inconsistency and security reviewer receives the
+  authorization-boundary delta before T-004 or live evidence.
 
 ## 3. Local foundations
 
@@ -494,6 +621,47 @@ Composite task policy:
     POST, PUT, DELETE, or other modifying request.
 - Completion: runtime adaptation cannot alter declaration/request contracts.
 
+### T-004 — Implement v31 Rust complete-visibility preflight
+
+- Eligibility: `IMPLEMENTATION`.
+- Lifecycle: **BLOCKED ON Q-009 AND SECURITY DELTA REVIEW**.
+- Objective: replace the admin-only W/S/D preflight with the sealed two-variant
+  proof in ADR-013 without changing Assistant or write authorization.
+- Requirements: FR-033/037, DR-013, IR-013, PA-005/008, VR-017.
+- Expected components: `src/preflight/mod.rs`, `src/coordinator/mod.rs`,
+  `src/http/mod.rs`, and focused Rust fake-server/unit tests.
+- Dependencies: Q-009, existing T-003/R-001 baseline.
+- Acceptance evidence:
+  - Typed DTO conversion strictly consumes `/v1/user.user_id`, role flags,
+    all project `name`/`is_project_admin` entries, and conditional exact project
+    detail `name`/`project_type`/`created_by` plus every member
+    `user_id`/`is_project_admin`; additive unconsumed members pass.
+  - Workflow/Skill/Datasource share the preflight; Assistant sends neither
+    complete-visibility GET. The project path is percent-encoded.
+  - One opaque invocation `ApiClient` capability owns the target origin, token,
+    and session through both reads, resolution, write evidence, final visibility
+    revalidation, `PreparedWrite`, and dispatch. `PreparedWrite` must own or
+    otherwise unforgeably carry that same capability—not merely a boolean/
+    string proof or independently supplied client—and dispatch accepts no
+    replacement client, base URL/origin, token, or session parameter.
+  - Admin branch remains unchanged. Owner branch requires one exact membership,
+    personal type, exact name/creator, and one current-user member; false admin
+    flags pass only this branch and detail has exactly one total member, that
+    user. Empty, duplicate-owner, owner-plus-other, and sole mismatch fail.
+  - Missing/null/empty/wrong-type and consumed-object duplicate-key mutations
+    yield `E_API_INCOMPATIBLE`; valid
+    absent/duplicate/404/mismatch mutations yield `E_VISIBILITY_UNPROVEN`.
+    Each asserts empty stdout and zero POST/PUT/PATCH/DELETE.
+  - After visibility, existing-target write-ability mutations still fail before
+    write. State tests prove no partial proof constructs `PreparedWrite`.
+  - Route tests cover `/`, `%2f`, `%252f`, `?`, `#`, space, Unicode, `.`, and
+    `..`; each remains one encoded segment without origin/base/query/fragment
+    or segment-count change.
+- Validation: `make format`, `make lint`, focused Rust tests, and
+  `git diff --check`.
+- Completion: v31 is implemented without widening shared/global/Assistant or
+  conflating visibility with write ability.
+
 ## 5. Entity adapters and coordinator
 
 ### A-001 — Implement Assistant adapter
@@ -695,7 +863,7 @@ Composite task policy:
 ### O-002A — Implement and verify local examples, guide, and runbooks
 
 - Eligibility: `IMPLEMENTATION`.
-- Lifecycle: **READY FOR PRE-IMPLEMENTATION VERIFICATION**.
+- Lifecycle: **RESET FOR V31; BLOCKED ON Q-009/T-004 DOCUMENTED BEHAVIOR**.
 - Objective: create locally verifiable, portable user guidance and inert CI
   examples without requiring a Git remote or claiming provider activation.
 - Requirements: same as O-002.
@@ -719,6 +887,9 @@ Composite task policy:
     `WORKFLOW_ADOPTION.md`, and `UNCERTAIN_WRITE.md`.
   - `scripts/check_o002_examples.py` and `tests/test_o002_examples.py`.
 - Acceptance evidence:
+  - Guidance names both complete-visibility variants for Workflow/Skill/
+    Datasource, states personal ownership is not administration/write ability,
+    preserves Assistant's direct path, and forbids email/project inference.
   - The root README documents a locked build/prebuilt-binary path; offline lint;
     exact config precedence; all three login modes with local-auth explicitly
     excluded from CI; provider-specific process-local token reuse; GitHub fresh
@@ -801,7 +972,7 @@ Composite task policy:
 ### V-000A — Prepare the non-mutating target-qualification harness
 
 - Eligibility: `IMPLEMENTATION`.
-- Lifecycle: **READY FOR PRE-IMPLEMENTATION VERIFICATION**.
+- Lifecycle: **RESET FOR V31; READY AFTER Q-009**.
 - Objective: implement a locally testable live-target probe that cannot modify
   CodeMie and emits only sanitized qualification evidence.
 - Architecture: `plan.md` section 12, target qualification and enterprise smoke
@@ -841,6 +1012,14 @@ Composite task policy:
   - Output contains only manifest version, pass/fail, safe request IDs, and
     fixed probe categories. No URL/origin, credential, response body, payload,
     entity value, auth endpoint, or exception string is rendered or persisted.
+  - Version namespaces are explicit: retain evidence-envelope
+    `schemaVersion: 1`; replace Python `MANIFEST_VERSION = 2` with
+    `ADAPTER_MANIFEST_VERSION = 3`; persist
+    `adapterManifestVersion: ADAPTER_MANIFEST_VERSION`; remove the ambiguous
+    evidence field `manifestVersion`. Load or pin the expected value from the
+    checked-in adapter contract in one testable place. Reject legacy evidence
+    with `manifestVersion: 2`, missing `adapterManifestVersion`, or any adapter
+    version other than 3 before it can satisfy V-000B/V-003.
   - If a local credential file is used, it is parsed as data and never executed:
     no `source`, `.`, `eval`, `env $(...)`, or equivalent shell evaluation. The
     loader accepts only documented `CODEMIE_*` keys plus
@@ -862,12 +1041,21 @@ Composite task policy:
     operation-applicable GET contract, including Datasource under IR-008. This
     read coverage cannot produce a Datasource declaration or enable a V-003
     Datasource write.
-  - For the downstream V-003 runtime gate only, the probe strictly decodes
-    `GET /v1/user.email` as the authenticated actor identifier in addition to
-    `is_admin`, `is_maintainer`, `projects[].name`, and
-    `projects[].is_project_admin`. It compares actor and role/project data in
-    memory and persists only fixed binding pass/fail categories, never the
-    actor value.
+  - The probe strictly decodes `/v1/user.user_id`, role flags, and every project
+    membership field. If the unchanged admin branch fails, it performs the
+    same-session percent-encoded exact project GET and strictly decodes all
+    DR-013 project/member fields before any entity resolver. Actor/project
+    values remain in memory and only fixed categories persist.
+  - Fake-server mutations cover each missing/null/empty/wrong-type consumed
+    field and duplicate consumed-object key (`E_API_INCOMPATIBLE`) and each
+    absent/duplicate/404/name/type/creator/empty-or-multiple-or-mismatched-member
+    case (`E_VISIBILITY_UNPROVEN`), plus false-admin personal success,
+    shared creator failure, additive-field success, Assistant no-preflight, and
+    separate write-ability failure. Every qualification negative asserts zero
+    entity-resolver and zero modifying calls.
+  - Path/client tests cover the T-004 adversarial segment set, client/origin/
+    token/session substitution, and evidence change before final revalidation;
+    every case has zero entity-resolution or modifying calls as applicable.
   - Fake-server tests assert that same-origin and cross-origin redirects are not
     followed, no Authorization header reaches either redirect target, no write
     method is sent, body/timeout/page/item limits stop safely, strict JSON faults
@@ -885,11 +1073,12 @@ Composite task policy:
 ### V-000B — Execute target/source qualification
 
 - Eligibility: `DEPLOYMENT-VERIFICATION`.
-- Lifecycle: **EXTERNAL TARGET EVIDENCE REQUIRED**.
+- Lifecycle: **RESET BY V31; FRESH EXTERNAL TARGET EVIDENCE REQUIRED**.
 - Objective: execute V-000A against the named deployment before any smoke write.
 - Dependencies: V-000A, authorized target and project, and valid credentials.
 - Acceptance evidence: sanitized non-production record contains the fixed
-  non-secret staged-binary SHA-256, manifest version, pass/fail, safe request
+  non-secret staged-binary SHA-256, `schemaVersion: 1`,
+  `adapterManifestVersion: 3`, pass/fail, safe request
   IDs, and page-0 observations only; no body, payload, entity, origin, or
   secret values. All applicable read-only probes pass, including the pinned
   Datasource GET contract, with a non-empty single-page Workflow and Skill
@@ -897,14 +1086,16 @@ Composite task policy:
   authenticated principal/session, and staged-binary digest qualified by that
   execution. A mismatch blocks all V-003 writes and escalates to
   verification/release owners.
+- Prior admin-only, email-bound, differently-principaled, or pre-v31 records
+  are invalid and cannot be migrated; execute the refreshed V-000A anew.
 - Completion: no breaking mismatch for the named target; this completes V-000
   but not O-001, O-002B, or release authorization.
 
 ### V-003 — Execute authorized enterprise create/update smoke
 
 - Eligibility: `DEPLOYMENT-VERIFICATION`.
-- Lifecycle: **READY AFTER O-002A/V-000B; LIVE WRITES NOT YET AUTHORIZED BY THIS
-  TASK BREAKDOWN**.
+- Lifecycle: **RESET BY V31; READY ONLY AFTER REFRESHED O-002A/V-000B AND
+  EXPLICIT LIVE-WRITE AUTHORIZATION**.
 - Objective: prove serial create then update behavior in the authorized
   enterprise test project without conflating it with production activation.
 - Requirements: FR-005/006/008/011/012/016/033/034, PA-003/005/006,
@@ -928,15 +1119,21 @@ Composite task policy:
     differently-targeted, differently-project-scoped, differently-principaled,
     or differently-digested V-000B record cannot satisfy this pre-write gate.
   - After that fresh V-000B pass and before the first possible modifying call,
-    the harness strictly decodes `GET /v1/user.email` as the authenticated
+    the harness strictly decodes `GET /v1/user.user_id` as the authenticated
     actor plus the role/project fields and proves exact equality across
     `authorization.project`,
     `CODEMIE_TEST_PROJECT`, every concrete declaration's resolved effective
     project, and the exact `projects[].name` entry used for role evidence. The
-    authenticated actor equals `authorization.actor`; the exact project entry
-    exists; and the role is global administrator/maintainer or
-    `is_project_admin=true` on that same entry. Another accessible project's
-    admin role is insufficient. Any mismatch yields zero writes.
+    authenticated actor ID equals `authorization.actor`; exactly one project
+    membership exists; and complete visibility is either the unchanged admin
+    predicate or strict same-session personal-owner project detail. Another
+    project's admin role, shared ownership/membership, or email/name inference
+    is insufficient. Existing-target write evidence remains separate. Any
+    mismatch yields zero writes.
+  - The authorization `actor` is the exact non-empty authenticated
+    `/v1/user.user_id`. Email remains a login selector/response field only and
+    is never accepted as the V-000/V-003 actor identity. Tests prove a user-ID
+    actor passes and an email-only actor fails before entity resolution.
   - The authorization record explicitly names a bounded
     `exclusiveWriter` confirmation with `confirmed=true`, confirmer, start/end
     times, and the exact run prefix. The current time and whole smoke sequence
@@ -1045,6 +1242,7 @@ Composite task policy:
 | FR-036 | D-001/R-001 | Q-003, V-000/V-001 |
 | IR-011/012 | T-003/R-001 | Q-007, V-000/V-001 |
 | IR-006, QR-012 | O-002 | V-001/V-002 |
+| FR-037, DR-013, IR-013, BR-007, PA-008, VR-017 | T-004/V-000A | Q-009, V-001/V-002 |
 
 ### Exact acceptance-criterion ownership
 
@@ -1104,6 +1302,9 @@ Composite task policy:
 | AC-FR-031-02 | S-001 |
 | AC-FR-033-01 | W-001/S-001/T-003 |
 | AC-FR-034-01 | W-001/S-001/R-001 |
+| AC-FR-037-01 | T-004/V-000A |
+| AC-FR-037-02 | T-004/V-000A |
+| AC-FR-037-03 | T-004/V-000A |
 | AC-QR-010-01 | O-001/O-002 |
 | AC-QR-012-01 | O-002 |
 | AC-FR-022-02 | F-002/F-004 |

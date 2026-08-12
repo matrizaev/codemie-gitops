@@ -1,6 +1,6 @@
 # Data model
 
-Source: `specs/codemie-cicd-tool.md` v28. Status: NORMATIVE architecture
+Source: `specs/codemie-cicd-tool.md` v32. Status: NORMATIVE architecture
 model against backend `2.42.0` commit
 `2a481c290c99bf30ef80aadafa03d876a7f5f732`.
 
@@ -9,7 +9,9 @@ SEC-003 resource budgets, SEC-005 identifier constraints (architecture
 remediation, 2026-08-10); Mode (c) Keycloak ROPC added (v26, 2026-08-10);
 per-file lint warning scope, ordering, and failure gating clarified (v27,
 2026-08-11); source-derived compatibility identity and pre-write evidence
-clarified (v28, 2026-08-11).
+clarified (v28, 2026-08-11); v32 member-create/exact-ability-update,
+creator-scoped identity, and Datasource authoritative-collision model added
+2026-08-12. V30/v31 project-detail machinery is superseded.
 
 ## 1. Ownership and lifetime
 
@@ -28,6 +30,20 @@ invocation only:
 Tokens, credentials, request/response bodies, payloads, server error text,
 declaration/sidecar values, arbitrary headers, secret-bearing fields, and
 secret-like values are outside every diagnostic, log, and persistence type.
+
+Sanitized deployment evidence has two non-interchangeable versions:
+
+```text
+V000Evidence = {
+  schemaVersion: 1,           // evidence-envelope schema
+  adapterManifestVersion: 3, // consumed API contract manifest
+  ...safe evidence fields
+}
+```
+
+`adapterManifestVersion` must equal the checked-in adapter manifest's top-level
+`manifestVersion`. Legacy `manifestVersion: 2` is ambiguous and invalid for
+v31 evidence; it is not an alias and is not migrated.
 
 ## 2. Declaration and effective identity
 
@@ -88,11 +104,12 @@ Reserved server identity:
 
 ```text
 WORKFLOW_IDENTITY_KEY = "codemie.epam.com/gitops/workflow-identity"
-WorkflowIdentityV1 = closed {version: 1, project: NonEmptyString, slug: NonEmptyString}
+WorkflowIdentityV2 = closed {version: 2, project: NonEmptyString,
+  creator_user_id: NonEmptyString, slug: NonEmptyString}
 ```
 
 `WorkflowResolution = Zero | Unique{server_id,detail} | Ambiguous | Invalid |
-Unstable | AdoptionRequired | IncompleteVisibility`. UUIDs occur only in a
+Unstable | AdoptionRequired`. UUIDs occur only in a
 unique result or validated invocation-only adoption selector. A Workflow update
 merge preserves unmentioned non-reserved server metadata, applies authored
 non-reserved members, then installs the exact reserved record. There is no
@@ -104,9 +121,10 @@ reserved member. The encoder emits compact UTF-8 JSON with recursively sorted
 object keys, no BOM, and no non-finite numbers. The merge operates on decoded
 objects; the string is only a server transport representation.
 
-Explicit adoption selects only its UUID. Another unmarked same-display-name row
-has no selection or veto role. Without explicit adoption, display-name evidence
-can only yield `AdoptionRequired`.
+Only exact current-principal v2 records ordinary-match; other creators are
+excluded. V1 and unmarked rows are adoption-only. Adoption requires the exact
+UUID, same project and creator, exact `write`, no v2 record on the candidate,
+and zero existing exact v2 matches. Display name is never identity.
 
 Each required Workflow enumeration pass has `page_base: 0`,
 `per_page: 100`, and requests `[0]` when `pages == 0` or `0..pages-1`
@@ -125,14 +143,13 @@ SkillSnapshot  = {
   all_pages,
   exact_candidates
 }
-SkillResolution = Zero | Unique | Ambiguous | Unstable | IncompleteVisibility
+SkillResolution = Zero | Unique | Ambiguous | Unstable
 ```
 
-Creator, list order, and age are evidence but never identity or tie-breaks.
-Every page and required visibility scope must be complete. One returned ID is a
-transient route selector. More than one exact candidate is ambiguous. A
-creator-scoped server uniqueness constraint does not change the authored
-`(project,name)` key.
+Creator is reconciliation identity: filter exact
+`(project,authenticated_user_id,name)`. Other creators are excluded, not
+ambiguity. List order and age never select; multiple same-creator matches are
+ambiguous. Authored/outcome identity remains `(project,name)`.
 
 The first Skill request is always page 0. Each response must echo the requested
 page and satisfy the manifest page-count invariants. Initial resolution,
@@ -142,8 +159,8 @@ scanner; no state may substitute page 1 as the origin.
 ## 6. Datasource union
 
 ```text
-DatasourceResolution = Zero | Unique{server_id,detail} | Ambiguous |
-                       Unstable | IncompleteVisibility
+DatasourceResolution = VisibleMiss | VisibleUnique{server_id,detail} |
+                       VisibleAmbiguous | Unstable
 DatasourceSpec = ClosedUnion<index_type, PerKindAuthoredFields>
 ```
 
@@ -230,17 +247,41 @@ failure may be uncertain; the CLI performs no automatic delete or rollback.
 `OperationPreflightComplete` is a kind-specific union:
 
 ```text
-OperationPreflight =
-  AssistantAdminPreflightNotRequired
-| ExactProjectVisibility {kind: Workflow | Datasource | Skill}
+OperationPreflight = ProjectMember {
+  authenticated_user_id: NonEmptyString,
+  effective_project: NonEmptyString,
+  capability_binding
+}
 ```
 
-`ExactProjectVisibility` requires global admin/maintainer or a single
-`GET /v1/user.projects[]` entry whose `name` equals the exact effective project
-and whose `is_project_admin` value is true. An admin entry for another project
-is not evidence. Assistant does not require `/v1/user`; its direct exact
-`(project, slug)` response is validated during the following non-mutating
-resolution state and becomes part of the sealed evidence.
+Strict wire-to-domain conversion is closed:
+
+```text
+UserPreflightWire = { user_id: non-empty string,
+  projects: [{name: non-empty string, ...unconsumed}, ...], ...unconsumed }
+EntityAbilityWire = { user_abilities: [strict supported action string, ...] }
+```
+
+All kinds require at least one exact project membership. Administration is
+optional and role fields are not consumed gates. Assistant then uses exact
+direct lookup; Workflow/Skill use authenticated-creator scope; Datasource uses
+visible-row selection. Update/adoption additionally requires exact `write` on
+the selected row. No normalization, role inference, ownership inference, or
+project-detail request supplies either gate.
+
+The state/evidence order is:
+
+```text
+LocalValidated
+-> Authenticated(InvocationApiCapability)
+-> UserEvidenceDecoded
+-> ExactMembershipQualified
+-> NonMutatingResolutionComplete
+-> ExistingTargetExactWriteAbilityProven     // update/adoption only
+-> RequestProjected
+-> PrewriteEvidenceEstablished(PreparedWrite)
+-> WriteAttempted
+```
 
 `NonMutatingResolutionComplete` means every operation-applicable identity,
 reference, detail/preservation, response-shape, and pagination read has been
@@ -252,18 +293,32 @@ version comparison:
 PrewriteEvidence = closed {
   kind,
   effective_project,
-  operation_preflight,
+  exact_membership,
+  invocation_api_capability,
   non_mutating_resolution_complete,
+  exact_write_ability?: required for update/adoption,
   prepared_write: CreateRequest | UpdateRequest
 }
 ```
 
+`InvocationApiCapability` is opaque and owns one `ApiClient`, validated target
+origin (scheme, host, effective port), bearer credential, and internal session
+identity. It is not serializable or diagnostic-safe. All qualification,
+resolution, detail, ability, final-revalidation, and write operations borrow
+that same capability. `PreparedWrite` carries it; dispatch accepts no separate
+base URL, token, client, or session.
+
+Duplicate-aware JSON construction precedes DTO conversion: a repeated key in
+any consumed object is incompatible even if values agree. Unique additive
+unconsumed keys remain tolerated.
+
 The HTTP modifying-request boundary accepts only `PreparedWrite` carrying this
 sealed evidence; there is no POST/PUT transition from any earlier state. A
 missing or invalid consumed field transitions to
-`Failed(E_API_INCOMPATIBLE)`; a valid capability response that fails the exact-
-project predicate transitions to `Failed(E_VISIBILITY_UNPROVEN)`. Both happen
-before a modifying request. `GET /v1/info.version` is not part of the evidence.
+`Failed(E_API_INCOMPATIBLE)`; valid missing membership or exact write ability
+transitions to `Failed(E_AUTHORIZATION)`. Both happen before mutation.
+Failure branches cannot construct `PreparedWrite`. `GET /v1/info.version` is
+not part of the evidence.
 Only additive, unconsumed response members are ignored; they neither satisfy
 required evidence nor expand a request.
 
@@ -373,8 +428,11 @@ Any other combination is `E_CONFIGURATION`, exit 2, before network access.
 
 One HTTP POST or PUT is the server transaction boundary; cross-entity apply is
 caller-ordered. A valid repeat invocation against an existing identity sends a
-new PUT and reports `updated`. The Skill create-409 exception performs one
-bounded full re-resolution and never repeats POST. Post-write identity
+new PUT and reports `updated`. The Skill create-409 exception performs exactly
+one exhaustive page-0-origin same-creator read-only scan. It never sends a
+second POST or any PUT/PATCH/DELETE. One collision is `ServerRejected` exit 1;
+multiple are ambiguity exit 1; stable zero is reconciliation instability exit
+1; compatibility/connectivity failure is exit 2. Post-write identity
 verification does not inspect desired-state equality. Serialized CI and
 governed external identity writers contain races. Recovery is Git revert and a
 new apply for writable fields, or manual platform remediation for duplicate or

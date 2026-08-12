@@ -67,15 +67,13 @@ const RETRY_BASE_JITTER_MS: u64 = 5;
 
 /// Fields consumed from `GET /v1/user` per `adapter-manifest-v2.42.0.json`.
 ///
-/// Consumed: `is_admin`, `is_maintainer`, `projects[].name`,
-/// `projects[].is_project_admin`. All other server-supplied fields are ignored.
+/// Consumed: `user_id` and `projects[].name`. Role fields are not v32
+/// authorization evidence.
 /// Role values are never forwarded to logs or output (SEC-005).
 #[derive(serde::Deserialize)]
 struct UserResponse {
-    /// Global admin status.
-    is_admin: bool,
-    /// Global maintainer status.
-    is_maintainer: bool,
+    /// Stable authenticated principal identifier.
+    user_id: String,
     /// Per-project membership list.
     projects: Vec<UserProject>,
 }
@@ -85,19 +83,22 @@ struct UserResponse {
 struct UserProject {
     /// Exact project identifier attached to this membership entry.
     name: String,
-    /// True when the principal has project-admin role for this project.
-    is_project_admin: bool,
 }
 
 /// Sealed proof that the principal can exhaustively resolve one exact project.
 #[derive(Debug, Clone)]
 pub(crate) struct ExactProjectVisibility {
     effective_project: String,
+    authenticated_user_id: String,
 }
 
 impl ExactProjectVisibility {
     pub(crate) fn matches(&self, effective_project: &str) -> bool {
         self.effective_project == effective_project
+    }
+
+    pub(crate) fn authenticated_user_id(&self) -> &str {
+        &self.authenticated_user_id
     }
 }
 
@@ -247,8 +248,9 @@ impl ApiClient {
     /// Parse failure → `ApiIncompatible`. Depth > 64 → `ApiIncompatible`.
     /// Internal serde_json error messages are discarded (SEC-005).
     fn deserialize_json<T: DeserializeOwned>(body: &[u8]) -> Result<T, AppError> {
-        let value: serde_json::Value = serde_json::from_slice(body)
+        let value: DuplicateCheckedValue = serde_json::from_slice(body)
             .map_err(|_e| AppError::ApiIncompatible("response is not valid JSON".into()))?;
+        let value = value.0;
         if json_max_depth(&value, 0) > JSON_MAX_DEPTH {
             return Err(AppError::ApiIncompatible(
                 "response JSON nesting exceeds 64 levels".into(),
@@ -441,10 +443,8 @@ impl ApiClient {
         Err(last_err)
     }
 
-    /// POST that returns `Ok(None)` on 409 Conflict and `Ok(Some(T))` on success.
-    ///
-    /// Used by the Skill adapter for the single bounded create-409 re-resolution
-    /// path (S-001). All other non-2xx statuses propagate normally.
+    /// POST that returns `Ok(None)` on authoritative Datasource 409 Conflict
+    /// and `Ok(Some(T))` on success. No collision follow-up is performed.
     async fn post_or_conflict<B, T>(
         &self,
         url: &ValidatedUrl,
@@ -488,7 +488,7 @@ impl ApiClient {
         path: &str,
         query_params: &[(String, String)],
         file_parts: Vec<(String, Vec<u8>)>,
-    ) -> Result<serde_json::Value, AppError> {
+    ) -> Result<Option<serde_json::Value>, AppError> {
         let full_url = Self::join_url_with_query(url, path, query_params);
         let form = Self::build_multipart_form(file_parts)?;
         let resp = self
@@ -501,11 +501,15 @@ impl ApiClient {
             .map_err(Self::map_modifying_send_error)?;
 
         let status = resp.status();
+        if status == reqwest::StatusCode::CONFLICT {
+            let _ = Self::bounded_body(resp).await;
+            return Ok(None);
+        }
         if !status.is_success() {
             return Err(Self::classify_error_status(status, true));
         }
         let body_bytes = Self::bounded_body(resp).await?;
-        Self::deserialize_json(&body_bytes)
+        Self::deserialize_json(&body_bytes).map(Some)
     }
 
     /// PUT `multipart/form-data` with scalar query parameters. Not retried.
@@ -542,17 +546,17 @@ impl ApiClient {
     /// contains completed, kind-specific read evidence and the linked projected
     /// request (R-001 / SEC-Q007-002).
     pub(crate) async fn dispatch_prepared(
-        &self,
-        url: &ValidatedUrl,
-        prepared: PreparedWrite,
+        prepared: PreparedWrite<'_>,
     ) -> Result<PreparedWriteResponse, AppError> {
-        match prepared.into_request()? {
+        let (client, request) = prepared.into_request()?;
+        let url = &client.base_url;
+        match request {
             PreparedRequest::Json {
                 method: ModificationMethod::Post,
                 path,
                 body,
                 conflict_is_resolution_signal: true,
-            } => self
+            } => client
                 .post_or_conflict::<_, serde_json::Value>(url, &path, &body)
                 .await
                 .map(|response| match response {
@@ -564,7 +568,7 @@ impl ApiClient {
                 path,
                 body,
                 conflict_is_resolution_signal: false,
-            } => self
+            } => client
                 .post::<_, serde_json::Value>(url, &path, &body)
                 .await
                 .map(PreparedWriteResponse::Success),
@@ -573,7 +577,7 @@ impl ApiClient {
                 path,
                 body,
                 conflict_is_resolution_signal: _,
-            } => self
+            } => client
                 .put::<_, serde_json::Value>(url, &path, &body)
                 .await
                 .map(PreparedWriteResponse::Success),
@@ -582,16 +586,19 @@ impl ApiClient {
                 path,
                 query_params,
                 file_parts,
-            } => self
+            } => client
                 .post_multipart(url, &path, &query_params, file_parts)
                 .await
-                .map(PreparedWriteResponse::Success),
+                .map(|response| match response {
+                    Some(value) => PreparedWriteResponse::Success(value),
+                    None => PreparedWriteResponse::Conflict,
+                }),
             PreparedRequest::Multipart {
                 method: ModificationMethod::Put,
                 path,
                 query_params,
                 file_parts,
-            } => self
+            } => client
                 .put_multipart(url, &path, &query_params, file_parts)
                 .await
                 .map(PreparedWriteResponse::Success),
@@ -636,6 +643,73 @@ impl ApiClient {
             form = form.part("files", part);
         }
         Ok(form)
+    }
+}
+
+struct DuplicateCheckedValue(serde_json::Value);
+
+impl<'de> serde::Deserialize<'de> for DuplicateCheckedValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = DuplicateCheckedValue;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a JSON value without duplicate object keys")
+            }
+            fn visit_bool<E: serde::de::Error>(self, value: bool) -> Result<Self::Value, E> {
+                Ok(DuplicateCheckedValue(value.into()))
+            }
+            fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<Self::Value, E> {
+                Ok(DuplicateCheckedValue(value.into()))
+            }
+            fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<Self::Value, E> {
+                Ok(DuplicateCheckedValue(value.into()))
+            }
+            fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<Self::Value, E> {
+                serde_json::Number::from_f64(value)
+                    .map(serde_json::Value::Number)
+                    .map(DuplicateCheckedValue)
+                    .ok_or_else(|| E::custom("invalid JSON number"))
+            }
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(DuplicateCheckedValue(value.into()))
+            }
+            fn visit_string<E: serde::de::Error>(self, value: String) -> Result<Self::Value, E> {
+                Ok(DuplicateCheckedValue(value.into()))
+            }
+            fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(DuplicateCheckedValue(serde_json::Value::Null))
+            }
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                self.visit_none()
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut sequence: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut values = Vec::new();
+                while let Some(value) = sequence.next_element::<DuplicateCheckedValue>()? {
+                    values.push(value.0);
+                }
+                Ok(DuplicateCheckedValue(serde_json::Value::Array(values)))
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut values = serde_json::Map::new();
+                while let Some((key, value)) = map.next_entry::<String, DuplicateCheckedValue>()? {
+                    if values.insert(key, value.0).is_some() {
+                        return Err(serde::de::Error::custom("duplicate JSON object key"));
+                    }
+                }
+                Ok(DuplicateCheckedValue(serde_json::Value::Object(values)))
+            }
+        }
+        deserializer.deserialize_any(Visitor)
     }
 }
 
@@ -704,20 +778,25 @@ pub async fn preflight_visibility(
 ) -> Result<ExactProjectVisibility, AppError> {
     let user: UserResponse = client.get(url, "/v1/user").await?;
 
-    if user.is_admin
-        || user.is_maintainer
-        || user
-            .projects
-            .iter()
-            .any(|project| project.name == effective_project && project.is_project_admin)
+    if user.user_id.is_empty() || user.projects.iter().any(|project| project.name.is_empty()) {
+        return Err(AppError::ApiIncompatible(
+            "user response contains an empty consumed string".into(),
+        ));
+    }
+
+    if user
+        .projects
+        .iter()
+        .any(|project| project.name == effective_project)
     {
         return Ok(ExactProjectVisibility {
             effective_project: effective_project.to_owned(),
+            authenticated_user_id: user.user_id,
         });
     }
 
     Err(AppError::VisibilityUnproven(
-        "principal lacks project-admin, global-admin, or global-maintainer role".into(),
+        "principal is not a member of the effective project".into(),
     ))
 }
 
@@ -1088,7 +1167,7 @@ mod tests {
             .mock("GET", "/v1/user")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"is_admin":true,"is_maintainer":false,"projects":[]}"#)
+            .with_body(r#"{"user_id":"user-1","is_admin":true,"projects":[{"name":"my-proj"}]}"#)
             .create_async()
             .await;
 
@@ -1096,7 +1175,7 @@ mod tests {
         let client = test_client(&server.url());
         preflight_visibility(&client, &url, "my-proj")
             .await
-            .expect("global admin must pass preflight");
+            .expect("membership must pass regardless of admin role");
         _mock.assert_async().await;
     }
 
@@ -1111,7 +1190,9 @@ mod tests {
             .mock("GET", "/v1/user")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"is_admin":false,"is_maintainer":true,"projects":[]}"#)
+            .with_body(
+                r#"{"user_id":"user-1","is_maintainer":true,"projects":[{"name":"my-proj"}]}"#,
+            )
             .create_async()
             .await;
 
@@ -1119,7 +1200,7 @@ mod tests {
         let client = test_client(&server.url());
         preflight_visibility(&client, &url, "my-proj")
             .await
-            .expect("global maintainer must pass preflight");
+            .expect("membership must pass regardless of maintainer role");
         _mock.assert_async().await;
     }
 
@@ -1135,7 +1216,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"is_admin":false,"is_maintainer":false,"projects":[{"name":"my-proj","is_project_admin":true}]}"#,
+                r#"{"user_id":"user-1","is_admin":false,"is_maintainer":false,"projects":[{"name":"my-proj","is_project_admin":true}]}"#,
             )
             .create_async()
             .await;
@@ -1156,7 +1237,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"is_admin":false,"is_maintainer":false,"projects":[{"name":"other-project","is_project_admin":true}]}"#,
+                r#"{"user_id":"user-1","is_admin":false,"is_maintainer":false,"projects":[{"name":"other-project","is_project_admin":true}]}"#,
             )
             .create_async()
             .await;
@@ -1209,7 +1290,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"is_admin":false,"is_maintainer":false,"projects":[{"name":"my-project","is_project_admin":true,"future_project_field":42}],"future_top_level":{"nested":true}}"#,
+                r#"{"user_id":"user-1","is_admin":false,"is_maintainer":false,"projects":[{"name":"my-project","is_project_admin":true,"future_project_field":42}],"future_top_level":{"nested":true}}"#,
             )
             .create_async()
             .await;
@@ -1232,9 +1313,7 @@ mod tests {
             .mock("GET", "/v1/user")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(
-                r#"{"is_admin":false,"is_maintainer":false,"projects":[{"name":"proj","is_project_admin":false}]}"#,
-            )
+            .with_body(r#"{"user_id":"user-1","projects":[{"name":"other"}]}"#)
             .create_async()
             .await;
 
@@ -1262,7 +1341,9 @@ mod tests {
             .mock("GET", "/v1/user")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"is_admin":false,"is_maintainer":false,"projects":[]}"#)
+            .with_body(
+                r#"{"user_id":"user-1","is_admin":false,"is_maintainer":false,"projects":[]}"#,
+            )
             .create_async()
             .await;
 
@@ -1389,5 +1470,19 @@ mod tests {
         assert_eq!(res.id, 1);
         assert_eq!(res.status, "updated");
         _mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn preflight_visibility_rejects_duplicate_security_keys() {
+        let mut server = mockito::Server::new_async().await;
+        let duplicate = server.mock("GET", "/v1/user").with_status(200).with_body(
+            r#"{"user_id":"user-1","user_id":"user-2","is_admin":true,"is_maintainer":false,"projects":[]}"#,
+        ).create_async().await;
+        let url = test_url(&server.url());
+        let error = preflight_visibility(&test_client(&server.url()), &url, "project")
+            .await
+            .unwrap_err();
+        assert!(matches!(error, AppError::ApiIncompatible(_)));
+        duplicate.assert_async().await;
     }
 }

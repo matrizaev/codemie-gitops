@@ -4,7 +4,7 @@
 
 **Architecture status: READY FOR PRE-IMPLEMENTATION VERIFICATION**
 
-Product specification v29 is the approved source. The architecture now pins
+Product specification v32 is the approved source. The architecture pins
 presence, null, applicability, ownership, and transport classes for every
 admitted field, requires an explicit token endpoint with deterministic
 precedence, incorporates all architect-owned security remediation from the
@@ -19,20 +19,21 @@ warning lifecycle (`security-review-preimplementation.md`):
   disable for auth POSTs, URL userinfo rejection in all schemas.
 - **SEC-003** (CLOSED): versioned resource budget defaults for all 18 resource
   dimensions in `http-adapter.md` §2.4 and `data-model.md` §11.
-- **SEC-004** (CLOSED AND VERIFIED): ADR-012 Option A applies to Workflow,
-  Skill, and Datasource; the implementation strictly binds project-admin
-  evidence to the exact effective project and the final Q-007 security review
-  approves the correction.
+- **SEC-004/v32**: ADR-018 supersedes the Datasource complete-visibility gate.
+  Partial visible lists cannot prove absence; one create is permitted and an
+  authoritative HTTP 409 fails without retry or guessed update. ADR-013 is
+  superseded; project detail is not an authorization dependency.
 - **SEC-005** (CLOSED): identifier maxLength and control/bidi pattern in all
   schemas; output rendering rules in `cli.md` §10.
 - **SEC-006** (CLOSED): supply-chain and CI controls amendment in ADR-005.
 
-The v28 compatibility and zero-based Workflow/Skill pagination corrections are
-implemented and independently verified. Q-007's final security review is
-`APPROVED FOR NEXT STAGE`, and the final post-implementation convergence report
-is `PASS`; Q-008's page-0 decision is implemented and covered by that final
-verification. This closes the earlier T-003/W-001/S-001/R-001 correction gate
-without completing live deployment qualification.
+The v28 compatibility and zero-based pagination corrections remain applicable.
+V32 replaces v30/v31 authorization and identity semantics: exact membership
+qualifies create; exact selected-row `write` ability qualifies update/adoption;
+Workflow and Skill are creator-scoped; Datasource uses one-create/409 authority.
+Q-010 and SEC-010 must verify this architecture before replacement
+implementation. All v31 O-002/V-000/V-003 qualification and smoke evidence is
+stale and cannot be migrated.
 
 O-001's checked-in serialization, exact-artifact, inventory, and recovery
 controls are independently verified and security-approved, but O-001 remains
@@ -64,8 +65,9 @@ surface.
 
 ## 3. Sources consulted
 
-- Approved product source: `specs/codemie-cicd-tool.md` v29, all sections,
-  especially SC-021, IR-011/012, AC-IR-011-01, and AC-IR-012-01.
+- Approved product source: `specs/codemie-cicd-tool.md` v32, especially
+  SC-022, FR-033/037, DR-013, IR-013, PA-005/008, VR-017, and
+  AC-FR-037-01/02/03, while retaining SC-021 and IR-011/012.
 - Security review input: `security-review-preimplementation.md` (read-only;
   findings SEC-001–SEC-006 used as remediation drivers).
 - Verification sources: `Q-006-verification-report.md` (read-only v26 baseline)
@@ -81,6 +83,9 @@ surface.
   `55945d075d82e771c4a2f4238afec1eb4c79d1e1`.
 - Exact evidence and paths: `research.md`, `contracts/source-baseline.md`, and
   `contracts/adapter-manifest-v2.42.0.json`.
+- Membership, own-row visibility, creator, exact-ability, and collision source
+  evidence is recorded in `contracts/source-baseline.md`; reference-only paths
+  are never implementation dependencies.
 - User-supplied deployment context: an ignored, untracked, owner-only `.env`
   contains local credentials and `CODEMIE_TEST_PROJECT` for
   `https://codemie.lab.epam.com/`. Values were not read into architecture
@@ -154,16 +159,17 @@ behavior.
 | FR-017 | exact per-field precedence; closed non-secret repository config; secret credentials from environment only; non-secret selectors from flag or environment (SEC-001, v25) |
 | FR-019/020 | no generic adoption or ownership marker; Workflow-only identity exception |
 | FR-028–030, FR-032–035 | Workflow reserved record, exhaustive resolver, explicit adoption, exact local actor/reference projection, race visibility |
-| FR-031–034 | exhaustive Skill resolver, privileged visibility/write proof, bounded 409 recovery, no tie-break/delete |
+| FR-031–034 | creator-scoped Skill resolver, exact write proof, bounded read-only 409 recovery, no tie-break/delete |
 | FR-036, IR-008 | one Datasource adapter, peer exact create/update mappings, ordinary write-through CRUD, no dedicated lifecycle surface |
-| IR-011/012, SC-021 | pinned source-derived contract; `/v1/info.version` is observability only; Workflow/Skill/Datasource require exact-effective-project visibility while Assistant uses strict direct lookup; all operation-applicable evidence is sealed with the prepared write before POST/PUT |
+| IR-011/012, SC-021 | pinned source-derived contract; `/v1/info.version` is observability only; all operation-applicable evidence is sealed before mutation |
+| FR-033/037, DR-013, IR-013, PA-005/008, VR-017 | exact membership gates create for all kinds; exact selected-row `write` gates update/adoption; one capability/session; administration optional; no project-detail dependency |
 | FR-029/031/034, IR-012 | Workflow and Skill enumeration starts at page 0; initial, post-write, and Skill create-409 scans validate zero-based page echo/count invariants before write or success |
 | PA-005/006, QR-009–011 | privileged resolver identity, serialized CI, writer governance, inventory/remediation |
 | IR-006, QR-012 | provider-safe CI token delivery: GitHub fresh login plus immediate native add-mask in one protected step; GitLab pre-supplied environment-scoped protected+masked token with no login; no persistence, transfer, re-emission, or simulated fallback |
 | SEC-001 (v25) | env-only secret credentials; `--token`/`--client-secret`/`--password` flags are E_USAGE, exit 2, before network access; ADR-011 |
 | SEC-002 (v25) | ValidatedUrl type; HTTPS-required auth_url; loopback exception for target_url; userinfo/fragment/control-char rejection in all URL schema patterns; redirect disabled for auth POSTs; ADR-011 |
 | SEC-003 (v25) | 18 versioned resource budget defaults; YAML, file, network, response, pagination, concurrency, deadline dimensions; `http-adapter.md` §2.4; `data-model.md` §11 |
-| SEC-004 (v28 correction) | ADR-012 Option A; global admin/maintainer or exact-effective-project admin predicate for Workflow/Skill/Datasource; Assistant excluded under PA-003; missing fields incompatible; false predicate visibility-unproven |
+| SEC-004/v32 | ADR-018; Datasource visible miss permits one create, 409 is authoritative collision, no retry/lookup/update guessing; administrators may obtain fuller diagnostics but are optional |
 | SEC-005 (v25) | identifier maxLength and control/bidi pattern rejection in all schemas; safe output rendering rules (one line/record, JSON serializer, canonical field paths, multipart basename safety); `cli.md` §10 |
 | SEC-006 (v25) | Cargo.lock committed; --locked builds; RustSec scanning; SHA-pinned CI actions; permissions blocks; secret isolation for fork/PR; protected deployment environments; same-artifact promotion; SBOM; ADR-005 amendment |
 
@@ -293,9 +299,12 @@ authorization, Workflow metadata preservation/adoption, server-shape decoding,
 reference mapping, or post-write identity verification.
 
 One POST or PUT is the modifying transaction boundary. There is no blind write
-retry, delete, or rollback. The one Skill create-409 path performs one bounded
-full resolution and never repeats POST. An uncertain result reports a safe
-failure and requires re-resolution on a later invocation.
+retry, delete, or rollback. After a Skill create returns 409, perform exactly
+one exhaustive, page-0-origin, read-only scan filtered to the authenticated
+creator. Never issue a second POST or any PUT/PATCH/DELETE: one exact collision
+is `ServerRejected` exit 1, more than one is ambiguity exit 1, stable zero is
+reconciliation instability exit 1, and compatibility/connectivity failure is
+exit 2. Any later retry requires a new invocation.
 
 ## 10. API and Datasource mapping
 
@@ -316,15 +325,29 @@ scan requests page 0 first and then `1..pages-1`; an empty scan still requests
 page 0 once. Page 1 is never the origin. The same scanner is reused for initial
 resolution, post-write verification, and Skill create-409 re-resolution.
 
-For Workflow, Skill, and Datasource, capability evidence is global
-admin/maintainer or an exact match on both
-`projects[].name == effective_project` and
-`projects[].is_project_admin == true`, from the same entry. Assistant uses its
-strict direct `(project, slug)` lookup without `/v1/user`. After all applicable
-reads and request projection, the coordinator seals the kind-specific evidence
-with the prepared write. The modifying HTTP boundary accepts only that sealed
-type, making the no-write-before-evidence ordering enforceable rather than
-conventional.
+For every kind, capability evidence is a strictly decoded non-empty
+`GET /v1/user.user_id` plus at least one exact `projects[].name` equal to the
+effective project. Administration is optional. Role fields, ownership,
+declaration data, and normalization cannot substitute. The tool does not call
+project detail for authorization.
+
+The preflight route/field inventory is closed and operation-applicable:
+
+| Read | Consumed fields | Applies to | Result use |
+|---|---|---|---|
+| `GET /v1/user` | non-empty `user_id`; array `projects`; every consumed entry has non-empty `name` | all kinds | exact membership and authenticated creator ID |
+| strict direct Assistant lookup | manifest-defined identity and `user_abilities` | Assistant | exact resolution and update authorization |
+| Workflow/Skill enumerations | exact project, creator, identity, `user_abilities`, pagination | Workflow/Skill | creator-scoped resolution and update/adoption authorization |
+| Datasource visible enumeration | exact visible identity, `user_abilities`, pagination | Datasource | update candidate only; miss does not prove absence |
+
+Malformed consumed evidence is `E_API_INCOMPATIBLE`; valid missing membership
+or exact selected-row `write` is `E_AUTHORIZATION`. Both exit 2 with empty
+stdout, safe stderr, and zero modifying requests. Additional unconsumed fields
+are tolerated. All evidence and the request are sealed to one opaque
+invocation-scoped `ApiClient`, target origin, token, principal, session,
+effective project, kind, identity, and operation. Dispatch accepts no separate
+binding. Datasource visible miss seals one create only; HTTP 409 ends the
+operation without retry, lookup, or guessed update.
 
 Datasource uses one exhaustive resolver and peer per-kind create/update
 projections. File, source, content, scheduling, and configuration fields in the
@@ -338,8 +361,10 @@ Datasource lifecycle command, flag, or endpoint.
 
 ## 11. Security and output
 
-Use one least-privilege invocation principal. Workflow and Skill writes require
-complete project visibility plus write proof. Credentials come only from the
+Use one least-privilege invocation principal. Workflow, Skill, and Datasource
+writes require complete project visibility; an existing target separately
+requires its operation-specific write proof. Personal ownership is not an
+admin role and cannot waive that proof. Credentials come only from the
 approved environment or flags and never repository config/YAML. HTTPS is
 required outside explicit local development; proxy/CA support, disabled
 cross-origin credential redirects, bounded retries/body drains, and typed
@@ -487,10 +512,20 @@ V-000 is likewise split without weakening completion: V-000A prepares the
 local, non-mutating target-qualification harness; V-000B executes it against a
 named deployment and alone supplies target-specific completion evidence. The
 local harness records only the fixed non-secret staged-binary SHA-256,
-manifest version, pass/fail, safe request IDs, and the required page-0
+evidence `schemaVersion`, adapter-contract `adapterManifestVersion`, pass/fail,
+safe request IDs, and the required page-0
 observations. It never records response bodies, entity payloads, URLs, or
 credentials. A V-000B evidence record is valid only for the staged binary
 named by that digest.
+
+The two version namespaces are distinct and explicit. `schemaVersion: 1`
+versions the sanitized V-000 evidence envelope. `adapterManifestVersion: 3`
+identifies the checked-in consumed API contract in
+`contracts/adapter-manifest-v2.42.0.json`. There is no independent V-000
+"manifest version 2" namespace. A record containing legacy
+`manifestVersion: 2`, omitting `adapterManifestVersion`, or naming an adapter
+version other than the checked-in manifest fails closed and cannot satisfy
+V-000B or V-003.
 
 The enterprise create/update smoke is a later deployment-verification task,
 not O-001 activation. Its executable entity allowlist is closed to exactly
@@ -507,20 +542,20 @@ writer window. After credential loading, V-003 reruns the complete V-000B
 qualification in the same controlled execution with the same token/session
 that will be used by apply; a prior or differently scoped V-000B record cannot
 satisfy this runtime write gate. The harness strictly decodes
-`GET /v1/user.email` as the authenticated actor identifier together with the
-required role/project fields and proves this exact equality chain:
+`GET /v1/user.user_id` as the authenticated actor identifier together with
+every DR-013 role/project field and proves this exact equality chain:
 
 ```text
 authorization.project
   == CODEMIE_TEST_PROJECT
   == every declaration's resolved effective project
-  == the exact projects[].name entry used by the fresh V-000B role proof
+  == an exact projects[].name entry used by the fresh V-000B membership proof
 ```
 
-The authenticated actor must equal `authorization.actor`. That exact project
-entry must exist, and the role predicate must be global administrator,
-global maintainer, or `is_project_admin=true` on that same entry; an admin role
-for another accessible project is insufficient. The authorization record must
+The authenticated actor ID must equal `authorization.actor`, and at least one
+exact effective-project membership must exist. Administration is neither
+required nor inferred. Each selected update/adoption row must independently
+advertise exact `write`. The authorization record must
 also carry an explicit `exclusiveWriter.confirmed=true`, confirmer, start/end
 times, and the run-scoped identity prefix. The current time and the complete
 create/update sequence must fall inside that window, and the confirmer must
@@ -586,22 +621,21 @@ authorization.
 4. **Complete and independently verified** — T-003 removed the semantic
    `/v1/info.version`/Git-SHA gate while retaining strict operation-applicable
    pre-write evidence; Q-007 security review approved the result.
-5. **Complete and independently verified** — W-001 and S-001 use page-0
+5. **Complete and independently verified for the pre-v30 baseline** — W-001 and S-001 use page-0
    Workflow/Skill scanning for initial, post-write, adoption, and Skill 409
    re-resolution paths; Q-008 is implemented and its stale page-origin evidence
    is superseded.
-6. **Complete and independently verified** — R-001 owns the sealed prepared-
+6. **Complete and independently verified for the pre-v30 baseline** — R-001 owns the sealed prepared-
    write boundary and coordinator-level success/no-write evidence.
 7. **Implemented locally / operationally incomplete** — O-001 checked-in
    serialization and identity-writer governance controls are independently
    verified, security-approved, and ready for remote activation. O-001 remains
    blocked on the external provider/runner, mutex, live inventory,
    writer-freeze, and first-apply checksum evidence.
-8. **Ready for local implementation** — O-002A produces the README, portable
-   examples, recovery runbooks, checker, and tests. V-000A produces the local
-   non-mutating qualification harness. Neither requires nor proves remote
-   O-001 activation.
-9. **Externally gated** — O-002B requires remote O-001 plus provider adoption;
+8. **Next bounded implementation** — after Q-010 and SEC-010, T-005 replaces
+   the invalid v31 authorization/identity paths; V-000C and O-002C refresh the
+   qualification harness and operator guidance.
+9. **Reset / externally gated** — O-002B requires refreshed O-002A plus remote O-001;
    V-000B requires a named live target and credentials. The authorized
    enterprise create/update smoke follows V-000B and the O-002A safety guide,
    and is closed to Assistant, Workflow, and Skill. V-001 still depends on
@@ -622,12 +656,18 @@ Statuses below mirror the status section in each ADR file.
 | 004 | Proposed | source-pinned manifest compatibility gate |
 | 005 | Proposed | modular single Rust binary; v25 amendment adds supply-chain and CI controls (SEC-006) |
 | 006 | Superseded by ADR-008 | derived Workflow UUID rejected |
-| 007 | Accepted — amended 2026-08-11 | exhaustive Skill resolver, zero-based pagination, and unconditional existing-entity PUT |
-| 008 | Accepted — amended 2026-08-11 | Workflow marker, zero-based pagination, explicit adoption, and unconditional existing-entity PUT |
-| 009 | Accepted — amended by ADR-012 (visibility precondition) | uniform Datasource ordinary write-through CRUD boundary |
+| 007 | Partially superseded by ADR-017 | retained zero-based scanner mechanics |
+| 008 | Partially superseded by ADR-016 | retained metadata codec/preservation and zero-based scanner mechanics |
+| 009 | Partially superseded by ADR-018 | retained ordinary per-kind CRUD projections |
 | 010 | Proposed | separate closed success/failure records |
 | 011 | Proposed | URL validation, credential input (env-only secrets), TLS/HTTPS policy, redirect policy; supersedes ADR-003 on these topics |
-| 012 | Accepted — Option A selected, 2026-08-10 | project-admin complete-visibility preflight; D-001 complete |
+| 012 | Superseded by ADR-018 | historical complete-visibility analysis |
+| 013 | Superseded by ADR-014–018 | rejected v31 personal-owner design history |
+| 014 | Proposed | kind-specific reconciliation identities |
+| 015 | Proposed | membership create and exact entity write authorization |
+| 016 | Proposed | Workflow creator-scoped v2 marker and legacy adoption |
+| 017 | Proposed | Skill authenticated-creator reconciliation |
+| 018 | Proposed | Datasource one-create and authoritative 409 collision |
 
 ## 15. Risks and open questions
 
@@ -640,6 +680,7 @@ Statuses below mirror the status section in each ADR file.
 | R-05 | external gate | `CODEMIE_TEST_PROJECT` is configured, but target-side actor/write authorization and an exclusive window are not evidenced in repository artifacts | after a fresh same-session V-000B pass, require exact authorization/config/declaration/project-role equality plus an active explicit exclusive-writer confirmation before any smoke write; platform owner |
 | R-06 | excluded scope | Datasource smoke may trigger target-internal indexing, access, cost, storage, or retention | V-003 cannot express or enable Datasource; any future exercise requires a separate authorized task and security review |
 | R-07 | non-blocking | checked-in examples could drift into unsafe credential or provider patterns | structural checker, mutation-negative tests, offline lint, and independent security review |
+| R-08 | blocking before v32 implementation/live evidence | current Rust/Python paths implement invalid v31 authorization/identity | Q-010, SEC-010, T-005, V-000C; implementation and verification owners |
 No open entity, projection, configuration, or authentication-endpoint decision
 remains. V-000 deployment verification and the broader V-002
 post-implementation security review remain bounded downstream lifecycle work,
@@ -648,11 +689,10 @@ not complete either task.
 
 ## 16. Handoff
 
-The verification engineer should now assess this task-graph maintenance and
-the O-002A/V-000A artifact contracts before implementation. The implementation
-engineer may then create only the bounded README, examples, runbooks, checkers,
-and tests defined above. Security review must confirm credential isolation,
-provider trust boundaries, and live-smoke fail-closed behavior before any
-enterprise write. O-001 remote activation, O-002B provider adoption, V-000B
-live qualification, the closed Assistant/Workflow/Skill enterprise smoke,
-V-001, V-002, and L-001 remain incomplete until their own evidence passes.
+The verification engineer must execute Q-010 against spec v32, ADR-014–018,
+the exact mutation matrices, failure taxonomy, and ordered state seal. The
+security reviewer then executes SEC-010. Only after both pass may the
+implementation engineer perform T-005, O-002C, and V-000C. V-000B and V-003
+require fresh same-principal evidence and the exact replacement artifact;
+v31 evidence is invalid. O-001 remote activation and later release gates retain
+their own evidence requirements.

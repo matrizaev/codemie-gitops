@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlsplit
+from urllib.request import Request
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -48,6 +49,7 @@ PROJECT = "authorized-project"
 ACTOR = "authorized-actor@example.invalid"
 PREFIX = "v000-run-"
 WORKFLOW_DISPLAY_NAME = "Smoke Workflow"
+PRODUCT_USER_AGENT = "codemie-gitops/0.1.0"
 
 
 def valid_manifest(*, now: datetime | None = None) -> dict[str, Any]:
@@ -101,18 +103,31 @@ class ContractOpener:
 
     def open(self, request: Any, timeout: float) -> FakeResponse:
         self.requests.append(request)
+        if request.get_header("User-agent") != PRODUCT_USER_AGENT:
+            raise HTTPError(request.full_url, 403, "user-agent-rejected", {}, None)
         parsed = urlsplit(request.full_url)
         query = parse_qs(parsed.query)
         if parsed.path == "/v1/user":
             body: dict[str, Any] = {
                 "email": ACTOR,
+                "user_id": "authenticated-user-id",
                 "is_admin": False,
                 "is_maintainer": False,
                 "projects": [{"name": PROJECT, "is_project_admin": True}],
                 "additive": self.canary,
             }
-            if self.mutation == "missing-role":
-                body.pop("is_admin")
+            if self.mutation == "missing-user-id":
+                body.pop("user_id")
+            elif self.mutation == "personal-owner":
+                body["projects"][0]["is_project_admin"] = False
+        elif parsed.path == f"/v1/projects/{PROJECT}":
+            body = {
+                "name": PROJECT,
+                "project_type": "personal",
+                "created_by": "authenticated-user-id",
+                "members": [{"user_id": "authenticated-user-id", "is_project_admin": False}],
+                "future": self.canary,
+            }
         elif parsed.path == "/v1/workflows":
             marketplace = query.get("scope") == ["marketplace"]
             meta_config: str | None = None
@@ -120,8 +135,9 @@ class ContractOpener:
                 meta_config = json.dumps(
                     {
                         "codemie.epam.com/gitops/workflow-identity": {
-                            "version": 1,
+                            "version": 2,
                             "project": PROJECT,
+                            "creator_user_id": "authenticated-user-id",
                             "slug": PREFIX + "workflow",
                         }
                     }
@@ -133,7 +149,7 @@ class ContractOpener:
                 or (self.mutation == "workflow-display-collision-project" and not marketplace)
                 or (self.mutation == "workflow-display-collision-marketplace" and marketplace)
             )
-            item = {"id": "workflow-1", "project": PROJECT, "name": WORKFLOW_DISPLAY_NAME if display_collision else "Existing", "meta_config": meta_config, "user_abilities": ["read", "write"], "future": self.canary}
+            item = {"id": "workflow-1", "project": PROJECT, "name": WORKFLOW_DISPLAY_NAME if display_collision else "Existing", "meta_config": meta_config, "created_by": {"id": "authenticated-user-id"}, "user_abilities": ["read", "write"], "future": self.canary}
             if self.mutation == "missing-meta":
                 item.pop("meta_config")
             body = {
@@ -148,7 +164,7 @@ class ContractOpener:
                 "id": "skill-1",
                 "name": PREFIX + "skill" if self.mutation == "skill-collision" else "existing-skill",
                 "project": PROJECT,
-                "created_by": None,
+                "created_by": {"id": "authenticated-user-id"},
                 "user_abilities": ["read", "write"],
                 "future": self.canary,
             }
@@ -382,7 +398,7 @@ class V000ManifestAndGateTests(unittest.TestCase):
 
     def test_runtime_actor_project_role_and_window_gates(self) -> None:
         manifest = valid_manifest()
-        user = {"email": ACTOR, "is_admin": False, "is_maintainer": False, "projects": [{"name": PROJECT, "is_project_admin": True}]}
+        user = {"email": ACTOR, "user_id": "authenticated-user-id", "is_admin": False, "is_maintainer": False, "projects": [{"name": PROJECT, "is_project_admin": True}]}
         passed = validate_runtime_gate(
             manifest, target=TARGET, project=PROJECT, user=user,
         )
@@ -399,12 +415,9 @@ class V000ManifestAndGateTests(unittest.TestCase):
             arguments = {**base, **changes}
             with self.subTest(changes=changes), self.assertRaises(QualificationError):
                 validate_runtime_gate(**arguments)
-        for role_user in (
-            {"email": ACTOR, "is_admin": True, "is_maintainer": False, "projects": []},
-            {"email": ACTOR, "is_admin": True, "is_maintainer": False, "projects": [{"name": PROJECT, "is_project_admin": False}, {"name": PROJECT, "is_project_admin": False}]},
-        ):
-            with self.subTest(role_user=role_user), self.assertRaises(QualificationError):
-                validate_runtime_gate(**{**base, "user": role_user})
+        admin_without_membership = {"email": ACTOR, "user_id": "authenticated-user-id", "is_admin": True, "projects": []}
+        with self.assertRaises(QualificationError):
+            validate_runtime_gate(**{**base, "user": admin_without_membership})
         expired = valid_manifest(now=datetime.now(timezone.utc) - timedelta(hours=2))
         with self.assertRaises(QualificationError):
             validate_smoke_manifest(expired)
@@ -630,6 +643,67 @@ class V000CredentialAndBinaryTests(unittest.TestCase):
 
 
 class V000TransportTests(unittest.TestCase):
+    def test_nested_base_path_is_preserved_for_probe_routes(self) -> None:
+        class NestedBaseServer:
+            def __init__(self) -> None:
+                self.requests: list[Any] = []
+
+            def open(self, request: Any, timeout: float) -> FakeResponse:
+                self.requests.append(request)
+                return FakeResponse(b'{"ok":true}')
+
+        fake_server = NestedBaseServer()
+        transport = ReadOnlyTransport(
+            "https://authorized-target.example.invalid/code-assistant-api/",
+            "secret",
+            opener=fake_server,
+        )
+        self.assertEqual(transport.get_json("/v1/user", probe="nested-base"), {"ok": True})
+        self.assertEqual(
+            fake_server.requests[0].full_url,
+            "https://authorized-target.example.invalid/code-assistant-api/v1/user",
+        )
+        self.assertEqual(fake_server.requests[0].get_header("Authorization"), "Bearer secret")
+        self.assertEqual(fake_server.requests[0].get_header("User-agent"), PRODUCT_USER_AGENT)
+
+    def test_ambiguous_or_escaping_target_base_paths_fail_before_request(self) -> None:
+        class ZeroRequestServer:
+            def __init__(self) -> None:
+                self.requests: list[Any] = []
+
+            def open(self, request: Any, timeout: float) -> FakeResponse:
+                self.requests.append(request)
+                raise AssertionError("invalid target must not issue a request")
+
+        invalid_targets = (
+            "https://authorized-target.example.invalid/code-assistant-api/../admin/",
+            "https://authorized-target.example.invalid/code-assistant-api/./v1/",
+            "https://authorized-target.example.invalid/code-assistant-api//v1/",
+            "https://authorized-target.example.invalid/code-assistant-api%2fv1/",
+            "https://authorized-target.example.invalid/code-assistant-api%2Fv1/",
+            "https://authorized-target.example.invalid/code-assistant-api%5cv1/",
+            "https://authorized-target.example.invalid/code-assistant-api\\v1/",
+            "https://authorized-target.example.invalid/code assistant-api/",
+            "https://user@authorized-target.example.invalid/code-assistant-api/",
+            "https://authorized-target.example.invalid/code-assistant-api/?query=1",
+            "https://authorized-target.example.invalid/code-assistant-api/#fragment",
+            "https://authorized-target.example.invalid/code-assistant-api/\x7f",
+        )
+        for target in invalid_targets:
+            fake_server = ZeroRequestServer()
+            with self.subTest(target=target), self.assertRaises(QualificationError) as caught:
+                ReadOnlyTransport(target, "secret", opener=fake_server)
+            self.assertEqual(caught.exception.category, "target-invalid")
+            self.assertEqual(fake_server.requests, [])
+
+        fake_server = ZeroRequestServer()
+        transport = ReadOnlyTransport(TARGET, "secret", opener=fake_server)
+        for route in ("/../v1/user", "/./v1/user", "/v1/%2e%2e/user", "/v1%2fadmin", "/v1\\user"):
+            with self.subTest(route=route), self.assertRaises(QualificationError) as caught:
+                transport.get_json(route, probe="invalid-route")
+            self.assertEqual(caught.exception.category, "route-invalid")
+        self.assertEqual(fake_server.requests, [])
+
     def test_same_origin_and_cross_origin_redirects_are_not_followed(self) -> None:
         class RedirectServer:
             def __init__(self, location: str) -> None:
@@ -649,6 +723,23 @@ class V000TransportTests(unittest.TestCase):
             self.assertEqual(len(fake_server.requests), 1)
             self.assertNotIn("capture", urlsplit(fake_server.requests[0].full_url).path)
             self.assertEqual(fake_server.requests[0].get_header("Authorization"), "Bearer redirect-secret")
+            self.assertEqual(fake_server.requests[0].get_header("User-agent"), PRODUCT_USER_AGENT)
+
+    def test_fake_server_rejects_python_urllib_and_accepts_exact_product_user_agent(self) -> None:
+        fake_server = ContractOpener()
+        python_request = Request(
+            TARGET + "v1/user",
+            headers={"User-Agent": f"Python-urllib/{sys.version_info.major}.{sys.version_info.minor}"},
+            method="GET",
+        )
+        with self.assertRaises(HTTPError) as caught:
+            fake_server.open(python_request, timeout=1.0)
+        self.assertEqual(caught.exception.code, 403)
+
+        transport = ReadOnlyTransport(TARGET, "secret", opener=fake_server)
+        transport.get_json("/v1/user", probe="user-agent")
+        self.assertEqual(v000._product_user_agent(), PRODUCT_USER_AGENT)
+        self.assertEqual(fake_server.requests[-1].get_header("User-agent"), PRODUCT_USER_AGENT)
 
     def test_transport_surface_and_observed_methods_are_get_only(self) -> None:
         opener = ContractOpener()
@@ -658,6 +749,10 @@ class V000TransportTests(unittest.TestCase):
         self.assertFalse(hasattr(transport, "put"))
         self.assertFalse(hasattr(transport, "delete"))
         self.assertEqual({request.get_method() for request in opener.requests}, {"GET"})
+        self.assertEqual(
+            {request.get_header("User-agent") for request in opener.requests},
+            {PRODUCT_USER_AGENT},
+        )
 
     def test_body_timeout_and_json_faults_fail_with_fixed_categories(self) -> None:
         class OneResponseOpener:
@@ -737,6 +832,10 @@ class V000EvidenceTests(unittest.TestCase):
         self.assertGreater(evidence["observations"]["workflowPage0Items"], 0)
         self.assertGreater(evidence["observations"]["skillPage0Items"], 0)
         self.assertEqual({request.get_method() for request in opener.requests}, {"GET"})
+        self.assertEqual(
+            {request.get_header("User-agent") for request in opener.requests},
+            {PRODUCT_USER_AGENT},
+        )
         self.assertTrue(any("/v1/index" in request.full_url for request in opener.requests))
         skill_filters = [
             json.loads(parse_qs(urlsplit(request.full_url).query)["filters"][0])
@@ -804,7 +903,7 @@ class V000EvidenceTests(unittest.TestCase):
             self.assertEqual({request.get_method() for request in opener.requests}, {"GET"})
 
     def test_missing_consumed_member_fails_without_canary_leak(self) -> None:
-        for mutation in ("missing-role", "missing-meta", "missing-created"):
+        for mutation in ("missing-user-id", "missing-meta", "missing-created"):
             with tempfile.TemporaryDirectory() as directory:
                 binary_path, digest = stage_test_binary(Path(directory))
                 with StagedBinary.open(binary_path, digest) as binary, self.subTest(mutation=mutation), self.assertRaises(QualificationError) as caught:

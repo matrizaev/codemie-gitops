@@ -424,7 +424,7 @@ spec:
     fn workflow_page(page: u32) -> String {
         let marker = serde_json::json!({
             "codemie.epam.com/gitops/workflow-identity": {
-                "version": 1,
+                "version":2,"creator_user_id":"user-1",
                 "project": "project-a",
                 "slug": "workflow-a"
             }
@@ -436,7 +436,7 @@ spec:
                 "project": "project-a",
                 "name": "Workflow A",
                 "meta_config": marker,
-                "user_abilities": ["read", "write"]
+                "created_by":{"id":"user-1"},"user_abilities": ["read", "write"]
             }],
             "pagination": {"page": page, "per_page": 100, "total": 1, "pages": 1}
         })
@@ -536,10 +536,11 @@ spec:
             .await;
         let visibility = server
             .mock("GET", "/v1/user")
+            .expect_at_least(1)
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"is_admin":false,"is_maintainer":false,"projects":[{"name":"project-a","is_project_admin":true}]}"#)
-            .expect(0)
+            .with_body(r#"{"user_id":"user-1","is_admin":false,"is_maintainer":false,"projects":[{"name":"project-a","is_project_admin":true}]}"#)
+            .expect(1)
             .create_async()
             .await;
         let resolve = server
@@ -597,10 +598,11 @@ spec:
             .await;
         let visibility = server
             .mock("GET", "/v1/user")
+            .expect_at_least(1)
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"is_admin":false,"is_maintainer":false,"projects":[{"name":"project-a","is_project_admin":true}]}"#)
-            .expect(0)
+            .with_body(r#"{"user_id":"user-1","is_admin":false,"is_maintainer":false,"projects":[{"name":"project-a","is_project_admin":true}]}"#)
+            .expect(1)
             .create_async()
             .await;
         let resolve_absent = server
@@ -674,8 +676,8 @@ spec:
             .mock("GET", "/v1/user")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"is_admin":false,"is_maintainer":false,"projects":[{"name":"project-a","is_project_admin":true}]}"#)
-            .expect(1)
+            .with_body(r#"{"user_id":"user-1","is_admin":false,"is_maintainer":false,"projects":[{"name":"project-a","is_project_admin":true}]}"#)
+            .expect(3)
             .create_async()
             .await;
         let project_page_zero = server
@@ -724,11 +726,12 @@ spec:
                     "name": "Workflow A",
                     "meta_config": serde_json::json!({
                         "codemie.epam.com/gitops/workflow-identity": {
-                            "version": 1,
+                            "version":2,"creator_user_id":"user-1",
                             "project": "project-a",
                             "slug": "workflow-a"
                         }
                     }).to_string(),
+                    "created_by": {"id": "user-1"},
                     "user_abilities": ["read", "write"]
                 })
                 .to_string(),
@@ -801,8 +804,8 @@ spec:
             .mock("GET", "/v1/user")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"is_admin":false,"is_maintainer":false,"projects":[{"name":"project-a","is_project_admin":true}]}"#)
-            .expect(1)
+            .with_body(r#"{"user_id":"user-1","is_admin":false,"is_maintainer":false,"projects":[{"name":"project-a","is_project_admin":true}]}"#)
+            .expect(3)
             .create_async()
             .await;
         let initial_project = server
@@ -864,11 +867,12 @@ spec:
                     "name": "Workflow A",
                     "meta_config": serde_json::json!({
                         "codemie.epam.com/gitops/workflow-identity": {
-                            "version": 1,
+                            "version":2,"creator_user_id":"user-1",
                             "project": "project-a",
                             "slug": "workflow-a"
                         }
                     }).to_string(),
+                    "created_by": {"id": "user-1"},
                     "user_abilities": ["write"]
                 })
                 .to_string(),
@@ -954,7 +958,9 @@ spec:
             .await;
         let visibility = server
             .mock("GET", "/v1/user")
-            .expect(0)
+            .with_status(200)
+            .with_body(r#"{"user_id":"user-1","projects":[{"name":"project-a"}]}"#)
+            .expect(1)
             .create_async()
             .await;
         let resolve = server

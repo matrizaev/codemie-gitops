@@ -1,6 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "manifestVersion": 2,
+  "manifestVersion": 3,
+  "evidenceBinding": {
+    "evidenceField": "adapterManifestVersion",
+    "requiredValue": 3,
+    "independentEvidenceEnvelopeField": "schemaVersion",
+    "independentEvidenceEnvelopeValue": 1,
+    "legacyRejected": "manifestVersion: 2 in V-000 evidence is ambiguous pre-v31 evidence and is not an alias"
+  },
   "declarationApiVersion": "codemie.epam.com/v1alpha1",
   "source": {
     "backend": {
@@ -51,14 +58,24 @@
   },
   "capabilityPreflight": {
     "route": "GET /v1/user",
-    "appliesToEntityKinds": ["Workflow", "Datasource", "Skill"],
+    "appliesToEntityKinds": ["Assistant", "Workflow", "Datasource", "Skill"],
     "effectiveProjectSource": "validated metadata.project after repository-config defaulting",
-    "consumedFields": ["is_admin", "is_maintainer", "projects[].name", "projects[].is_project_admin"],
-    "requiredEvidencePredicate": "is_admin == true OR is_maintainer == true OR exists(projects, project.name == effectiveProject AND project.is_project_admin == true)",
-    "projectAdminMustMatchEffectiveProject": true,
+    "consumedFields": ["user_id", "projects", "projects[].name"],
+    "consumedFieldTypes": {
+      "user_id": "non-empty string",
+      "projects": "array",
+      "projects[].name": "non-empty string"
+    },
+    "membershipPredicate": "exists(projects, project.name == effectiveProject)",
+    "administration": "optional; role flags and is_project_admin are not consumed authorization gates",
+    "invocationBinding": "same opaque ApiClient capability, validated origin, bearer token, authenticated user_id, and session through membership, resolution, ability proof, write, and verification",
+    "securityJsonDecoding": "reject duplicate keys in every consumed JSON object before DTO conversion; unique additive unconsumed fields are tolerated",
+    "writeAbilityEvidence": "for update or adoption, exact selected entity user_abilities contains exact string write; membership, creator, role, and HTTP success do not substitute",
+    "ordering": "strict exact membership before resolution; selected-row exact write ability before update/adoption; create requires membership only; all evidence is same-capability and no modifying request occurs before its applicable seal",
     "missingOrInvalidConsumedField": "E_API_INCOMPATIBLE-exit-2-before-write",
-    "predicateFalse": "E_VISIBILITY_UNPROVEN-exit-2-before-write",
-    "sourceEvidence": "rest_api/routers/user.py:52-115; rest_api/models/user_management.py:246-263"
+    "predicateFalse": "E_AUTHORIZATION-exit-2-before-write",
+    "additionalUnconsumedFields": "tolerated and do not widen any contract",
+    "sourceEvidence": "rest_api/routers/user.py:52-115; core/models.py:767-797"
   },
   "entities": {
     "Assistant": {
@@ -128,6 +145,7 @@
     },
     "Workflow": {
       "naturalKey": ["project", "slug"],
+      "reconciliationKey": ["project", "authenticated_user_id", "slug"],
       "serverTransportId": "UUID returned by exhaustive reserved-meta_config resolution",
       "routes": {
         "enumeratePasses": [
@@ -206,6 +224,7 @@
         "execution_config.max_iteration_key_output_limit": 200
       },
       "reservedIdentityReadWritePath": "meta_config[\"codemie.epam.com/gitops/workflow-identity\"]",
+      "reservedIdentityRecord": {"version": 2, "requiredFields": ["project", "creator_user_id", "slug"], "legacyV1": "adoption-only", "unmarked": "adoption-only"},
       "metaConfigCodec": {
         "serverType": "nullable UTF-8 JSON object encoded as one string",
         "decode": "reject malformed JSON, duplicate object keys, non-object roots, invalid reserved record, and invalid UTF-8",
@@ -240,7 +259,7 @@
         "otherwiseCompatibleSnapshotInstability": "E_RECONCILIATION-exit-1-before-write"
       },
       "paginationConsumedFields": ["data", "pagination.page", "pagination.pages", "pagination.total", "pagination.per_page"],
-      "entityConsumedFields": ["id", "project", "name", "meta_config", "user_abilities"],
+      "entityConsumedFields": ["id", "project", "name", "created_by", "meta_config", "user_abilities"],
       "sourceEvidence": [
         "rest_api/routers/workflow.py:109-142,224-392 (page default 0)",
         "core/workflow_models/workflow_models.py:34-64,406-436",
@@ -251,6 +270,7 @@
     },
     "Skill": {
       "naturalKey": ["project", "name"],
+      "reconciliationKey": ["project", "authenticated_user_id", "name"],
       "serverTransportId": "UUID returned by exhaustive exact list resolution",
       "routes": {
         "enumerate": "GET /v1/skills?filters={project,scope:project_with_marketplace,search}&page={page}&per_page=100",
@@ -304,7 +324,9 @@
     "Datasource": {
       "naturalKey": ["project", "repo_name"],
       "resolution": {
-        "authoritative": "all zero-indexed pages of GET /v1/index?full_response=true&page={page}&per_page=100&filters={json} with exact client filtering",
+        "visibleUpdateSelection": "all zero-indexed visible pages of GET /v1/index?full_response=true&page={page}&per_page=100&filters={json} with exact client filtering; a visible exact row may select update only after exact write ability",
+        "absenceAuthority": "a visible-list miss never proves absence; it permits exactly one create attempt and only the create response decides the outcome",
+        "createConflict": "HTTP 409 is authoritative project-wide collision; fail exit 1 with no retry, lookup fallback, or guessed update",
         "hintOnly": "GET /v1/index/find_id",
         "pageSize": 100,
         "paginationConsumedFields": ["data", "pagination.page", "pagination.per_page", "pagination.total", "pagination.pages"],

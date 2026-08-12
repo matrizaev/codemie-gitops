@@ -16,13 +16,14 @@ import stat
 import subprocess
 import sys
 import time
+import tomllib
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode, urljoin, urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import HTTPSHandler, HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 try:
@@ -38,6 +39,7 @@ except ImportError as error:  # pragma: no cover - deployment prerequisite
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_VERSION = 2
+ADAPTER_MANIFEST_VERSION = 3
 RESPONSE_BODY_LIMIT = 8 * 1024 * 1024
 REQUEST_TIMEOUT_SECONDS = 60.0
 INVOCATION_DEADLINE_SECONDS = 300.0
@@ -82,6 +84,19 @@ class QualificationError(ValueError):
     def __init__(self, category: str):
         self.category = category
         super().__init__(category)
+
+
+def _product_user_agent() -> str:
+    """Return the same truthful product identity used by the Rust API client."""
+    try:
+        with (ROOT / "Cargo.toml").open("rb") as cargo_manifest:
+            package = tomllib.load(cargo_manifest).get("package")
+    except (OSError, tomllib.TOMLDecodeError):
+        raise QualificationError("product-version-invalid") from None
+    version = package.get("version") if isinstance(package, dict) else None
+    if not isinstance(version, str) or re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z.+-]{0,127}", version) is None:
+        raise QualificationError("product-version-invalid")
+    return f"codemie-gitops/{version}"
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -391,7 +406,17 @@ def validate_target_url(value: str, *, allow_loopback_http: bool = False) -> tup
         raise QualificationError("target-invalid") from error
     if parsed.username is not None or parsed.password is not None or parsed.fragment or parsed.query:
         raise QualificationError("target-invalid")
-    if not parsed.hostname or parsed.path not in ("", "/"):
+    path = parsed.path
+    path_segments = path.split("/")
+    if (
+        not parsed.hostname
+        or (path and not path.startswith("/"))
+        or "\\" in path
+        or "%" in path
+        or any(ord(char) > 127 or char.isspace() for char in path)
+        or any(segment in {".", ".."} for segment in path_segments)
+        or any(not segment for segment in path_segments[1:-1])
+    ):
         raise QualificationError("target-invalid")
     if parsed.scheme != "https":
         if not allow_loopback_http or parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "::1", "localhost"}:
@@ -651,6 +676,7 @@ class ReadOnlyTransport:
         opener: Any | None = None,
     ) -> None:
         self._origin = validate_target_url(target, allow_loopback_http=allow_loopback_http)
+        self._target = target
         self._base = target.rstrip("/") + "/"
         if isinstance(token, ExecutionSession):
             self._token = token._token
@@ -660,6 +686,7 @@ class ReadOnlyTransport:
             self._session_identity = None
         self._budget = budget
         self._deadline = time.monotonic() + budget.invocation_seconds
+        self._user_agent = _product_user_agent()
         context = ssl.create_default_context()
         self._opener = opener or build_opener(ProxyHandler({}), HTTPSHandler(context=context), NoRedirect())
         self.requests: list[dict[str, str]] = []
@@ -670,17 +697,34 @@ class ReadOnlyTransport:
             raise QualificationError("deadline-exceeded")
         return min(self._budget.request_seconds, remaining)
 
-    def get_json(self, route: str, *, query: dict[str, str] | None = None, probe: str, allow_not_found: bool = False) -> Any:
-        if not route.startswith("/") or "//" in route or "?" in route or "#" in route:
+    def get_json(self, route: str, *, query: dict[str, str] | None = None, probe: str, allow_not_found: bool = False, _encoded_segment: bool = False) -> Any:
+        route_segments = route.split("/")
+        if (
+            not route.startswith("/")
+            or "//" in route
+            or "?" in route
+            or "#" in route
+            or "\\" in route
+            or any(segment in {".", ".."} for segment in route_segments)
+            or (not _encoded_segment and re.search(r"%(?:2e|2f|5c)", route, re.IGNORECASE) is not None)
+        ):
             raise QualificationError("route-invalid")
-        url = urljoin(self._base, route.lstrip("/"))
+        url = self._base + route.lstrip("/")
         if query:
             url += "?" + urlencode(query)
         parsed = urlsplit(url)
         origin = (parsed.scheme, (parsed.hostname or "").casefold(), parsed.port or (443 if parsed.scheme == "https" else 80))
-        if origin != self._origin:
+        if origin != self._origin or not url.startswith(self._base):
             raise QualificationError("origin-mismatch")
-        request = Request(url, headers={"Authorization": f"Bearer {self._token}", "Accept": "application/json"}, method="GET")
+        request = Request(
+            url,
+            headers={
+                "Authorization": f"Bearer {self._token}",
+                "Accept": "application/json",
+                "User-Agent": self._user_agent,
+            },
+            method="GET",
+        )
         try:
             response = self._opener.open(request, timeout=self._remaining())
         except HTTPError as error:
@@ -717,13 +761,11 @@ class ReadOnlyTransport:
         finally:
             response.close()
 
-
 def decode_user(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise QualificationError("response-incompatible")
     email = _string(value.get("email"))
-    is_admin = _bool(value.get("is_admin"))
-    is_maintainer = _bool(value.get("is_maintainer"))
+    user_id = _string(value.get("user_id"))
     raw_projects = value.get("projects")
     if not isinstance(raw_projects, list):
         raise QualificationError("response-incompatible")
@@ -731,8 +773,8 @@ def decode_user(value: Any) -> dict[str, Any]:
     for raw in raw_projects:
         if not isinstance(raw, dict):
             raise QualificationError("response-incompatible")
-        projects.append({"name": _string(raw.get("name")), "is_project_admin": _bool(raw.get("is_project_admin"))})
-    return {"email": email, "is_admin": is_admin, "is_maintainer": is_maintainer, "projects": projects}
+        projects.append({"name": _string(raw.get("name"))})
+    return {"email": email, "user_id": user_id, "projects": projects}
 
 
 def _validate_workflow_item(item: Any) -> str:
@@ -740,6 +782,10 @@ def _validate_workflow_item(item: Any) -> str:
         raise QualificationError("response-incompatible")
     identifier = _string(item.get("id"))
     _string(item.get("project")); _string(item.get("name")); _strings(item.get("user_abilities"))
+    creator = item.get("created_by")
+    if not isinstance(creator, dict):
+        raise QualificationError("response-incompatible")
+    _string(creator.get("id"))
     if "meta_config" not in item or (item["meta_config"] is not None and not isinstance(item["meta_config"], str)):
         raise QualificationError("response-incompatible")
     return identifier
@@ -750,6 +796,7 @@ def _workflow_marker_matches(
     *,
     project: str,
     slug: str,
+    creator_user_id: str,
 ) -> tuple[str, str]:
     identifier = _validate_workflow_item(item)
     if item["project"] != project:
@@ -763,18 +810,19 @@ def _workflow_marker_matches(
     if WORKFLOW_IDENTITY_KEY not in value:
         return identifier, "unmarked"
     identity = value[WORKFLOW_IDENTITY_KEY]
-    if not isinstance(identity, dict) or set(identity) != {"version", "project", "slug"}:
+    if not isinstance(identity, dict) or set(identity) != {"version", "project", "creator_user_id", "slug"}:
         raise QualificationError("identity-marker-invalid")
     marker_project = identity["project"]
     marker_slug = identity["slug"]
     if (
         type(identity["version"]) is not int
-        or identity["version"] != 1
+        or identity["version"] != 2
         or not isinstance(marker_project, str)
         or not marker_project
         or not isinstance(marker_slug, str)
         or not marker_slug
         or marker_project != item["project"]
+        or identity["creator_user_id"] != creator_user_id
     ):
         raise QualificationError("identity-marker-invalid")
     return identifier, "exact" if marker_project == project and marker_slug == slug else "other-valid"
@@ -785,8 +833,9 @@ def _validate_skill_item(item: Any) -> str:
         raise QualificationError("response-incompatible")
     identifier = _string(item.get("id"))
     _string(item.get("name")); _string(item.get("project")); _strings(item.get("user_abilities"))
-    if "created_by" not in item or (item["created_by"] is not None and not isinstance(item["created_by"], dict)):
+    if not isinstance(item.get("created_by"), dict):
         raise QualificationError("response-incompatible")
+    _string(item["created_by"].get("id"))
     return identifier
 
 
@@ -870,13 +919,10 @@ def validate_runtime_gate(
     if user["email"] != authorization["actor"]:
         raise QualificationError("actor-binding-invalid")
     matching = [entry for entry in user["projects"] if entry["name"] == project]
-    if len(matching) != 1:
+    if not matching:
         raise QualificationError("project-binding-invalid")
-    role = user["is_admin"] or user["is_maintainer"] or matching[0]["is_project_admin"]
-    if not role:
-        raise QualificationError("role-binding-invalid")
     validate_smoke_manifest(manifest, now=now)
-    return {"actor": "pass", "project": "pass", "role": "pass", "writerWindow": "pass"}
+    return {"actor": "pass", "project": "pass", "membership": "pass", "writerWindow": "pass"}
 
 
 _CAPABILITY_SEAL = object()
@@ -956,13 +1002,14 @@ def run_probes(
     if transport._session_identity is not session._identity:
         raise QualificationError("session-binding-invalid")
     user = decode_user(transport.get_json("/v1/user", probe="capability"))
+    validate_runtime_gate(manifest, target=transport._target, project=project, user=user)
     workflow_declaration = next(item for item in manifest["declarations"] if item["kind"] == "Workflow")
     workflow_slug = workflow_declaration["naturalKey"]["slug"]
     workflow_exact_ids: set[str] = set()
     workflow_display_collision_ids: set[str] = set()
 
     def validate_workflow(item: Any) -> str:
-        identifier, classification = _workflow_marker_matches(item, project=project, slug=workflow_slug)
+        identifier, classification = _workflow_marker_matches(item, project=project, slug=workflow_slug, creator_user_id=user["user_id"])
         if classification == "exact":
             workflow_exact_ids.add(identifier)
         elif classification == "unmarked" and item["name"] == workflow_display_name:
@@ -1004,7 +1051,11 @@ def run_probes(
 
     def validate_exact_skill(item: Any) -> str:
         identifier = _validate_skill_item(item)
-        if item["project"] == project and item["name"] == skill_name:
+        if (
+            item["project"] == project
+            and item["name"] == skill_name
+            and item["created_by"]["id"] == user["user_id"]
+        ):
             skill_exact_ids.add(identifier)
         return identifier
 
@@ -1030,15 +1081,17 @@ def run_probes(
         raise QualificationError("page-zero-observation-missing")
     if existing is not None or workflow_exact_ids or workflow_display_collision_ids or skill_exact_ids:
         raise QualificationError("identity-collision")
+    final_user = decode_user(transport.get_json("/v1/user", probe="capability-revalidation"))
     bindings = validate_runtime_gate(
         manifest,
-        target=transport._base.rstrip("/") + "/",
+        target=transport._target,
         project=project,
-        user=user,
+        user=final_user,
     )
     evidence = {
         "schemaVersion": 1,
         "manifestVersion": MANIFEST_VERSION,
+        "adapterManifestVersion": ADAPTER_MANIFEST_VERSION,
         "status": "pass",
         "stagedBinarySha256": binary.digest,
         "bindings": bindings,
@@ -1195,6 +1248,7 @@ def main() -> int:
             failure = {
                 "schemaVersion": 1,
                 "manifestVersion": MANIFEST_VERSION,
+                "adapterManifestVersion": ADAPTER_MANIFEST_VERSION,
                 "status": "fail",
                 "category": error.category,
             }
