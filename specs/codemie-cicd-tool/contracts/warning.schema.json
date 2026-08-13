@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codemie.epam.com/schemas/gitops/warning-v1.json",
+  "title": "codemie-gitops safe non-fatal warning",
+  "description": "Version: v25 (SEC-005 remediation — source coordinates bounded and constrained against control/bidi characters).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["warningCode", "category", "source"],
+  "properties": {
+    "warningCode": {"enum": ["W_SUSPECTED_PLAINTEXT_SECRET", "W_DEPRECATED_VALUE"]},
+    "category": {"enum": ["secret-like-field", "deprecated-value"]},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "fieldPath"],
+      "properties": {
+        "file": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "line": {"type": "integer", "minimum": 1},
+        "column": {"type": "integer", "minimum": 1},
+        "fieldPath": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "pattern": "^[^\\u0000-\\u001f\\u007f\\u0080-\\u009f\\u202a-\\u202e\\u2066-\\u2069]+$"
+        }
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "warningCode": {"const": "W_SUSPECTED_PLAINTEXT_SECRET"},
+        "category": {"const": "secret-like-field"}
+      }
+    },
+    {
+      "properties": {
+        "warningCode": {"const": "W_DEPRECATED_VALUE"},
+        "category": {"const": "deprecated-value"}
+      }
+    }
+  ]
+}
