@@ -11,6 +11,11 @@ execution. Filenames and directories are conventions for reviewability, not
 entity identity. Identity comes only from the declaration kind, effective
 project, and its `slug`, `name`, or `repo_name` metadata.
 
+For Datasources, `metadata.repo_name` is the natural identity value. The
+CodeMie API calls that same value `name` in create/update request bodies; this
+is a wire-format naming difference, not a second Datasource name. Datasource
+type fields do not participate in identity.
+
 From `examples/repository`, validate each selected file without credentials:
 
 ```sh
