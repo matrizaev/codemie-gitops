@@ -858,7 +858,7 @@ fn datasource_json_identity(
     is_update: bool,
     project_scoped: bool,
 ) -> Result<(), AppError> {
-    if !is_update {
+    if !is_update || project_scoped {
         insert_encoded(body, "name", &dto.metadata.repo_name)?;
     }
     if project_scoped {
@@ -1111,9 +1111,7 @@ fn project_typed_file_datasource(
 ) -> Result<RequestBody, AppError> {
     let mut query_params = Vec::new();
     push_query_value(&mut query_params, "project_name", &dto.metadata.project)?;
-    if !is_update {
-        push_query_value(&mut query_params, "name", &dto.metadata.repo_name)?;
-    }
+    push_query_value(&mut query_params, "name", &dto.metadata.repo_name)?;
     push_query_value(&mut query_params, "description", &spec.description)?;
     push_optional_query_value(
         &mut query_params,

@@ -42,7 +42,8 @@ struct DatasourceItem {
     id: String,
     repo_name: String,
     project_name: String,
-    index_type: String,
+    #[serde(rename = "index_type")]
+    _index_type: String,
     user_abilities: Vec<String>,
 }
 
@@ -266,18 +267,14 @@ async fn enumerate(
     base_url: &ValidatedUrl,
     project_name: &str,
     repo_name: &str,
-    index_type: &str,
+    _index_type: &str,
 ) -> Result<Enumeration, AppError> {
     let project = enumerate_project(client, base_url, project_name).await?;
     Ok(Enumeration {
         matches: project
             .items
             .into_iter()
-            .filter(|item| {
-                item.repo_name == repo_name
-                    && item.project_name == project_name
-                    && item.index_type == index_type
-            })
+            .filter(|item| item.repo_name == repo_name && item.project_name == project_name)
             .collect(),
         evidence: project.evidence,
     })
