@@ -208,3 +208,23 @@ make dev-server
 The server is exposed at `http://127.0.0.1:8080` for local development. Use
 local-auth credentials or a test bearer token; never use production credentials
 against the development stack.
+
+## Releases
+
+`main` is protected and requires the CI checks to pass. Pull requests must
+change the package version in `Cargo.toml`; the release tag must match that
+version exactly.
+
+To publish a release:
+
+```sh
+# Update Cargo.toml's package version, then commit and push it through a PR.
+git tag vX.Y.Z
+git push origin vX.Y.Z
+```
+
+Pushing a `v*` tag starts the release workflow. It builds Linux x86_64,
+Linux ARM64, macOS ARM64, and Windows x86_64 binaries, generates
+`SHA256SUMS`, and attaches the binaries and checksum file to the GitHub
+Release. The workflow can also be started manually to build artifacts without
+publishing a release.

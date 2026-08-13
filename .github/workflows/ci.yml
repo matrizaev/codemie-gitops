@@ -74,3 +74,36 @@ jobs:
       # non-zero exit; see ADR-005 amendment for triage policy.
       - name: cargo audit
         run: cargo audit
+
+  version:
+    name: Version bump
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+
+      - name: Require package version bump
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+          if [[ -z "$current_version" ]]; then
+            echo "Cargo.toml package version is missing" >&2
+            exit 1
+          fi
+
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            git fetch origin "${{ github.base_ref }}" --depth=1
+            base_version="$(git show "origin/${{ github.base_ref }}:Cargo.toml" | sed -n 's/^version = "\([^"]*\)"/\1/p' | head -n 1)"
+            if [[ "$current_version" == "$base_version" ]]; then
+              echo "Cargo.toml version must change on every pull request (current: $current_version)" >&2
+              exit 1
+            fi
+            echo "Version bumped: $base_version -> $current_version"
+          else
+            echo "Version present: $current_version"
+          fi
