@@ -526,10 +526,9 @@ mod tests {
 
     #[test]
     fn manifest_pins_additive_policy_capability_scope_and_page_bases() {
-        let manifest: serde_json::Value = serde_json::from_str(include_str!(
-            "../../specs/codemie-cicd-tool/contracts/adapter-manifest-v2.42.0.json"
-        ))
-        .expect("checked-in adapter manifest must be valid JSON");
+        let manifest: serde_json::Value =
+            serde_json::from_str(include_str!("../../schemas/adapter-manifest-v2.42.0.json"))
+                .expect("checked-in adapter manifest must be valid JSON");
 
         assert_eq!(
             manifest
