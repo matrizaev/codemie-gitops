@@ -16,7 +16,7 @@ pub(super) fn project_response(
         command.selector.kind() == SaveKind::Workflow && command.selector.workflow_id().is_some();
     let declaration = match (command.selector.kind(), response) {
         (SaveKind::Assistant, EntitySnapshot::Assistant(snapshot)) => {
-            reverse_assistant(command, project, snapshot)?
+            reverse_assistant(command, project, *snapshot)?
         }
         (SaveKind::Workflow, EntitySnapshot::Workflow(snapshot)) => {
             reverse_workflow(command, project, snapshot)?
@@ -25,7 +25,7 @@ pub(super) fn project_response(
             reverse_skill(command, project, snapshot)?
         }
         (SaveKind::Datasource, EntitySnapshot::Datasource(snapshot)) => {
-            reverse_datasource(command, project, snapshot)?
+            reverse_datasource(command, project, *snapshot)?
         }
         _ => {
             return Err(AppError::Internal(
@@ -94,18 +94,6 @@ fn reverse_assistant(
     if snapshot.slug.as_ref().is_some_and(|actual| actual != slug) {
         return Err(AppError::EntityNotExportable);
     }
-    if snapshot
-        .assistant_ids
-        .as_ref()
-        .is_some_and(|ids| !ids.is_empty())
-        || snapshot
-            .skill_ids
-            .as_ref()
-            .and_then(Option::as_ref)
-            .is_some_and(|ids| !ids.is_empty())
-    {
-        return Err(AppError::EntityNotExportable);
-    }
     forbidden_extension(&snapshot.extensions, "access_token")?;
     forbidden_extension(&snapshot.extensions, "mcp_connect_auth_token")?;
     let mut spec = serde_json::Map::new();
@@ -168,8 +156,11 @@ fn reverse_assistant(
         "guardrail_assignments",
         snapshot.guardrail_assignments,
     );
-    spec.insert("sub_assistants".into(), serde_json::json!([]));
-    spec.insert("skills".into(), serde_json::json!([]));
+    spec.insert(
+        "sub_assistants".into(),
+        serde_json::Value::Array(snapshot.sub_assistants),
+    );
+    spec.insert("skills".into(), serde_json::Value::Array(snapshot.skills));
     Ok(declaration(
         "Assistant",
         serde_json::json!({"project": project, "slug": slug}),

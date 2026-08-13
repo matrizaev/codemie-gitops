@@ -8,10 +8,10 @@ use super::*;
 /// response for another entity kind.
 #[derive(Debug, Clone)]
 pub(super) enum EntitySnapshot {
-    Assistant(AssistantSnapshot),
+    Assistant(Box<AssistantSnapshot>),
     Workflow(WorkflowSnapshot),
     Skill(SkillSnapshot),
-    Datasource(DatasourceSnapshot),
+    Datasource(Box<DatasourceSnapshot>),
 }
 
 /// Presence-preserving response field. Unlike `Option<T>`, this distinguishes
@@ -70,6 +70,10 @@ pub(super) struct AssistantSnapshot {
     pub(super) assistant_ids: ResponseField<Vec<String>>,
     #[serde(default)]
     pub(super) skill_ids: ResponseField<Option<Vec<String>>>,
+    #[serde(skip)]
+    pub(super) sub_assistants: Vec<serde_json::Value>,
+    #[serde(skip)]
+    pub(super) skills: Vec<serde_json::Value>,
     #[serde(default)]
     pub(super) name: ResponseField<OpenResponseValue>,
     #[serde(default)]
@@ -265,8 +269,78 @@ pub(super) async fn read_assistant(
         encode_query_value(slug),
         encode_query_value(project)
     );
-    let snapshot = client.get(&path).await?;
-    Ok(EntitySnapshot::Assistant(snapshot))
+    let mut snapshot: AssistantSnapshot = client.get(&path).await?;
+    snapshot.sub_assistants =
+        resolve_assistant_ids(client, &snapshot.assistant_ids, project).await?;
+    snapshot.skills = resolve_skill_ids(client, &snapshot.skill_ids, project).await?;
+    Ok(EntitySnapshot::Assistant(Box::new(snapshot)))
+}
+
+async fn resolve_assistant_ids(
+    client: &ApiClient,
+    ids: &ResponseField<Vec<String>>,
+    project: &str,
+) -> Result<Vec<serde_json::Value>, AppError> {
+    let mut refs = Vec::new();
+    for id in ids.as_ref().into_iter().flatten() {
+        let value: serde_json::Value = client
+            .get(&format!("/v1/assistants/id/{}", encode_query_value(id)))
+            .await?;
+        let object = value.as_object().ok_or_else(|| {
+            AppError::ApiIncompatible("Assistant reference response must be an object".into())
+        })?;
+        let target_project = object
+            .get("project")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                AppError::ApiIncompatible("Assistant reference project is missing".into())
+            })?;
+        let slug = object
+            .get("slug")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(AppError::EntityNotExportable)?;
+        if target_project != project {
+            return Err(AppError::EntityNotExportable);
+        }
+        refs.push(serde_json::json!({"project": target_project, "slug": slug}));
+    }
+    Ok(refs)
+}
+
+async fn resolve_skill_ids(
+    client: &ApiClient,
+    ids: &ResponseField<Option<Vec<String>>>,
+    project: &str,
+) -> Result<Vec<serde_json::Value>, AppError> {
+    let mut refs = Vec::new();
+    for id in ids
+        .as_ref()
+        .and_then(|value| value.as_ref())
+        .into_iter()
+        .flatten()
+    {
+        let value: serde_json::Value = client
+            .get(&format!("/v1/skills/{}", encode_query_value(id)))
+            .await?;
+        let object = value.as_object().ok_or_else(|| {
+            AppError::ApiIncompatible("Skill reference response must be an object".into())
+        })?;
+        let target_project = object
+            .get("project")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                AppError::ApiIncompatible("Skill reference project is missing".into())
+            })?;
+        let name = object
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(AppError::EntityNotExportable)?;
+        if target_project != project {
+            return Err(AppError::EntityNotExportable);
+        }
+        refs.push(serde_json::json!({"project": target_project, "name": name}));
+    }
+    Ok(refs)
 }
 
 pub(super) async fn read_datasource(
@@ -280,7 +354,7 @@ pub(super) async fn read_datasource(
     let snapshot = client
         .get(&format!("/v1/index/{}", encode_query_value(&id)))
         .await?;
-    Ok(EntitySnapshot::Datasource(snapshot))
+    Ok(EntitySnapshot::Datasource(Box::new(snapshot)))
 }
 
 pub(super) async fn read_skill_snapshot(
