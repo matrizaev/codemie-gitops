@@ -1,7 +1,0 @@
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://codemie.epam.com/schemas/retired-repository-config.json",
-  "title": "Retired repository configuration contract",
-  "description": "Retired by product specification v33. The CLI must not discover or load .codemie/config.yaml.",
-  "not": {}
-}
