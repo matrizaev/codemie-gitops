@@ -27,6 +27,7 @@ use crate::config::{ResolveConfigArgs, find_repo_root, resolve_config};
 use crate::coordinator::{self, ApplyCommand};
 use crate::lint::{self, LintCommand};
 use crate::output::OutputMode;
+use crate::save::SaveKind;
 
 /// The top-level CLI structure.
 #[derive(Parser, Debug)]
@@ -94,6 +95,32 @@ pub enum Command {
         adopt_workflow_id: Option<String>,
 
         /// Output format: `text` (default) or `json`.
+        #[arg(long, default_value = "text")]
+        output: OutputMode,
+    },
+
+    /// Save one server entity as a new local declaration.
+    Save {
+        #[arg(long)]
+        kind: SaveKind,
+        #[arg(long)]
+        slug: Option<String>,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        repo_name: Option<String>,
+        #[arg(long = "id")]
+        workflow_id: Option<String>,
+        #[arg(long, short = 'f')]
+        file: PathBuf,
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long)]
+        repo_root: Option<PathBuf>,
+        #[arg(long, env = "CODEMIE_URL")]
+        url: Option<String>,
+        #[arg(long)]
+        follow_symlinks: bool,
         #[arg(long, default_value = "text")]
         output: OutputMode,
     },
@@ -234,6 +261,84 @@ pub async fn run() -> i32 {
                 Err(e) => {
                     crate::output::write_failure(&e, output);
                     e.exit_code()
+                }
+            }
+        }
+
+        Command::Save {
+            kind,
+            slug,
+            name,
+            repo_name,
+            workflow_id,
+            file,
+            project,
+            repo_root,
+            url,
+            follow_symlinks,
+            output,
+        } => {
+            let command = crate::save::SaveCommand {
+                kind,
+                project,
+                slug,
+                name,
+                repo_name,
+                workflow_id,
+                file,
+                repo_root,
+                url,
+                follow_symlinks,
+            };
+            let command = match command.validate() {
+                Ok(command) => command,
+                Err(error) => {
+                    crate::output::write_failure(&error, output);
+                    return error.exit_code();
+                }
+            };
+            let effective_repo_root = match resolve_repo_root(command.repo_root.as_deref()) {
+                Ok(root) => root,
+                Err(error) => {
+                    crate::output::write_failure(&error, output);
+                    return error.exit_code();
+                }
+            };
+            let config = match resolve_config(&ResolveConfigArgs {
+                flag_url: command.url.clone(),
+                flag_auth_url: None,
+                repo_root: Some(effective_repo_root.clone()),
+            }) {
+                Ok(config) => config,
+                Err(error) => {
+                    crate::output::write_failure(&error, output);
+                    return error.exit_code();
+                }
+            };
+            let base_url = match config.url {
+                Some(url) => url,
+                None => {
+                    let error = crate::error::AppError::Configuration(
+                        "target URL is required for save".into(),
+                    );
+                    crate::output::write_failure(&error, output);
+                    return error.exit_code();
+                }
+            };
+            let command = crate::save::SaveCommand {
+                repo_root: Some(effective_repo_root),
+                project: command.project.or(config.project),
+                url: Some(base_url.to_string()),
+                ..command
+            };
+            match crate::save::save(command).await {
+                Ok(outcome) => {
+                    outcome.write(output);
+                    0
+                }
+                Err(error) => {
+                    crate::output::write_failure(&error, output);
+                    error.exit_code()
                 }
             }
         }

@@ -97,6 +97,9 @@ pub enum ErrorCode {
     EAdoptionRequired,
     EMissingReference,
     EWriteUncertain,
+    EEntityNotFound,
+    EEntityNotExportable,
+    EWorkflowAlreadyMarked,
     // server-rejection (exit 1)
     EServerRejected,
     // usage (exit 2)
@@ -140,6 +143,9 @@ impl ErrorCode {
             ErrorCode::EAdoptionRequired => "E_ADOPTION_REQUIRED",
             ErrorCode::EMissingReference => "E_MISSING_REFERENCE",
             ErrorCode::EWriteUncertain => "E_WRITE_UNCERTAIN",
+            ErrorCode::EEntityNotFound => "E_ENTITY_NOT_FOUND",
+            ErrorCode::EEntityNotExportable => "E_ENTITY_NOT_EXPORTABLE",
+            ErrorCode::EWorkflowAlreadyMarked => "E_WORKFLOW_ALREADY_MARKED",
             ErrorCode::EServerRejected => "E_SERVER_REJECTED",
             ErrorCode::EUsage => "E_USAGE",
             ErrorCode::EYamlParse => "E_YAML_PARSE",
@@ -630,6 +636,18 @@ pub fn diagnostic_from_app_error(error: &crate::error::AppError) -> DiagnosticIn
                 DiagnosticCategory::Reconciliation,
             )
         }
+        AppError::EntityNotFound => (
+            ErrorCode::EEntityNotFound,
+            DiagnosticCategory::Reconciliation,
+        ),
+        AppError::EntityNotExportable => (
+            ErrorCode::EEntityNotExportable,
+            DiagnosticCategory::Reconciliation,
+        ),
+        AppError::WorkflowAlreadyMarked => (
+            ErrorCode::EWorkflowAlreadyMarked,
+            DiagnosticCategory::Reconciliation,
+        ),
     };
     DiagnosticInput {
         error_code,

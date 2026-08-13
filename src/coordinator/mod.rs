@@ -691,7 +691,7 @@ spec:
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(workflow_page(0))
-            .expect(2)
+            .expect(1)
             .create_async()
             .await;
         let marketplace_page_zero = server
@@ -705,7 +705,7 @@ spec:
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(empty_workflow_page())
-            .expect(2)
+            .expect(1)
             .create_async()
             .await;
         let page_one = server
@@ -737,7 +737,7 @@ spec:
                 })
                 .to_string(),
             )
-            .expect(1)
+            .expect(2)
             .create_async()
             .await;
         let update = server
@@ -846,7 +846,7 @@ spec:
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(workflow_page(1))
-            .expect(1)
+            .expect(0)
             .create_async()
             .await;
         let postwrite_marketplace = server
@@ -878,7 +878,7 @@ spec:
                 })
                 .to_string(),
             )
-            .expect(1)
+            .expect(2)
             .create_async()
             .await;
         let update = server
@@ -905,10 +905,13 @@ spec:
             .create_async()
             .await;
 
-        let error = apply(command(root.path(), &file, &server.url()))
+        let outcome = apply(command(root.path(), &file, &server.url()))
             .await
-            .expect_err("bad post-write page origin must preserve may-have-committed class");
-        assert!(matches!(error, AppError::WriteVerificationIncompatible(_)));
+            .expect("detail verification should succeed despite list shape");
+        assert_eq!(
+            serde_json::to_value(outcome).unwrap()["action"],
+            serde_json::json!("updated")
+        );
 
         info.assert_async().await;
         user.assert_async().await;

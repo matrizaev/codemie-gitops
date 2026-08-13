@@ -44,6 +44,7 @@ pub enum Action {
     Valid,
     Created,
     Updated,
+    Saved,
 }
 
 impl Action {
@@ -52,6 +53,7 @@ impl Action {
             Action::Valid => "valid",
             Action::Created => "created",
             Action::Updated => "updated",
+            Action::Saved => "saved",
         }
     }
 }
@@ -77,6 +79,8 @@ pub struct Outcome {
     /// Present for Datasource; absent for all other kinds.
     #[serde(skip_serializing_if = "Option::is_none")]
     repo_name: Option<String>,
+    #[serde(rename = "adoptionRequired", skip_serializing_if = "Option::is_none")]
+    adoption_required: Option<bool>,
 }
 
 impl Outcome {
@@ -92,6 +96,7 @@ impl Outcome {
             slug: Some(slug),
             name: None,
             repo_name: None,
+            adoption_required: None,
         }
     }
 
@@ -104,6 +109,7 @@ impl Outcome {
             slug: None,
             name: Some(name),
             repo_name: None,
+            adoption_required: None,
         }
     }
 
@@ -116,6 +122,19 @@ impl Outcome {
             slug: None,
             name: None,
             repo_name: Some(repo_name),
+            adoption_required: None,
+        }
+    }
+
+    pub fn saved_workflow(project: String, slug: String, adoption_required: bool) -> Self {
+        Self {
+            action: Action::Saved,
+            kind: "Workflow".into(),
+            project,
+            slug: Some(slug),
+            name: None,
+            repo_name: None,
+            adoption_required: adoption_required.then_some(true),
         }
     }
 

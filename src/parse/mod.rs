@@ -30,6 +30,8 @@ use crate::discovery::{
 use crate::error::AppError;
 use crate::schema::DECLARATION_SCHEMA_JSON;
 
+type SidecarLoader<'a> = dyn Fn(&Path, &str) -> Result<Vec<u8>, AppError> + 'a;
+
 // ---------------------------------------------------------------------------
 // YAML resource budget constants (SEC-003, F-004)
 // ---------------------------------------------------------------------------
@@ -116,11 +118,12 @@ pub fn parse_and_validate(
     repo_root: &Path,
     follow_symlinks: bool,
 ) -> Result<ParsedDeclaration, AppError> {
-    parse_and_validate_inner(raw_yaml, file_path, repo_root, follow_symlinks, None)
+    parse_and_validate_inner(raw_yaml, file_path, repo_root, follow_symlinks, None, None)
 }
 
 /// Coordinator-only parsing entry point with cooperative cancellation for
 /// sidecar expansion and phase checkpoints.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn parse_and_validate_cancellable(
     raw_yaml: &str,
     file_path: &Path,
@@ -134,6 +137,25 @@ pub(crate) fn parse_and_validate_cancellable(
         repo_root,
         follow_symlinks,
         Some(cancellation),
+        None,
+    )
+}
+
+pub(crate) fn parse_and_validate_cancellable_with_sidecar(
+    raw_yaml: &str,
+    file_path: &Path,
+    repo_root: &Path,
+    follow_symlinks: bool,
+    cancellation: &CancellationToken,
+    sidecar: &SidecarLoader<'_>,
+) -> Result<ParsedDeclaration, AppError> {
+    parse_and_validate_inner(
+        raw_yaml,
+        file_path,
+        repo_root,
+        follow_symlinks,
+        Some(cancellation),
+        Some(sidecar),
     )
 }
 
@@ -143,6 +165,7 @@ fn parse_and_validate_inner(
     repo_root: &Path,
     follow_symlinks: bool,
     cancellation: Option<&CancellationToken>,
+    sidecar: Option<&SidecarLoader<'_>>,
 ) -> Result<ParsedDeclaration, AppError> {
     if let Some(cancellation) = cancellation {
         cancellation.checkpoint()?;
@@ -192,6 +215,7 @@ fn parse_and_validate_inner(
         repo_root,
         follow_symlinks,
         cancellation,
+        sidecar,
     )?;
 
     // `contentFrom` is an authoring-only selector whose sidecar bytes become
@@ -526,6 +550,7 @@ fn expand_content_from(
     repo_root: &Path,
     follow_symlinks: bool,
     cancellation: Option<&CancellationToken>,
+    sidecar: Option<&SidecarLoader<'_>>,
 ) -> Result<JsonValue, AppError> {
     if *kind != EntityKind::Skill {
         return Ok(value);
@@ -541,16 +566,22 @@ fn expand_content_from(
         None => return Ok(value), // `spec.content` is used directly
     };
 
-    // Resolve path through the discovery module (enforces symlink and
-    // root-containment policy per cli.md §3 and F-003).
-    let sidecar_path = resolve_sidecar_path(&relative_path, file_path, repo_root, follow_symlinks)?;
-
-    // Load with the per-file budget (open-then-fstat pattern, SEC-003).
-    let sidecar_bytes = match cancellation {
-        Some(cancellation) => {
-            load_sidecar_file_cancellable(&sidecar_path, MAX_SIDECAR_FILE_BYTES, cancellation)?
+    let sidecar_bytes = match sidecar {
+        Some(sidecar) => sidecar(file_path, &relative_path)?,
+        None => {
+            // Resolve and load through the discovery module (enforces symlink,
+            // containment, and open-then-fstat behavior).
+            let sidecar_path =
+                resolve_sidecar_path(&relative_path, file_path, repo_root, follow_symlinks)?;
+            match cancellation {
+                Some(cancellation) => load_sidecar_file_cancellable(
+                    &sidecar_path,
+                    MAX_SIDECAR_FILE_BYTES,
+                    cancellation,
+                )?,
+                None => load_sidecar_file(&sidecar_path, MAX_SIDECAR_FILE_BYTES)?,
+            }
         }
-        None => load_sidecar_file(&sidecar_path, MAX_SIDECAR_FILE_BYTES)?,
     };
 
     // Aggregate upload budget: for a single Skill declaration there is exactly
@@ -977,6 +1008,7 @@ spec:
             &decl_file,
             &root,
             false,
+            None,
             None,
         );
         assert!(

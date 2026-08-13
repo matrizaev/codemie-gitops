@@ -1015,23 +1015,18 @@ fn project_json_datasource(
 
     let mut body = Map::new();
 
-    // Identity injection: repo_name → name (create) for git/svn; project_name for others
-    match kind {
-        "git" | "svn" => {
-            // `name` = repo_name (injected on create; on update it's a route param)
-            if !is_update {
-                body.insert("name".to_owned(), Value::String(repo_name.to_owned()));
-            }
-        }
-        _ => {
-            // project_name in body
-            body.insert("project_name".to_owned(), Value::String(project.to_owned()));
-        }
+    // The API uses `name` as the natural repository name for every create
+    // route; project-scoped knowledge-base routes also require project_name.
+    if !is_update {
+        body.insert("name".to_owned(), Value::String(repo_name.to_owned()));
+    }
+    if kind != "git" && kind != "svn" {
+        body.insert("project_name".to_owned(), Value::String(project.to_owned()));
     }
 
     for field in active_fields {
         // Skip identity-injected fields handled above
-        if *field == "name" && (kind == "git" || kind == "svn") && !is_update {
+        if *field == "name" && !is_update {
             continue;
         }
         if *field == "project_name" {

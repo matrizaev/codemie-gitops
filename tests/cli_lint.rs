@@ -3,28 +3,30 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 fn assistant_yaml() -> &'static str {
-    r#"apiVersion: codemie.epam.com/v1alpha1
-kind: Assistant
-metadata:
-  project: project-a
-  slug: assistant-a
-spec:
-  name: Assistant A
-  system_prompt: Helpful
-  llm_model_type: gpt
-  type: codemie
-  context: []
-  toolkits: []
-  conversation_starters: []
-  shared: false
-  mcp_servers: []
-  sub_assistants: []
-  enabled_builtin_subagents: []
-  skills:
-    - project: project-a
-      name: shared-skill
-  categories: []
-"#
+    concat!(
+        "apiVersion: codemie.epam.com/v1alpha1\n",
+        "kind: Assistant\n",
+        "metadata:\n",
+        "  project: project-a\n",
+        "  slug: assistant-a\n",
+        "spec:\n",
+        "  name: Assistant A\n",
+        "  system_prompt: Helpful\n",
+        "  llm_model_type: gpt\n",
+        "  type: codemie\n",
+        "  context: []\n",
+        "  toolkits: []\n",
+        "  conversation_starters: []\n",
+        "  shared: false\n",
+        "  mcp_servers: []\n",
+        "  sub_assistants: []\n",
+        "  enabled_builtin_subagents: []\n",
+        "  prompt_variables: []\n",
+        "  skills:\n",
+        "    - project: project-a\n",
+        "      name: shared-skill\n",
+        "  categories: []\n",
+    )
 }
 
 fn skill_yaml() -> &'static str {

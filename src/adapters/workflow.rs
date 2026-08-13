@@ -27,7 +27,7 @@ use super::{
 const MAX_PAGES: u32 = 1_000;
 const MAX_ITEMS: u32 = 100_000;
 
-const IDENTITY_KEY: &str = "codemie.epam.com/gitops/workflow-identity";
+pub(crate) const IDENTITY_KEY: &str = "codemie.epam.com/gitops/workflow-identity";
 
 // ---------------------------------------------------------------------------
 // Server response shapes
@@ -60,6 +60,7 @@ struct WorkflowItem {
 
 #[derive(Deserialize, Clone)]
 struct Creator {
+    #[serde(alias = "user_id")]
     id: String,
 }
 
@@ -84,13 +85,8 @@ impl<'de> Deserialize<'de> for RequiredNullableString {
     }
 }
 
-#[derive(Deserialize)]
-struct WorkflowIdResponse {
-    id: String,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MarkerClassification {
+pub(crate) enum MarkerClassification {
     Unmarked,
     Exact,
     OtherValid,
@@ -352,12 +348,17 @@ async fn dispatch(prepared: PreparedWrite<'_>) -> Result<ApplyResult, AppError> 
         ResolutionTarget::Update { .. } => ApplyAction::Updated,
     };
     let response = ApiClient::dispatch_prepared(prepared).await?;
-    let response: WorkflowIdResponse = decode_write_response(response)?.ok_or_else(|| {
+    let response = decode_write_response::<serde_json::Value>(response)?.ok_or_else(|| {
         AppError::Internal("Workflow modifying request cannot return a conflict signal".into())
     })?;
+    let id = response
+        .get("id")
+        .or_else(|| response.get("data").and_then(|data| data.get("id")))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| AppError::ApiIncompatible("workflow response missing id field".into()))?;
     Ok(ApplyResult {
         action,
-        server_id: response.id,
+        server_id: id.to_owned(),
     })
 }
 
@@ -371,22 +372,23 @@ pub async fn verify_identity(
     expected_server_id: &str,
 ) -> Result<(), AppError> {
     let membership = preflight_visibility(client, base_url, project_name).await?;
-    let scan = enumerate_all(
-        client,
-        base_url,
-        project_name,
-        slug,
-        membership.authenticated_user_id(),
-        None,
-    )
-    .await?;
-    match scan.exact_matches.as_slice() {
-        [single] if single.id == expected_server_id => Ok(()),
-        _ => Err(AppError::Reconciliation(
-            "Workflow write may have committed but identity verification did not match exactly once"
+    let detail = fetch_detail(client, base_url, expected_server_id).await?;
+    if detail.id != expected_server_id
+        || detail.project != project_name
+        || classify_marker(
+            detail.meta_config.0.as_deref(),
+            project_name,
+            project_name,
+            slug,
+            membership.authenticated_user_id(),
+        ) != MarkerClassification::Exact
+    {
+        return Err(AppError::Reconciliation(
+            "Workflow write may have committed but identity verification did not match exactly"
                 .into(),
-        )),
+        ));
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -712,7 +714,7 @@ async fn fetch_detail(
 // Identity classification: strict JSON and closed reserved record (ADR-008)
 // ---------------------------------------------------------------------------
 
-fn classify_marker(
+pub(crate) fn classify_marker(
     meta_config: Option<&str>,
     row_project: &str,
     desired_project: &str,
@@ -1553,7 +1555,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(page_zero.to_string())
-            .expect(1)
+            .expect(0)
             .create_async()
             .await;
         let project_page_one = server
@@ -1566,7 +1568,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(page_one.to_string())
-            .expect(1)
+            .expect(0)
             .create_async()
             .await;
         let marketplace_page_zero = server
@@ -1580,7 +1582,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(empty_page())
-            .expect(1)
+            .expect(0)
             .create_async()
             .await;
         let marketplace_page_one = server
@@ -1592,6 +1594,24 @@ mod tests {
                 ),
             )
             .expect(0)
+            .create_async()
+            .await;
+        let detail = server
+            .mock("GET", "/v1/workflows/id/expected-workflow")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "id": "expected-workflow",
+                    "project": "my-project",
+                    "name": "Workflow",
+                    "meta_config": meta_config_for("my-project", "my-slug"),
+                    "created_by": {"id": "user-1"},
+                    "user_abilities": ["read", "write"]
+                })
+                .to_string(),
+            )
+            .expect(1)
             .create_async()
             .await;
 
@@ -1609,6 +1629,7 @@ mod tests {
         project_page_one.assert_async().await;
         marketplace_page_zero.assert_async().await;
         marketplace_page_one.assert_async().await;
+        detail.assert_async().await;
     }
 
     #[tokio::test]
@@ -1625,7 +1646,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"data":[],"pagination":{"page":1,"per_page":100,"total":0,"pages":0}}"#)
-            .expect(1)
+            .expect(0)
             .create_async()
             .await;
         let marketplace = server
@@ -1634,6 +1655,24 @@ mod tests {
                 mockito::Matcher::Regex(r"^/v1/workflows\?.*scope=marketplace$".to_owned()),
             )
             .expect(0)
+            .create_async()
+            .await;
+        let detail = server
+            .mock("GET", "/v1/workflows/id/expected-workflow")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "id": "expected-workflow",
+                    "project": "other-project",
+                    "name": "Workflow",
+                    "meta_config": meta_config_for("other-project", "my-slug"),
+                    "created_by": {"id": "user-1"},
+                    "user_abilities": ["read", "write"]
+                })
+                .to_string(),
+            )
+            .expect(1)
             .create_async()
             .await;
         let mut modifications = Vec::new();
@@ -1657,9 +1696,10 @@ mod tests {
         .await
         .expect_err("invalid post-write page origin must fail closed");
 
-        assert!(matches!(error, AppError::ApiIncompatible(_)));
+        assert!(matches!(error, AppError::Reconciliation(_)));
         page_zero.assert_async().await;
         marketplace.assert_async().await;
+        detail.assert_async().await;
         for modification in modifications {
             modification.assert_async().await;
         }

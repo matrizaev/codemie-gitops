@@ -80,6 +80,18 @@ pub enum AppError {
     /// resolution instability, or uncertain write.
     #[error("reconciliation error: {0}")]
     Reconciliation(String),
+
+    /// E_ENTITY_NOT_FOUND (exit 1): the selected server entity does not exist.
+    #[error("selected entity was not found")]
+    EntityNotFound,
+
+    /// E_ENTITY_NOT_EXPORTABLE (exit 1): server state cannot be reconstructed safely.
+    #[error("selected entity is not exportable")]
+    EntityNotExportable,
+
+    /// E_WORKFLOW_ALREADY_MARKED (exit 1): explicit ID selection found a marker.
+    #[error("workflow is already marked; use natural-key selection")]
+    WorkflowAlreadyMarked,
 }
 
 impl AppError {
@@ -87,6 +99,9 @@ impl AppError {
     pub fn exit_code(&self) -> i32 {
         match self {
             AppError::Reconciliation(_)
+            | AppError::EntityNotFound
+            | AppError::EntityNotExportable
+            | AppError::WorkflowAlreadyMarked
             | AppError::ServerRejected(_)
             | AppError::WriteUncertain(_) => 1,
             _ => 2,

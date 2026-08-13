@@ -1,0 +1,152 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codemie.epam.com/schemas/gitops/diagnostic-v2.json",
+  "title": "codemie-gitops safe failure diagnostic v2",
+  "description": "Closed v2 superset of diagnostic-v1 adding save reconciliation and local-output failures.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["errorCode", "category", "exitCode"],
+  "properties": {
+    "errorCode": {"type": "string"},
+    "category": {
+      "enum": [
+        "reconciliation",
+        "server-rejection",
+        "usage",
+        "local-input",
+        "local-output",
+        "configuration",
+        "authentication",
+        "authorization",
+        "compatibility",
+        "connectivity",
+        "internal"
+      ]
+    },
+    "exitCode": {"enum": [1, 2]},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "file": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "line": {"type": "integer", "minimum": 1},
+        "column": {"type": "integer", "minimum": 1},
+        "fieldPath": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "pattern": "^[^\\u0000-\\u001f\\u007f\\u0080-\\u009f\\u202a-\\u202e\\u2066-\\u2069]+$"
+        }
+      }
+    },
+    "http": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "method", "routeTemplate"],
+      "properties": {
+        "status": {"type": "integer", "minimum": 100, "maximum": 599},
+        "method": {"enum": ["GET", "POST", "PUT"]},
+        "routeTemplate": {"type": "string", "pattern": "^/[A-Za-z0-9_./{}:-]+$"}
+      }
+    },
+    "requestId": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,128}$"},
+    "serverCorrelationId": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,128}$"}
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "category": {"const": "reconciliation"},
+        "exitCode": {"const": 1},
+        "errorCode": {
+          "enum": [
+            "E_AMBIGUOUS_IDENTITY",
+            "E_IDENTITY_MARKER_INVALID",
+            "E_RESOLUTION_UNSTABLE",
+            "E_ADOPTION_REQUIRED",
+            "E_MISSING_REFERENCE",
+            "E_WRITE_UNCERTAIN",
+            "E_ENTITY_NOT_FOUND",
+            "E_ENTITY_NOT_EXPORTABLE",
+            "E_WORKFLOW_ALREADY_MARKED"
+          ]
+        }
+      }
+    },
+    {
+      "properties": {
+        "category": {"const": "server-rejection"},
+        "exitCode": {"const": 1},
+        "errorCode": {"const": "E_SERVER_REJECTED"}
+      }
+    },
+    {
+      "properties": {
+        "category": {"const": "usage"},
+        "exitCode": {"const": 2},
+        "errorCode": {"const": "E_USAGE"}
+      }
+    },
+    {
+      "properties": {
+        "category": {"const": "local-input"},
+        "exitCode": {"const": 2},
+        "errorCode": {
+          "enum": ["E_YAML_PARSE", "E_SCHEMA", "E_SEMANTIC", "E_REFERENCE", "E_SIDECAR"]
+        }
+      }
+    },
+    {
+      "properties": {
+        "category": {"const": "local-output"},
+        "exitCode": {"const": 2},
+        "errorCode": {"enum": ["E_OUTPUT_EXISTS", "E_OUTPUT_PATH", "E_OUTPUT_WRITE"]}
+      }
+    },
+    {
+      "properties": {
+        "category": {"const": "configuration"},
+        "exitCode": {"const": 2},
+        "errorCode": {"const": "E_CONFIGURATION"}
+      }
+    },
+    {
+      "properties": {
+        "category": {"const": "authentication"},
+        "exitCode": {"const": 2},
+        "errorCode": {
+          "enum": ["E_AUTHENTICATION", "E_TOKEN_EXPIRED", "E_LOCAL_AUTH_UNAVAILABLE", "E_RATE_LIMITED"]
+        }
+      }
+    },
+    {
+      "properties": {
+        "category": {"const": "authorization"},
+        "exitCode": {"const": 2},
+        "errorCode": {"enum": ["E_AUTHORIZATION", "E_VISIBILITY_UNPROVEN", "E_WRITE_FORBIDDEN"]}
+      }
+    },
+    {
+      "properties": {
+        "category": {"const": "compatibility"},
+        "exitCode": {"const": 2},
+        "errorCode": {"enum": ["E_API_INCOMPATIBLE", "E_WRITE_VERIFICATION_INCOMPATIBLE"]}
+      }
+    },
+    {
+      "properties": {
+        "category": {"const": "connectivity"},
+        "exitCode": {"const": 2},
+        "errorCode": {
+          "enum": ["E_CONNECTIVITY", "E_SERVER_UNAVAILABLE", "E_TIMEOUT", "E_WRITE_VERIFICATION_UNAVAILABLE"]
+        }
+      }
+    },
+    {
+      "properties": {
+        "category": {"const": "internal"},
+        "exitCode": {"const": 2},
+        "errorCode": {"const": "E_INTERNAL"}
+      }
+    }
+  ]
+}
