@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use schemars::schema::RootSchema;
 use typify::{TypeSpace, TypeSpaceSettings};
 
-const SCHEMA_PATH: &str = "schemas/declaration-v1alpha1.schema.json";
+const SCHEMA_PATH: &str = "specs/codemie-cicd-tool/contracts/declaration-v1alpha1.schema.json";
 
 fn main() -> Result<(), Box<dyn Error>> {
     println!("cargo:rerun-if-changed={SCHEMA_PATH}");

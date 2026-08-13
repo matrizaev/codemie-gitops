@@ -8,55 +8,138 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Future enhancements to be documented
+- (upcoming features)
 
 ### Changed
-- Future changes to be documented
+- (upcoming changes)
 
 ### Fixed
-- Future fixes to be documented
+- (upcoming fixes)
 
 ### Deprecated
-- Future deprecations to be documented
+- (upcoming deprecations)
 
 ### Removed
-- Future removals to be documented
+- (upcoming removals)
 
 ### Security
-- Future security improvements to be documented
+- (upcoming security updates)
+
+---
 
 ## [0.1.1] - 2026-08-13
 
 ### Fixed
-- Fixed release workflow by adding repository checkout to publish job
-- Ensured `gh release` commands have proper Git context for creating GitHub Releases
+- **Release workflow**: Fixed GitHub Actions `publish` job by adding checkout action to provide repository context (`.git` directory) for `gh release` commands.
+- **Build consistency**: Verified `Cargo.lock` integrity across all platforms.
 
-## [0.1.0] - 2026-08-13
+### Changed
+- **Documentation**: Added comprehensive OSS documentation (Architecture, Contributing, Security Policy, Code of Conduct, Changelog).
+- **Internal refactoring**: Maintained backward-compatible APIs and data structures.
 
-### Added
-- Initial release of `codemie-gitops` CLI tool
-- `lint` command: Validate declarations against JSON Schema
-- `apply` command: Apply declarations to CodeMie server
-- `save` command: Read entities from CodeMie and produce declarations
-- `login` command: OAuth credential exchange
-- Support for four entity types: Assistant, Workflow, Skill, Datasource
-- Full round-trip testing: create/apply → save → lint → re-apply
-- Cross-platform binary releases (Windows x86_64, macOS aarch64, Linux x86_64, Linux aarch64)
-- Protected main branch with required status checks
-- Automated CI/CD pipeline with format, lint, test, and audit gates
-- Security-focused design: stateless, schema-validated, type-safe
-- Comprehensive documentation: README, ARCHITECTURE, CONTRIBUTING, SECURITY, CODE_OF_CONDUCT
-
-### Documentation
-- README with command reference and local development guide
-- ARCHITECTURE describing design principles and module organization
-- CONTRIBUTING with development workflow and testing guidelines
-- SECURITY with vulnerability reporting and best practices
-- CODE_OF_CONDUCT for community standards
-- Examples directory with sample declarations
+### Verified
+- All four entity types (Assistant, Workflow, Skill, Datasource) verified with full round-trip testing: `apply → save → lint → re-apply`.
+- Cross-platform release binaries confirmed for Windows x86_64, macOS aarch64, Linux x86_64, and Linux aarch64.
 
 ---
 
-[Unreleased]: https://github.com/matrizaev/codemie-gitops/compare/v0.1.1...HEAD
-[0.1.1]: https://github.com/matrizaev/codemie-gitops/compare/v0.1.0...v0.1.1
-[0.1.0]: https://github.com/matrizaev/codemie-gitops/releases/tag/v0.1.0
+## [0.1.0] - 2026-08-11
+
+### Added
+- **Core CLI**: `lint`, `apply`, `save`, and `login` commands.
+- **Schema validation**: Full JSON Schema validation of declarations before processing.
+- **Entity support**: Complete implementation for four CodeMie entity types:
+  - **Assistant**: Create/update with slug-based identity resolution and sub-assistant/skill nesting.
+  - **Workflow**: Create/update with marker-based adoption support (v2 workflow marker).
+  - **Skill**: Create/update with name-based identity and creator scoping.
+  - **Datasource**: Create/update for Git, Azure, Confluence, Jira, and other backend types with natural identity matching (project + repo_name).
+  
+- **Save operation**: Read entities from CodeMie and produce apply-able declarations in `codemie.epam.com/v1alpha1` format.
+  - Managed-ID resolution: Convert server IDs to slug-based declaration references.
+  - Snapshot serialization: YAML/JSON output with structured declaration format.
+  
+- **HTTP client**: Stateless API communication via bearer token authentication (OAuth).
+  - TLS certificate validation with `rustls`.
+  - Structured error handling with typed server responses.
+  
+- **Configuration**: Support for configuration via environment variables and `.env` files.
+  - `CODEMIE_URL`: CodeMie server base URL
+  - `CODEMIE_TOKEN`: Bearer token for authentication
+  
+- **Authentication**: `login` command for OAuth token exchange.
+  
+- **Error handling**: Comprehensive error types with structured diagnostics.
+  - Schema validation errors with field paths.
+  - Semantic validation errors with context.
+  - HTTP errors with server response details.
+  
+- **Output formats**: Text, JSON, and YAML output rendering.
+  
+- **Integration tests**: 
+  - 6 CLI integration tests validating command-line parsing and end-to-end behavior.
+  - Full round-trip validation for each entity type against live CodeMie server.
+  
+- **CI/CD Pipeline**:
+  - GitHub Actions with 4 required checks (quality, test, audit, version bump).
+  - Automated release workflow building binaries for 4 platforms.
+  - Protected main branch with review and CI requirements.
+  
+- **Development tooling**:
+  - Makefile with `format`, `lint`, `test`, and `build-release` targets.
+  - `rust-toolchain.toml` pinned to Rust 1.95, Edition 2024.
+  - `pytest.ini` and Python test scripts for CLI validation.
+
+### Technical Details
+- **Language**: Rust 1.95, Edition 2024
+- **Runtime**: Tokio async runtime
+- **HTTP**: Reqwest with Rustls for TLS
+- **Serialization**: Serde with JSON/YAML support
+- **Schema**: JSON Schema validation with typify code generation
+- **Error types**: Structured errors with `thiserror`
+- **Logging**: Structured tracing with configurable levels
+
+### Known Limitations
+- **Stateless**: No local state or batch operations; one entity per command invocation.
+- **Single-file**: Declarations are single-entity files; multi-entity declarations not supported.
+- **No caching**: Each operation re-validates and re-queries the server.
+
+### Verified With
+- CodeMie Server v2.42.0
+- Rust 1.95 (Edition 2024)
+- Ubuntu 24.04 LTS, macOS Sonoma, Windows Server 2022
+
+---
+
+## Versioning
+
+We follow [Semantic Versioning](https://semver.org/):
+
+- **MAJOR**: Breaking changes to CLI interface or declaration format
+- **MINOR**: Backward-compatible feature additions
+- **PATCH**: Bug fixes and maintenance updates
+
+---
+
+## Release Process
+
+Releases are automated via GitHub Actions:
+
+1. Version bump in `Cargo.toml` merged to main
+2. Create annotated git tag: `git tag v0.1.1`
+3. Push tag: `git push origin v0.1.1`
+4. GitHub Actions automatically:
+   - Builds binaries for 4 platforms
+   - Generates SHA-256 checksums
+   - Creates GitHub Release with artifacts
+
+---
+
+## Contributors
+
+Thanks to all contributors who have helped improve this project!
+
+---
+
+**Latest Release**: [v0.1.1](https://github.com/matrizaev/codemie-gitops/releases/tag/v0.1.1)
+
+For detailed commit history, see [Git Commits](https://github.com/matrizaev/codemie-gitops/commits/main).
