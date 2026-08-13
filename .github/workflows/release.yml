@@ -1,0 +1,94 @@
+name: Release binaries
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.artifact }}
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - artifact: codemie-gitops-linux-x86_64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            binary: codemie-gitops
+            asset: codemie-gitops-linux-x86_64
+          - artifact: codemie-gitops-linux-aarch64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            binary: codemie-gitops
+            asset: codemie-gitops-linux-aarch64
+          - artifact: codemie-gitops-macos-aarch64
+            runner: macos-15
+            target: aarch64-apple-darwin
+            binary: codemie-gitops
+            asset: codemie-gitops-macos-aarch64
+          - artifact: codemie-gitops-windows-x86_64
+            runner: windows-2022
+            target: x86_64-pc-windows-msvc
+            binary: codemie-gitops.exe
+            asset: codemie-gitops-windows-x86_64.exe
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Install Rust toolchain and target
+        shell: bash
+        run: |
+          rustup toolchain install 1.95 --profile minimal --target "${{ matrix.target }}"
+          rustup default 1.95
+
+      - name: Build release binary
+        shell: bash
+        run: cargo build --locked --release --target "${{ matrix.target }}"
+
+      - name: Stage binary
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "dist/${{ matrix.asset }}"
+
+      - name: Upload release binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish release assets
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download built binaries
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum codemie-gitops-* > SHA256SUMS
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release view "$RELEASE_TAG" >/dev/null 2>&1 || gh release create "$RELEASE_TAG" --generate-notes
+          gh release upload "$RELEASE_TAG" dist/* --clobber

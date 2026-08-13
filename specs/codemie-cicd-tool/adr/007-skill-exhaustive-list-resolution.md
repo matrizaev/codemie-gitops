@@ -91,7 +91,7 @@ cross-references retain `(project,name)`.
 
 Skill create rejects null for every authored top-level request member. Because
 the same declaration can create or update, all such fields remain
-authoring-required even though the update model is nullable. `contentFrom` is
+authoring-required even though the update model is nullable. Inline `content` is
 authoring-only and transforms to non-null request `content`; the unused selector
 is operation-inapplicable and receives no fabricated null.
 

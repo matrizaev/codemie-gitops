@@ -97,7 +97,7 @@ and prospective validation.
 ### Positive
 
 - Reverse behavior and secret handling are reviewable without reading Rust.
-- Compatibility failures occur before filesystem publication.
+- Compatibility failures occur before direct final-file creation.
 - Backend and declaration changes have an explicit update gate.
 
 ### Negative

@@ -34,7 +34,7 @@ compatibility/connectivity failure is exit 2. Every success is post-write
 verified at the expected ID.
 
 Skill creator tooling is limited to authoring the declared Skill content and
-sidecar transformation. It does not create projects, users, memberships,
+inline-content projection. It does not create projects, users, memberships,
 integrations, generic ownership metadata, or adopt another creator's Skill.
 
 ## Consequences
@@ -54,7 +54,7 @@ Malformed/missing creator evidence must fail compatibility before write.
 ## Follow-up actions
 
 Test foreign creator exclusion, same-creator ambiguity, 409 recovery, and
-sidecar scope.
+selected-declaration scope.
 
 ## References
 

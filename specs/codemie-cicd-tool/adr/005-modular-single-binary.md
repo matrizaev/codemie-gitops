@@ -7,8 +7,9 @@ Proposed
 ## Context
 
 The product is a three-command CLI that processes one entity per invocation.
-It must be self-contained on Linux x86_64 and has no requirement for a daemon,
-database, plugin host, or shared network service.
+It is distributed as native binaries for the supported GNU/Linux, macOS, and
+Windows runner baselines and has no requirement for a daemon, database, plugin
+host, or shared network service.
 
 ## Decision drivers
 
@@ -35,14 +36,15 @@ Run a persistent controller/daemon and make the CLI submit jobs.
 ## Decision
 
 Choose option A. Use one binary crate initially, with modules for CLI/config,
-source parsing, schemas, repository index, reference resolution, HTTP,
+single-file source parsing, schemas, server reference resolution, HTTP,
 compatibility, kind adapters, request projection, success output, and the
 closed safe-diagnostic builder.
 Module boundaries are internal; no dynamic plugin ABI is introduced.
 
-Build the release for `x86_64-unknown-linux-musl` with rustls so the artifact has
-no Python/OpenSSL runtime dependency. Release verification must prove the
-binary runs on the supported runner baseline.
+Build native release binaries for Linux x86_64 GNU, Linux aarch64 GNU, macOS
+aarch64, and Windows x86_64 MSVC. Rustls avoids an OpenSSL runtime dependency.
+Release verification must prove each binary runs on its supported runner
+baseline; the repository does not force a Cargo-wide MUSL target.
 
 ## Consequences
 
@@ -57,15 +59,15 @@ binary runs on the supported runner baseline.
 
 - Any kind update releases the whole binary.
 - Embedded schemas/OpenAPI fixture increase artifact size.
-- A musl target can expose compatibility issues in native dependencies; avoid
-  such dependencies and verify the build.
+- Native target differences can expose portability issues; verify every
+  supported release target and avoid unnecessary platform-specific behavior.
 
 ### Risks
 
 - An over-general adapter framework could become speculative. Keep the trait
   narrow and allow kind-specific implementations.
-- Static linking claims can be invalidated by future native dependencies;
-  release checks must inspect dynamic dependencies.
+- Native runtime dependency claims can be invalidated by future dependencies;
+  release checks must inspect each artifact's dependencies.
 
 ## Follow-up actions
 

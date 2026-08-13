@@ -1,11 +1,4 @@
 # Vendored source repositories — read-only reference copies, not part of this project
-codemie/
-codemie-ui/
-target/
+/target/
 .env
-__pycache__/
-*.py[cod]
-/ops/o001/activation-evidence.local.json
-/ops/o001/inventory.local.json
-/ops/v000/*.local.json
-/ops/v000/run-*.local/
+/.codex/

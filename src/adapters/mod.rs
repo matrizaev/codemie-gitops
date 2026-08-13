@@ -12,10 +12,20 @@ pub mod workflow;
 
 use std::num::NonZeroUsize;
 
+use crate::domain::ServerId;
 use crate::error::AppError;
 use crate::http::{ExactProjectVisibility, encode_query_value};
+use crate::pagination::PaginationError;
 use crate::parse::EntityKind;
 use crate::projection::{RequestBody, WritePlan};
+
+fn map_pagination_error(entity: &str, error: PaginationError) -> AppError {
+    if error.is_drift() {
+        AppError::Reconciliation(format!("{entity} {error}"))
+    } else {
+        AppError::ApiIncompatible(format!("{entity} {error}"))
+    }
+}
 
 /// The identity-resolution outcome to which a projected request must be linked.
 ///
@@ -140,8 +150,20 @@ pub(crate) enum PreparedRequest {
 
 /// Result of the single evidence-bearing modifying boundary.
 pub(crate) enum PreparedWriteResponse {
-    Success(serde_json::Value),
+    Success(OpenWriteResponse),
     Conflict,
+}
+
+/// Opaque modifying-response envelope owned by the transport boundary.
+///
+/// Entity adapters can only consume it through typed deserialization; the
+/// open JSON representation cannot leak into application orchestration.
+pub(crate) struct OpenWriteResponse(serde_json::Value);
+
+impl From<serde_json::Value> for OpenWriteResponse {
+    fn from(value: serde_json::Value) -> Self {
+        Self(value)
+    }
 }
 
 impl<'a> PreparedWrite<'a> {
@@ -322,7 +344,7 @@ impl<'a> PreparedWrite<'a> {
                         "JSON prepared write unexpectedly owns multipart bytes".into(),
                     ));
                 }
-                Ok(PreparedRequest::Json {
+                Ok::<PreparedRequest, AppError>(PreparedRequest::Json {
                     conflict_is_resolution_signal: matches!(
                         kind,
                         EntityKind::Skill | EntityKind::Datasource
@@ -406,95 +428,16 @@ fn decode_write_response<T: serde::de::DeserializeOwned>(
     response: PreparedWriteResponse,
 ) -> Result<Option<T>, AppError> {
     match response {
-        PreparedWriteResponse::Success(value) => {
-            serde_json::from_value(value).map(Some).map_err(|_| {
-                AppError::ApiIncompatible(
-                    "modifying response JSON does not match expected shape".into(),
-                )
-            })
-        }
+        PreparedWriteResponse::Success(value) => serde_json::from_value(value.0)
+            .map(Some)
+            .map_err(crate::http::TransportError::ResponseShape)
+            .map_err(AppError::from),
         PreparedWriteResponse::Conflict => Ok(None),
     }
 }
 
-#[cfg(test)]
-fn assert_consumed_field_mutations<T>(valid: &serde_json::Value, pointers: &[&str])
-where
-    T: serde::de::DeserializeOwned,
-{
-    for pointer in pointers {
-        let mut missing = valid.clone();
-        mutate_json_pointer(&mut missing, pointer, None);
-        assert!(
-            serde_json::from_value::<T>(missing).is_err(),
-            "missing consumed field {pointer} must fail"
-        );
-
-        let mut wrong_type = valid.clone();
-        mutate_json_pointer(
-            &mut wrong_type,
-            pointer,
-            Some(serde_json::Value::Bool(false)),
-        );
-        assert!(
-            serde_json::from_value::<T>(wrong_type).is_err(),
-            "wrong type for consumed field {pointer} must fail"
-        );
-    }
-}
-
-#[cfg(test)]
-fn mutate_json_pointer(
-    value: &mut serde_json::Value,
-    pointer: &str,
-    replacement: Option<serde_json::Value>,
-) {
-    let mut segments = pointer
-        .strip_prefix('/')
-        .expect("test JSON pointer must be absolute")
-        .split('/')
-        .peekable();
-    let mut current = value;
-    while let Some(segment) = segments.next() {
-        let is_last = segments.peek().is_none();
-        if let Ok(index) = segment.parse::<usize>() {
-            let array = current
-                .as_array_mut()
-                .expect("test pointer array segment must exist");
-            if is_last {
-                match replacement {
-                    Some(replacement) => array[index] = replacement,
-                    None => {
-                        array.remove(index);
-                    }
-                }
-                return;
-            }
-            current = &mut array[index];
-        } else {
-            let object = current
-                .as_object_mut()
-                .expect("test pointer object segment must exist");
-            if is_last {
-                match replacement {
-                    Some(replacement) => {
-                        object.insert(segment.to_owned(), replacement);
-                    }
-                    None => {
-                        object.remove(segment);
-                    }
-                }
-                return;
-            }
-            current = object
-                .get_mut(segment)
-                .expect("test pointer object member must exist");
-        }
-    }
-}
-
 /// What a successful apply operation did.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplyAction {
     Created,
     Updated,
@@ -503,9 +446,31 @@ pub enum ApplyAction {
 /// The result of a successful single-entity apply.
 #[derive(Debug)]
 pub struct ApplyResult {
-    pub action: ApplyAction,
+    action: ApplyAction,
     /// Server UUID (never forwarded to logs or user-visible output, SEC-005).
-    pub server_id: String,
+    server_id: ServerId,
+}
+
+impl ApplyResult {
+    pub(crate) fn from_server_response(
+        action: ApplyAction,
+        server_id: String,
+    ) -> Result<Self, AppError> {
+        Ok(Self {
+            action,
+            server_id: ServerId::try_from(server_id).map_err(|_| {
+                AppError::ApiIncompatible("successful response contains an empty server ID".into())
+            })?,
+        })
+    }
+
+    pub(crate) fn action(&self) -> ApplyAction {
+        self.action
+    }
+
+    pub(crate) fn server_id(&self) -> &str {
+        self.server_id.as_str()
+    }
 }
 
 #[cfg(test)]

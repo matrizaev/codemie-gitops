@@ -65,37 +65,78 @@ impl Action {
 /// others are absent (additionalProperties: false per outcome.schema.json).
 ///
 /// Security (SEC-005): field values must come from schema-validated fields only.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct Outcome {
     action: Action,
-    kind: String,
-    project: String,
-    /// Present for Assistant and Workflow; absent for Skill and Datasource.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    slug: Option<String>,
-    /// Present for Skill; absent for all other kinds.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    name: Option<String>,
-    /// Present for Datasource; absent for all other kinds.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    repo_name: Option<String>,
-    #[serde(rename = "adoptionRequired", skip_serializing_if = "Option::is_none")]
+    identity: OutcomeIdentity,
     adoption_required: Option<bool>,
 }
 
+#[derive(Debug, Clone)]
+enum OutcomeIdentity {
+    Assistant { project: String, slug: String },
+    Workflow { project: String, slug: String },
+    Skill { project: String, name: String },
+    Datasource { project: String, repo_name: String },
+}
+
+impl Serialize for Outcome {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+
+        let mut state = serializer.serialize_struct(
+            "Outcome",
+            if self.adoption_required.is_some() {
+                5
+            } else {
+                4
+            },
+        )?;
+        state.serialize_field("action", &self.action)?;
+        match &self.identity {
+            OutcomeIdentity::Assistant { project, slug } => {
+                state.serialize_field("kind", "Assistant")?;
+                state.serialize_field("project", project)?;
+                state.serialize_field("slug", slug)?;
+            }
+            OutcomeIdentity::Workflow { project, slug } => {
+                state.serialize_field("kind", "Workflow")?;
+                state.serialize_field("project", project)?;
+                state.serialize_field("slug", slug)?;
+            }
+            OutcomeIdentity::Skill { project, name } => {
+                state.serialize_field("kind", "Skill")?;
+                state.serialize_field("project", project)?;
+                state.serialize_field("name", name)?;
+            }
+            OutcomeIdentity::Datasource { project, repo_name } => {
+                state.serialize_field("kind", "Datasource")?;
+                state.serialize_field("project", project)?;
+                state.serialize_field("repo_name", repo_name)?;
+            }
+        }
+        if let Some(adoption_required) = self.adoption_required {
+            state.serialize_field("adoptionRequired", &adoption_required)?;
+        }
+        state.end()
+    }
+}
+
 impl Outcome {
-    /// Construct an outcome for an Assistant or Workflow (natural key: `slug`).
-    ///
-    /// `kind`, `project`, and `slug` must be schema-validated values from
-    /// the declaration AST — never from untrusted raw strings.
-    pub fn new(action: Action, kind: String, project: String, slug: String) -> Self {
-        Outcome {
+    /// Construct an Assistant outcome (natural key: `slug`).
+    pub fn assistant(action: Action, project: String, slug: String) -> Self {
+        Self {
             action,
-            kind,
-            project,
-            slug: Some(slug),
-            name: None,
-            repo_name: None,
+            identity: OutcomeIdentity::Assistant { project, slug },
+            adoption_required: None,
+        }
+    }
+
+    /// Construct a Workflow outcome (natural key: `slug`).
+    pub fn workflow(action: Action, project: String, slug: String) -> Self {
+        Self {
+            action,
+            identity: OutcomeIdentity::Workflow { project, slug },
             adoption_required: None,
         }
     }
@@ -104,11 +145,7 @@ impl Outcome {
     pub fn new_skill(action: Action, project: String, name: String) -> Self {
         Outcome {
             action,
-            kind: "Skill".to_owned(),
-            project,
-            slug: None,
-            name: Some(name),
-            repo_name: None,
+            identity: OutcomeIdentity::Skill { project, name },
             adoption_required: None,
         }
     }
@@ -117,11 +154,7 @@ impl Outcome {
     pub fn new_datasource(action: Action, project: String, repo_name: String) -> Self {
         Outcome {
             action,
-            kind: "Datasource".to_owned(),
-            project,
-            slug: None,
-            name: None,
-            repo_name: Some(repo_name),
+            identity: OutcomeIdentity::Datasource { project, repo_name },
             adoption_required: None,
         }
     }
@@ -129,11 +162,7 @@ impl Outcome {
     pub fn saved_workflow(project: String, slug: String, adoption_required: bool) -> Self {
         Self {
             action: Action::Saved,
-            kind: "Workflow".into(),
-            project,
-            slug: Some(slug),
-            name: None,
-            repo_name: None,
+            identity: OutcomeIdentity::Workflow { project, slug },
             adoption_required: adoption_required.then_some(true),
         }
     }
@@ -146,33 +175,40 @@ impl Outcome {
     ///
     /// Control characters and bidi characters are excluded from identity
     /// fields by schema validation before this point (SEC-005).
-    pub fn write(&self, mode: OutputMode) {
-        let Some((kind, key)) = self.render_identity() else {
-            return;
-        };
+    pub fn write(&self, mode: OutputMode) -> io::Result<()> {
+        let (kind, project, key) = self.render_identity();
         let mut renderer = crate::render::Renderer::new(io::stdout(), io::stderr(), mode);
-        let _ = renderer.emit_outcome(self.action, kind, &self.project, &key);
-        let _ = renderer.flush();
+        if self.adoption_required == Some(true) {
+            renderer.emit_outcome_with_adoption(self.action, kind, project, &key, true)?;
+        } else {
+            renderer.emit_outcome(self.action, kind, project, &key)?;
+        }
+        renderer.flush()
     }
 
-    fn render_identity(&self) -> Option<(crate::render::EntityKind, crate::render::EntityKey)> {
-        let kind = match self.kind.as_str() {
-            "Assistant" => crate::render::EntityKind::Assistant,
-            "Workflow" => crate::render::EntityKind::Workflow,
-            "Skill" => crate::render::EntityKind::Skill,
-            "Datasource" => crate::render::EntityKind::Datasource,
-            _ => return None,
-        };
-        let key = match kind {
-            crate::render::EntityKind::Assistant | crate::render::EntityKind::Workflow => {
-                crate::render::EntityKey::Slug(self.slug.clone()?)
-            }
-            crate::render::EntityKind::Skill => crate::render::EntityKey::Name(self.name.clone()?),
-            crate::render::EntityKind::Datasource => {
-                crate::render::EntityKey::RepoName(self.repo_name.clone()?)
-            }
-        };
-        Some((kind, key))
+    fn render_identity(&self) -> (crate::render::EntityKind, &str, crate::render::EntityKey) {
+        match &self.identity {
+            OutcomeIdentity::Assistant { project, slug } => (
+                crate::render::EntityKind::Assistant,
+                project,
+                crate::render::EntityKey::Slug(slug.clone()),
+            ),
+            OutcomeIdentity::Workflow { project, slug } => (
+                crate::render::EntityKind::Workflow,
+                project,
+                crate::render::EntityKey::Slug(slug.clone()),
+            ),
+            OutcomeIdentity::Skill { project, name } => (
+                crate::render::EntityKind::Skill,
+                project,
+                crate::render::EntityKey::Name(name.clone()),
+            ),
+            OutcomeIdentity::Datasource { project, repo_name } => (
+                crate::render::EntityKind::Datasource,
+                project,
+                crate::render::EntityKey::RepoName(repo_name.clone()),
+            ),
+        }
     }
 }
 
@@ -213,13 +249,28 @@ mod tests {
 
     #[test]
     fn outcome_new_constructs() {
-        let o = Outcome::new(
-            Action::Created,
-            "Assistant".into(),
-            "my-project".into(),
-            "my-slug".into(),
-        );
+        let o = Outcome::assistant(Action::Created, "my-project".into(), "my-slug".into());
         assert_eq!(o.action, Action::Created);
-        assert_eq!(o.kind, "Assistant");
+        assert!(matches!(o.identity, OutcomeIdentity::Assistant { .. }));
+    }
+
+    #[test]
+    fn saved_workflow_serializes_adoption_only_when_required() {
+        let ordinary = serde_json::to_value(Outcome::saved_workflow(
+            "project".into(),
+            "flow".into(),
+            false,
+        ))
+        .unwrap();
+        assert!(ordinary.get("adoptionRequired").is_none());
+
+        let adoption = serde_json::to_value(Outcome::saved_workflow(
+            "project".into(),
+            "flow".into(),
+            true,
+        ))
+        .unwrap();
+        assert_eq!(adoption["adoptionRequired"], true);
+        assert_eq!(adoption.as_object().unwrap().len(), 5);
     }
 }

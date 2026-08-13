@@ -1,0 +1,14 @@
+{
+  "status": "server-baseline-approved-local-contract-reverification-required",
+  "approvedAt": "2026-08-13",
+  "path": "specs/codemie-openapi.json",
+  "openapi": "3.1.0",
+  "serverVersion": "2.23.0-SNAPSHOT.512",
+  "sha256": "559600a70febad5963d03b454677c84605f5dab8053efc9d54ff5b6d1273df48",
+  "supplementarySource": {
+    "path": "codemie/",
+    "tag": "2.42.0",
+    "commit": "2a481c290c99bf30ef80aadafa03d876a7f5f732"
+  },
+  "compatibilityPolicy": "OpenAPI is primary for immutable wire shapes; pinned source and adapter manifests supply behavioral evidence that OpenAPI cannot express. Breaking drift blocks release. Local CLI/filesystem convergence must be reverified against product specification v33 and save specification v3."
+}

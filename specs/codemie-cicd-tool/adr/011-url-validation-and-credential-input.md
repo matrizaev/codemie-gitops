@@ -22,7 +22,7 @@ in the credential handling and transport design (SEC-001, SEC-002):
 
 2. **SEC-002 (solution-architect, this ADR)**: URL and transport policy was
    incomplete:
-   - Repository config accepted HTTP (remote plaintext) and URL userinfo
+   - Earlier repository config accepted HTTP (remote plaintext) and URL userinfo
    - The "local development" HTTP exception was not mechanically defined
    - Redirect behavior for authentication POSTs was not specified
    - The CI environment was not required to override repository endpoint values
@@ -39,8 +39,7 @@ behavior, and CI endpoint protection.
 - The loopback HTTP exception must be mechanically narrow and runtime-enforced
 - Redirect behavior for credential endpoints must be fail-closed
 - URL userinfo embedded in any authorable non-secret field must be rejected
-- CI configuration must prevent repository config from selecting the production
-  credential destination
+- CI configuration must inject the intended production endpoints explicitly
 
 ## Options considered
 
@@ -103,9 +102,9 @@ Non-secret selectors retain flag-over-environment precedence:
 | Keycloak client ID | `--client-id` flag, `CODEMIE_CLIENT_ID` |
 | Local-auth email | `--email` flag, `CODEMIE_EMAIL` |
 
-No credential has a repository-config source, built-in default, or derived
-value. Unknown or credential-like keys in `.codemie/config.yaml` fail locally
-before any network access.
+No credential has a file source, built-in default, or derived value. Product
+specification v33 also removes `.codemie/config.yaml` as a non-secret source;
+the CLI must not discover or read it.
 
 ### 1a. Keycloak ROPC credential channels (Mode (c), v26)
 
@@ -151,14 +150,14 @@ A `ValidatedUrl` is an absolute URL satisfying all of:
 
 `ValidatedUrl` is the type for:
 - `target_url` and `auth_url` in `ResolvedConfig`
-- `url` and `auth_url` in `.codemie/config.yaml`
+- `url` and `auth_url` from flags or their named environment variables
 - Every URL-valued authorable field in declarations that is transmitted to the
   server or could affect a credential destination (Datasource `link`,
   `site_url`, MCP `mcp_connect_url`, and similar)
 
 URL userinfo in any of these fields is rejected at schema validation time
 before any parse of the full declaration. Reliance on prose alone is not
-sufficient; `contracts/repository-config.schema.json` and
+sufficient; the CLI contract and
 `contracts/declaration-v1alpha1.schema.json` enforce this at the schema level.
 
 ### 3. HTTPS requirement and loopback exception
@@ -204,14 +203,12 @@ treatment as Keycloak.
 Production CI examples must:
 
 - Inject `CODEMIE_URL` and `CODEMIE_AUTH_URL` from protected CI/CD environment
-  configuration at higher precedence than repository config (`--url`/`--auth-url`
-  flags or protected environment variables take precedence over `.codemie/config.yaml`)
+  protected endpoint configuration through flags or environment variables
 - Run PR and lint jobs with **no secrets** — `CODEMIE_TOKEN`,
   `CODEMIE_CLIENT_SECRET`, and `CODEMIE_PASSWORD` must not be available to
   fork-triggered or untrusted pull-request workflows
 - Use protected deployment environments and human approval gates for apply jobs
-- Require host/endpoint ownership review for changes to `.codemie/config.yaml`
-  `url` or `auth_url` fields when repository endpoint fallback is used operationally
+- Require host/endpoint ownership review for protected endpoint variables
 
 ## Consequences
 
@@ -223,7 +220,7 @@ Production CI examples must:
 - Authentication POST redirects are disabled; exfiltration via redirect chain
   is blocked
 - Loopback HTTP exception is runtime-enforced and mechanically narrow
-- CI examples require protected endpoint injection, preventing repository config
+- CI examples require protected endpoint injection, preventing local files
   from selecting the production credential destination
 - Mode (c) Keycloak ROPC allows user-credential login against Keycloak without
   a machine `client_secret`; the same SEC-001 env-only, HTTPS, and
@@ -247,7 +244,7 @@ Production CI examples must:
 
 ## Follow-up actions
 
-- Update `contracts/repository-config.schema.json` URL patterns to enforce
+- Keep CLI URL parsing tests aligned with
   no-userinfo, no-fragment, no-controls, and HTTPS-only for `auth_url`
 - Update `contracts/declaration-v1alpha1.schema.json` URL-valued fields to
   reject userinfo (Datasource link, site_url, MCP mcp_connect_url)
@@ -263,4 +260,4 @@ Production CI examples must:
 - Product specification v26: FR-009/017/024 (Mode (c) Keycloak ROPC added in v26), QR-007, SC-012, IR-003/006
 - SEC-001 (closed, product-spec-owner), SEC-002 (this remediation)
 - Tasks: F-002, T-001, T-002, O-002
-- `contracts/repository-config.schema.json`, `contracts/http-adapter.md`
+- `contracts/cli.md`, `contracts/http-adapter.md`

@@ -2,7 +2,7 @@
 
   ## 1. Document status
 
-  * **Status:** DRAFT — v32 — **READY FOR ARCHITECTURE PLANNING; DOWNSTREAM ARTIFACT REFRESH REQUIRED**
+  * **Status:** DRAFT — v33.3 — **READY FOR ARCHITECTURE PLANNING; DOWNSTREAM ARTIFACT REFRESH REQUIRED**
   * **Tool name:** `codemie-gitops`
   * **Owner:** Product Specification Owner (pending assignment to a named product owner)
   * **Source request:** User-provided request on 2026-08-06: "create a CI/CD tool for the CodeMie platform that will be able to store assistants, workflows, datasources, and skills in YAML files, lint them, and create/update on the server side."
@@ -12,7 +12,7 @@
     * `https://github.com/codemie-ai/codemie` — server (FastAPI + LangChain/LangGraph + PostgreSQL/SQLModel + Elasticsearch)
     * `https://github.com/codemie-ai/codemie-ui` — UI (out of scope for this tool)
     * `https://github.com/codemie-ai/codemie-code` — **different, existing** local-agent CLI; not to be confused with `codemie-gitops`
-  * **Last reviewed:** 2026-08-12 (v32)
+  * **Last reviewed:** 2026-08-13 (v33.3)
   * **Revision history:**
     * v1 (2026-08-06 15:27 UTC+3) — initial DRAFT, based on public docs only.
     * v2 (2026-08-06 15:53 UTC+3) — post-repo-analysis: schema, identity, cross-entity refs, auth resolved or narrowed.
@@ -48,6 +48,10 @@
     * v32 (2026-08-12) — **Supersedes v30–v31 personal-project/admin qualification.** Exact effective-project membership qualifies create for every entity; administration is optional. Exact server-returned `write` ability gates update. Assistant retains exact `(project, slug)` lookup. Skill uses creator-scoped `(project, authenticated-user-id, name)` identity. Workflow uses a creator-scoped v2 marker because pinned source guarantees visibility of the principal's own rows; v1/unmarked rows require explicit same-creator adoption and same-principal races remain post-write detectable. Datasource partial lists never prove absence; project-wide server HTTP 409 is authoritative collision evidence. FR-037/DR-013/IR-013/BR-007/PA-005/PA-008/VR-017 and acceptance criteria are redefined around this model. Strict decoding, zero unauthorized writes, post-write verification, safe diagnostics, and Assistant least privilege remain unchanged.
     * v32.1 (2026-08-12) — Closed Q010-002 by making the authenticated creator dimension explicit in Skill target and reference acceptance criteria. Other creators' same-name Skills are distinct and ignored; duplicates within the current creator scope are ambiguous. Target zero/one means create/write-gated update; reference zero/one means fail/read-only resolution, and references never create or update.
     * v32.2 (2026-08-12) — Resolved Q010-POST-001. Pinned Skill create returns HTTP 409 only when exact `(name, authenticated user ID, project)` already exists, so one POST-409 permits exactly one bounded, exhaustive, read-only same-creator re-resolution from page 0. The invocation remains an exit-1 conflict and never sends a second POST or a PUT: converting the race to update could overwrite concurrently authored state. The re-read classifies one exact match as a stable same-creator collision, multiple as same-creator ambiguity, and incompatible/connectivity evidence under the existing exit taxonomy. A later fresh invocation may resolve one writable row and perform the ordinary update.
+    * v33 (2026-08-13) — Replaced repository-oriented local processing with a strict single-input-file boundary. `lint` and `apply` read only the declaration named by `--file`; they do not walk, scan, discover, or order repository files, accept `--repo-root`/`--follow-symlinks`, load `.codemie/config.yaml`, or read Skill sidecars. Cross-entity references are schema-checked locally and resolved against the server only during `apply`. The selected declaration is read as one ordinary bounded operation governed by a task-level timeout; no cancellation-token API is a product requirement. This revision supersedes v27 repository-closure warning behavior and the earlier repository-config/Skill-sidecar decisions.
+    * v33.1 (2026-08-13) — Resolved the File Datasource exception to the v33 one-file boundary. `spec.files` is now an inline array of `{name, content_base64}` objects; apply strictly decodes their standard padded Base64 bytes in memory and sends the pinned repeated multipart `files` parts. No authored path is accepted and no auxiliary or temporary file is read or written. The selected YAML limit is fixed at 1 MiB, intentionally narrowing the amount of file content that can be authored in one invocation below the server's larger upload allowance.
+    * v33.2 (2026-08-13) — Corrected v33's overbroad removal of Skill `contentFrom`. A Skill may use inline `content` or one explicit Markdown sidecar path resolved relative to the selected declaration's parent. The sidecar is a bounded, direct read and the sole auxiliary declaration-content exception; it does not restore repository discovery, closure validation, `--repo-root`, or symlink following. Save continues to emit inline Skill content and need not externalize it.
+    * v33.3 (2026-08-13) — Corrected v33.1's unauthorized replacement of File Datasource paths with inline Base64. `spec.files` remains one to ten explicit path strings. Each is resolved relative to the selected declaration's parent and read directly under per-file and aggregate bounds for the pinned multipart request. These reads and Skill `contentFrom` are the only auxiliary-input exceptions; neither permits directory walking, repository closure/root discovery, symlink following, or `--repo-root`.
 
   ---
 
@@ -117,6 +121,7 @@
   * `codemie/src/codemie/repository/skill_repository.py` and `codemie/src/codemie/service/skill_service.py` (reference-only, pinned `2.42.0`, inspected 2026-08-12) — an ordinary member sees their own Skills of any visibility plus project-visible Skills; create rejects only an existing exact `(name, current author ID, project)` and update preserves that creator scope. This supports creator-scoped reconciliation, not project-wide Skill absence.
   * `codemie/src/codemie/service/workflow_config/workflow_config_index_service.py` and `codemie/src/codemie/rest_api/routers/workflow.py` (reference-only, pinned `2.42.0`, inspected 2026-08-12) — a non-admin member sees their own Workflows, shared Workflows in member projects, and all Workflows in admin projects; another member's unshared Workflow is hidden. Create checks project access; update checks exact-entity write ability. The source provides neither native slug lookup nor atomic creator-scoped slug uniqueness.
   * `codemie/src/codemie/rest_api/models/index.py` and `codemie/src/codemie/rest_api/routers/index.py` (reference-only, pinned `2.42.0`, inspected 2026-08-12) — an ordinary member's Datasource list is partial (own plus project-space-visible rows), list/detail output carries abilities, and `_index_unique_check(project_name, repo_name)` performs a project-wide collision query and returns HTTP 409. Therefore a partial list cannot prove absence, while server 409 is authoritative collision evidence.
+  * `codemie/src/codemie/rest_api/models/index.py` (`IndexKnowledgeBaseFileRequest`, `UpdateKnowledgeBaseFileRequest`), `codemie/src/codemie/rest_api/routers/index.py` (`POST`/`PUT /index/knowledge_base/file`), and `specs/codemie-openapi.json` (reference-only/pinned contract, inspected 2026-08-13) — File Datasource create requires one to ten `UploadFile` values; update accepts optional new `UploadFile` values and a JSON-encoded retained-filename list. Both routes consume repeated binary `files` multipart parts plus query parameters. The pinned server exposes no JSON request field that accepts inline file bytes, so the declaration representation must be transformed to multipart for apply.
 
   ### Repository — architecture and contract evidence
 
@@ -134,6 +139,8 @@
   * Target entity types: assistants, workflows, datasources, skills.
   * Storage format: YAML files.
   * Required capabilities: store, lint, create/update on the server.
+  * **Single-file processing boundary (product decision, 2026-08-13, v33; explicit-input exceptions corrected by v33.2–v33.3):** each `lint` or `apply` invocation reads and acts on exactly one small YAML declaration selected by `--file`. The tool does not scan or walk a repository, discover a repository closure, order repository declarations, accept `--repo-root` or `--follow-symlinks`, or load a repository configuration file. Only Skill `contentFrom` and File Datasource `spec.files[]` may name explicit bounded auxiliary inputs under FR-025/041. Ordinary bounded reads under the command timeout are sufficient; cooperative cancellation checkpoints are not required user-visible behavior.
+  * **Explicit File Datasource inputs (product correction, 2026-08-13, v33.3):** `spec.files` retains explicit path strings. Apply resolves and directly reads only those named files relative to the selected declaration's parent, then streams their bytes as the pinned multipart request. The paths do not authorize discovery or repository traversal.
   * **Authentication (platform team response, 2026-08-07, resolves A-3; endpoint configuration refined by product decision v24):** CI auth uses Keycloak OIDC `client_credentials` grant exclusively. Service account credentials (`client_id` + `client_secret`) are obtained by raising a request at `https://epa.ms/codemie-support`. The platform response showed a deployment endpoint shaped like `https://auth.<codemie-domain>/realms/codemie-prod/protocol/openid-connect/token`; this is evidence, not a derivation convention. The operator must explicitly configure the actual endpoint under v24. Token lifetime ~8 h; should be cached. The Bearer token is then passed as `Authorization: Bearer <token>` on every API call. **Critical operational constraint:** service-account credentials operate under their own service account — only Project-level integrations (Jira, Git, etc.) are accessible; personal integrations are silently ignored. Teams must migrate any personal integrations to project level before using the tool.
   * **Local dev auth (product decision, 2026-08-07, v13):** `POST /v1/local-auth/login` (email + password) MUST also be supported in the `login` command for local development against a dev server configured with `ENABLE_USER_MANAGEMENT=True` and `IDP_PROVIDER="local"`. CI pipelines MUST use Keycloak; local-auth is for development use only.
   * **Workflow identity (product decision, 2026-08-09, v14):** authored identity remains exact `(project, slug)`. The tool persists that identity server-side only for Workflow in a reserved `meta_config` record. Workflow server UUIDs are internal transport handles and MUST NOT be authored or reported. An unmarked legacy Workflow may be adopted in place only when the operator explicitly supplies its current server UUID; adoption persists the slug identity record and reconciles desired state. Ordinary reconciliation MUST NOT select by display name and MUST fail safely for invalid or duplicate identity records.
@@ -144,7 +151,7 @@
   * **CLI provenance boundary (product decision, 2026-08-09, v21; resolves PRODUCT-OQ-01/VER-011):** Git commit SHA, target environment origin, Git author, and CI-run identity belong to Git, CI, and platform logs. The CLI MUST NOT emit them in successful output, warnings, or failure diagnostics and does not provide audit correlation metadata.
   * **Always-write apply (product decision, 2026-08-09, v22; resolves ARCH-B01):** every valid invocation creates a safely missing entity or updates an exactly resolved existing entity. The tool does not compare desired/current state to skip the request and reports only `created` or `updated`.
   * **Optional-field materialization (product decision, 2026-08-09, v23; resolves VER-012):** an optional authorable server-request field may be omitted from YAML; the CLI emits it as explicit JSON null in every applicable create or update request rather than allowing the server to select a default. Explicit YAML null produces the same payload value where null is accepted. A field that is required by structure or whose pinned applicable request rejects null remains authoring-required and omission fails locally with exit code 2.
-  * **Explicit Keycloak endpoint (product decision, 2026-08-09, v24):** Keycloak `login` requires a token endpoint supplied through `--auth-url`, `CODEMIE_AUTH_URL`, or `.codemie/config.yaml` `auth_url`. The CLI never derives this URL from the CodeMie API URL or a domain/path convention. The endpoint is non-secret; client IDs, client secrets, bearer tokens, email addresses, and passwords remain flag/environment inputs only and are prohibited from repository configuration.
+  * **Explicit Keycloak endpoint (product decision, 2026-08-09, v24; source boundary revised by v33):** Keycloak `login` requires a token endpoint supplied through `--auth-url` or `CODEMIE_AUTH_URL`. The CLI never derives this URL from the CodeMie API URL or a domain/path convention. The endpoint is non-secret; secret credentials remain environment inputs only.
   * **Pinned-source compatibility (user decision, 2026-08-11, v28):** the CLI is built against the currently pinned reference-only backend source at tag `2.42.0`, commit `2a481c290c99bf30ef80aadafa03d876a7f5f732`. That exact source baseline MUST be treated as compatible even though its `/v1/info` response reports semantic `APP_VERSION=0.16.0` rather than the Git SHA. The semantic version MUST NOT independently gate `apply`; all operation-applicable, source-derived non-mutating contract evidence remains required before a modifying request.
   * **CI provider token masking (user-provided operational constraint and product decision, 2026-08-11, v29):** GitHub Actions has a stable provider-native runtime add-mask control suitable for a freshly captured token. Current GitLab supports preconfigured environment-scoped protected+masked variables but has no stable provider-native runtime add-mask command for a freshly generated `login` token. Therefore the phase-1 GitHub example uses fresh login plus immediate native masking, while the GitLab example uses a pre-supplied protected+masked `CODEMIE_TOKEN` in process memory and does not invoke `login`. This provider-specific split preserves the same no-output/no-persistence security outcome and has no insecure fallback.
   * **Member creation and kind-specific reconciliation (user directive, 2026-08-12, v32; supersedes v30–v31):** project membership/access qualifies creation; administration may provide complete project visibility but is optional. Exact entity server-reported write ability gates update. Assistant uses exact project/slug lookup; Skill identity is creator-scoped; Workflow must not claim project-wide absence from an ordinary-member list; Datasource treats server 409 as authoritative project-wide collision evidence and never treats a partial list as absence.
@@ -229,7 +236,7 @@
   ### In scope
 
   * YAML schema definitions for: `Assistant`, `Workflow`, `Datasource`, `Skill`.
-  * Offline **lint/validate** (schema + intra-repo referential integrity).
+  * Offline **lint/validate** of exactly one bounded YAML declaration (syntax, schema, semantic, and local reference-shape validation).
   * **Apply** (create if safely resolved as missing, update on every invocation when exactly one safe match exists) — one entity per invocation, including ordinary Datasource CRUD.
   * **Workflow-only identity persistence and legacy adoption** through the reserved server `meta_config` record and `--adopt-workflow-id <uuid>`.
   * **Skill exhaustive identity resolution** with ambiguity refusal.
@@ -247,6 +254,7 @@
   * General-purpose config-management for arbitrary CodeMie resources.
   * Generic management/ownership markers or generic asset-adoption commands. The Workflow identity record is a narrow identity exception, not an ownership claim.
   * Dedicated Datasource lifecycle-control commands, flags, and endpoint operations, including the former proposed `--reindex-datasources` flag.
+  * Repository walking, declaration discovery, repository-closure validation, deterministic repository ordering, `--repo-root`, `--follow-symlinks`, repository configuration files, and auxiliary declaration-content files other than the one explicit Skill `contentFrom` sidecar.
 
   ### Deferred
 
@@ -345,7 +353,7 @@
   ### SC-001 — Author a new assistant declaratively
   * **Actor:** Platform asset author
   * **Trigger:** Author adds `assistants/support-triage.yaml` and opens a PR.
-  * **Preconditions:** Repo contains the tool's config file; YAML schemas are available.
+  * **Preconditions:** The selected YAML is within the documented input-size limit; required target/project configuration is supplied by flags or environment; bundled schemas are available.
   * **Main flow:** 1. Author writes the YAML. 2. Author runs `lint` locally. 3. Lint passes; author opens PR. 4. CI runs `lint` on the changed file. 5. Reviewer approves; PR is merged. 6. CI on `main` runs `apply` against the target env. 7. Assistant is created on the server.
   * **Expected outcome:** Assistant visible in the target environment after the server accepts the payload projected from YAML under FR-021/DR-012.
   * **Postconditions:** The authored request is reproducible from Git, including omission-to-null semantics. Any Git/CI/platform audit correlation remains external to the CLI.
@@ -363,8 +371,8 @@
 
   ### SC-004 — Cross-reference validation
   * **Actor:** Author
-  * **Trigger:** An assistant declaration references a datasource name that does not exist in the repo.
-  * **Expected outcome:** Lint reports the missing repository reference; exits code 2. No server call is made.
+  * **Trigger:** An assistant declaration contains a malformed or wrong-kind natural reference, or `apply` names a server reference that cannot be resolved exactly.
+  * **Expected outcome:** `lint` rejects invalid reference shape locally. A structurally valid reference is resolved only by `apply`; a missing or ambiguous server target fails before the entity write. No repository is scanned.
 
   ### SC-005 — Reapply performs another update
   * **Actor:** CI runner
@@ -509,7 +517,7 @@
   | **FR-001** | The tool MUST accept YAML files as the sole authoring format for assistants, workflows, datasources, and skills. | User requirement. | SC-001, SC-002 |
   | **FR-002** | The tool MUST provide a `lint` command that runs without network access to a CodeMie environment. | Fast local feedback; CI without secrets. | SC-003, SC-004, SC-007 |
   | **FR-003** | The tool MUST validate each YAML file against the bundled schema for its declared `kind`. Any local schema failure MUST use exit code 2 and prevent server calls. | Prevent malformed submissions reaching the server. | SC-003 |
-  | **FR-004** | The tool MUST validate intra-repo cross-references between assets at lint time. A missing, ambiguous, duplicate, or wrong-kind repository reference MUST use exit code 2 and prevent server calls. | Catch broken refs before apply. | SC-004 |
+  | **FR-004** | `lint` MUST validate the syntax, kind, and local structural rules of every natural reference contained in the selected declaration. It MUST NOT scan other files or claim that a referenced entity exists. `apply` MUST resolve each structurally valid reference against the target server and MUST NOT send the entity write when a required target is missing or ambiguous. | Preserves single-file offline validation without fabricating repository knowledge. | SC-004 |
   | **FR-005** | The tool MUST provide an `apply` command. Each invocation MUST target exactly one YAML file containing exactly one entity. Apply MUST resolve the entity by the declared kind's approved identity contract, create when that contract proves the entity missing, and update when it returns exactly one safe match. It MUST fail without selecting a target when identity is ambiguous or cannot be proven safely. Datasource apply uses ordinary per-kind CRUD under FR-036. | Core authoring behavior without unsafe tiebreaking. One entity per invocation keeps orchestration with CI. | SC-001, SC-002, SC-005, SC-013, SC-015 |
   | **FR-006** | Every valid `apply` invocation MUST issue one ordinary create request when the safely resolved target is missing or one ordinary update request when exactly one target is present. It MUST NOT compare desired and current state to skip the write, MUST NOT report `unchanged`, and MUST report the accepted operation as `created` or `updated`. | Makes apply a predictable authoring command and leaves write semantics to the ordinary server contract. | SC-005 |
   | **FR-007** | ~~DELETED in v7.~~ No `plan` / dry-run command in phase 1. The YAML is the plan. | Deferred — see §10. | — |
@@ -519,7 +527,7 @@
   | **FR-011** | The tool MUST use this exit taxonomy: **0** = success (`valid`, `created`, or `updated`, including warnings); **1** = entity reconciliation or server-side failure reached after the declaration and local inputs have passed local validation; **2** = local CLI usage, file parsing, schema, semantic-validation, repository-reference, sidecar, or configuration failure; authentication/authorization or identity-visibility precondition failure; API compatibility or connectivity failure; or fatal/internal error. Identity ambiguity, invalid server identity metadata, adoption-required outcomes, entity-resolution instability in otherwise compatible server responses, and server rejection after valid local input are exit 1. Missing/expired credentials, insufficient visibility/write permission, response-contract incompatibility, network failure, and unavailable server are exit 2. Successful per-entity outcomes MUST go to stdout. Every failure MUST leave stdout empty and write its safe diagnostic only to stderr, in both text and JSON modes. A successful `login` token line is the sole intentional sensitive stdout exception. | Gives CI one decision-oriented classification and an unambiguous success/failure stream contract. | SC-003, SC-004, SC-006, SC-008, SC-009, SC-011–SC-017, SC-019 |
   | **FR-012** | On a successful `apply`, the tool MUST print the server-accepted operation to stdout as `created` or `updated`. It MUST NOT print `unchanged`. | Provides a CI-readable authoring outcome. | SC-001, SC-005 |
   | **FR-013** | ~~DELETED in v21.~~ The CLI does not emit Git/CI/environment provenance; the prohibition and retained success fields are defined by FR-016, FR-026, DR-006, and PA-004. | Provenance belongs to external Git, CI, and platform logs. | — |
-  | **FR-014** | After `lint --file <target>` has successfully parsed, schema-validated, semantically validated, and reference-validated the complete discovered repository closure, it MUST evaluate and emit non-fatal declaration warnings only for the declaration selected by `--file`. A warning condition in another declaration discovered solely for repository closure MUST NOT produce a warning in that invocation. This scope applies to both suspected-plaintext-secret warnings and deprecated-value warnings. For the target declaration, the linter MUST warn when a field that typically carries credentials contains a value that resembles a plaintext secret (e.g. a high-entropy string). Each warning MUST go to stderr and identify only the target source location, canonical field path, and fixed warning category; it MUST NOT echo, hash, encode, truncate, or otherwise reproduce the value. Multiple target warnings MUST be emitted in bytewise ascending fixed warning-code order, then canonical field-path order. If lint fails anywhere in the repository closure, it MUST emit no warnings and MUST use only the failure diagnostic contract. No secret interpolation syntax is provided in phase 1. | Discourage accidental credential storage without exposing the suspected value while keeping `--file` a predictable per-declaration lint surface with one target outcome. | SC-007 |
+  | **FR-014** | After `lint --file <target>` has successfully parsed, schema-validated, semantically validated, and locally validated the selected declaration, it MUST evaluate its non-fatal warning conditions. For that declaration, the linter MUST warn when a field that typically carries credentials contains a value that resembles a plaintext secret. Each warning MUST go to stderr and identify only the selected source location, canonical field path, and fixed warning category; it MUST NOT reproduce or derive the value. Multiple warnings MUST be emitted in bytewise ascending fixed warning-code order, then canonical field-path order. If the selected declaration fails validation, lint MUST emit no warnings and MUST use only the failure diagnostic contract. | Discourage accidental credential storage without exposing the suspected value. | SC-007 |
   | **FR-015** | Renaming a YAML file MUST NOT cause a duplicate asset on the server. Satisfied by natural-key identity (DR-002). | Refactoring safety. | SC-005 |
   | **FR-016** | The tool MUST synthesize failure diagnostics from an explicit non-sensitive allowlist and write them only to stderr. Allowed diagnostic data is limited to stable tool error code/category, exit code, local source file/line/column/field path, non-sensitive HTTP status and method/route template, locally generated request ID, and a dedicated server correlation/request ID when available and safely representable. Values not explicitly allowlisted MUST be omitted. A failure diagnostic MUST NOT contain raw or full request/response bodies, server-provided error text, declaration/sidecar values, request payloads, tokens, credentials, authorization headers, cookies, secret-classified fields, secret-like values, Git commit SHA, target environment origin, Git author, or CI-run identity. The tool MUST NOT persist those sensitive transport/authentication artifacts. Debug, verbose, trace, panic, and internal-error paths MUST obey the same boundary. | Enables CI diagnosis without attempting unreliable arbitrary-secret discovery, leaking sensitive payloads, or duplicating external provenance. | SC-002, SC-006, SC-008, SC-009, SC-011, SC-012 |
   | **FR-017** | The tool MUST support a version-controllable config file at `.codemie/config.yaml` in the repository root. This file MAY contain only these non-secret connection/default fields: `url` (target CodeMie API URL), `auth_url` (exact Keycloak token endpoint URL), and `project` (default project key). Resolution MUST be deterministic per field: `--url` > `CODEMIE_URL` > config `url`; `--auth-url` > `CODEMIE_AUTH_URL` > config `auth_url`; declaration `metadata.project` > config `project`; bearer token: `CODEMIE_TOKEN` (environment only — no flag); client ID: `--client-id` > `CODEMIE_CLIENT_ID` (non-secret selector, flag permitted; applies to Mode (a) client_credentials and Mode (c) Keycloak ROPC; when not explicitly set in Mode (c) it defaults to `codemie-sdk`); client secret: `CODEMIE_CLIENT_SECRET` (environment only — no flag; Mode (a) only); email: `--email` > `CODEMIE_EMAIL` (applies to Mode (b) local-auth and Mode (c) Keycloak ROPC); and password: `CODEMIE_PASSWORD` (environment only — no flag; applies to Mode (b) local-auth and Mode (c) Keycloak ROPC). Secret credentials (bearer token, client secret, and password) MUST NOT be accepted as CLI flag values and MUST NOT appear in the config file. An attempt to supply a secret credential as a flag MUST fail with exit code 2 before any network access. The non-secret client ID MAY be supplied as a flag. | Reproducibility without repeating non-secret endpoints while keeping secret credentials out of the repository and out of the process argument vector. SEC-001 remediation (v25). | SC-001, SC-011 |
@@ -530,7 +538,7 @@
   | **FR-022** | The bundled schema MUST classify every authorable field for each applicable operation as authoring-required or optional authorable under DR-012. `lint` MUST fail with exit code 2 when a declaration omits an identity/envelope, structurally required, conditionally required, or null-rejecting applicable request field. An optional authorable field MAY be omitted and an explicitly nullable field MAY contain YAML null. Explicit null for a non-nullable field MUST fail locally with exit code 2. **Project resolution:** `metadata.project` is logically required but MAY be omitted from YAML when `.codemie/config.yaml` supplies a non-empty project; lint MUST fail if neither source supplies it. Failure output MUST identify the field path without reproducing its value. | Establishes one source-pinned omission/null rule for all four entities while retaining required structure and the repository project default. | SC-003, SC-017 |
   | **FR-023** | `lint` and `apply` MUST fail with exit code 2 before any server call when a YAML contains a field not present in the tool's bundled schema for the declared `kind` and `apiVersion`. The output MUST name the offending field and its location. | Catches typos (e.g. `sytem_prompt`) that would otherwise be silently ignored. | SC-003 |
   | **FR-024** | The tool MUST provide a `login` sub-command that acquires a bearer token and, on success only, writes it as a **single line to stdout** with no decoration. This is the sole intentional token-output exception; the token MUST NOT also appear in stderr, logs, outcomes, files, caches, or later diagnostics. Login failure MUST leave stdout empty and write only an FR-016-safe synthesized diagnostic to stderr; identity-provider request/response bodies and error text MUST NOT be printed or persisted. The command MUST support **three mutually exclusive auth modes**, selected by which credential set and configuration are present through the FR-017 non-argv sources. Mode is determined in this order: **(a)** if `CODEMIE_CLIENT_SECRET` is set and `auth_url` is configured → Mode (a); **(c)** else if `CODEMIE_EMAIL` and `CODEMIE_PASSWORD` are set and `auth_url` is configured → Mode (c); **(b)** else if `CODEMIE_EMAIL` and `CODEMIE_PASSWORD` are set and `auth_url` is not configured → Mode (b). Supplying `CODEMIE_CLIENT_SECRET` together with `CODEMIE_EMAIL` + `CODEMIE_PASSWORD` is an error (exit 2) before network access. **(a) Keycloak client_credentials** (for CI and production): requires `--client-id` / `CODEMIE_CLIENT_ID` (client ID is a non-secret selector; flag is permitted), `CODEMIE_CLIENT_SECRET` (environment only — the `--client-secret` flag MUST NOT be accepted), and an explicit token endpoint resolved as `--auth-url` > `CODEMIE_AUTH_URL` > `.codemie/config.yaml` `auth_url`; it calls that exact URL with `grant_type=client_credentials`. The CLI MUST NOT derive the endpoint from `--url`, `CODEMIE_URL`, config `url`, a hostname/path convention, or another value. If the explicit endpoint is missing, `login` MUST exit code 2 before network access. **(c) Keycloak ROPC** (for human users and developer access to Keycloak-backed instances): active when `CODEMIE_CLIENT_SECRET` is NOT set, `CODEMIE_EMAIL` and `CODEMIE_PASSWORD` are set, and `auth_url` is configured. Requires `--email` / `CODEMIE_EMAIL` (non-secret; flag permitted) and `CODEMIE_PASSWORD` (environment only — the `--password` flag MUST NOT be accepted). Uses `--client-id` / `CODEMIE_CLIENT_ID` as a non-secret selector (flag permitted); when not explicitly set it MUST default to `codemie-sdk`. Calls the explicit token endpoint (resolved as `--auth-url` > `CODEMIE_AUTH_URL` > `.codemie/config.yaml` `auth_url`) with `grant_type=password`, `client_id=<effective-client-id>`, `username=<email>`, and `password=<password>`. This is a public-client ROPC flow — no `client_secret` is sent. The CLI MUST NOT derive the endpoint from `--url`, `CODEMIE_URL`, config `url`, a hostname/path convention, or another value. If the explicit endpoint is missing, `login` MUST exit code 2 before network access. **(b) Local-auth** (for local dev only): requires `--email` / `CODEMIE_EMAIL` and `CODEMIE_PASSWORD` (environment only — the `--password` flag MUST NOT be accepted); resolves the CodeMie API URL under FR-017 and calls `POST /v1/local-auth/login`; it is available only when the server is configured with `ENABLE_USER_MANAGEMENT=True` and `IDP_PROVIDER="local"`. If the local-auth endpoint returns 400, the tool MUST emit a fixed safe diagnostic stating that local authentication is unavailable without echoing the response. Any attempt to supply `--client-secret` or `--password` as a CLI flag value MUST fail with exit code 2 before any network access. | Enables composable token acquisition with an explicit, reviewable identity-provider endpoint and a no-leak failure boundary. Secret credentials never enter argv. SEC-001 remediation (v25). Mode (c) Keycloak ROPC added (v26). | SC-011, SC-012, SC-020 |
-  | **FR-025** | For `kind: Skill`, the `spec.content` markdown field MAY be expressed as a sidecar file reference using `spec.contentFrom: <relative path to .md file>` instead of inlining the content. `spec.content` and `spec.contentFrom` are mutually exclusive; both absent or both present is a local validation failure (exit 2). At lint time, the tool MUST verify the sidecar file exists relative to the YAML file; missing, unreadable, unsafe, invalid, or out-of-bounds sidecar content MUST use exit code 2. At apply time, the tool MUST inline the sidecar file content before constructing the API payload. | Long skill markdown is unreadable and un-diffable when inlined in YAML. Sidecar pattern preserves diff quality without changing the API contract. Q23. | SC-001, SC-003 |
+  | **FR-025** | For `kind: Skill`, exactly one of inline `spec.content` or `spec.contentFrom: <relative-path-to-.md>` MUST be present. `contentFrom` MUST be a non-empty relative path resolved from the selected declaration's parent directory. Absolute paths, empty/dot paths, lexical `..` escape, a canonical target outside the canonical declaration parent, a non-`.md` target, any symlink in the path or at the target, a non-regular file, invalid UTF-8, unreadable content, content outside the Skill 100–30,000-character contract, or sidecar bytes above 131,072 MUST fail with exit code 2 before network access. Lint and apply MUST perform only that direct bounded read; they MUST NOT enumerate the parent directory or infer any repository root. Apply MUST send the decoded Markdown only as inline server `content`; `contentFrom` and its path MUST NOT enter the API payload or diagnostics. The read is governed by the overall command timeout. | Retains reviewable Skill Markdown as one explicit auxiliary input without restoring repository discovery or unbounded file access. | SC-001, SC-003 |
   | **FR-026** | All commands that produce per-entity output MUST accept `--output text|json`. On success, text mode MUST emit one human-readable outcome line to stdout; JSON mode MUST emit one single-line JSON success object containing `action`, `kind`, `project`, and the natural-key field. Success output MUST NOT contain Git commit SHA, target environment origin, Git author, CI-run identity, or replacement provenance fields. On failure, stdout MUST be empty in both modes. Text mode MUST emit one or more safe human-readable diagnostics to stderr; JSON mode MUST emit a single-line safe diagnostic JSON object to stderr containing only FR-016-allowlisted fields, with `errorCode`, `category`, and `exitCode`. A failure diagnostic MUST NOT contain an outcome action, server message/body, payload, sensitive value, or external provenance. | Preserves machine-readable CI handling while keeping success identity, failures, and externally owned provenance separate. | SC-001–SC-006, SC-008, SC-009, SC-013–SC-016 |
   | **FR-027** | The tool MUST NOT enforce any file naming convention or directory structure. The entity identity is determined solely by the `kind`, `metadata` fields inside the YAML file, not by the filename or directory path. A recommended (non-enforced) convention is to organize files by kind (`assistants/`, `workflows/`, `skills/`, `datasources/`) with filenames matching the natural key. | Free-form layout accommodates monorepos, existing project structures, and refactoring. Q19, Q20. | FR-015 |
   | **FR-028** | For Workflow only, `apply` MUST persist the creator-scoped authored identity in reserved top-level `meta_config` member `codemie.epam.com/gitops/workflow-identity` with closed value `{version: 2, project: <effective-project>, creator_user_id: <authenticated-user-id>, slug: <metadata.slug>}`. The creator ID is derived from the authenticated response, never authored or reported. | Aligns Workflow identity with the pinned visibility guarantee that every principal sees all of their own Workflows, without claiming visibility into another creator's hidden unshared rows. | SC-013, SC-014 |
@@ -544,6 +552,17 @@
   | **FR-037** | Datasource reconciliation MUST exhaust the principal's visible rows and exact-filter `(project, repo_name)`. Exactly one visible match requires exact `write` ability before update; multiple visible matches fail exit 1. Zero visible matches MUST NOT be described as project-wide absence; after membership proof it permits one create attempt. HTTP 409 from create is authoritative project-wide collision evidence: the tool MUST fail exit 1, MUST NOT retry create, discover a hidden entity by guessing, or convert the request to update. After create/update, an exact readable result identifying the written entity and expected identity MUST be verified; inability to verify yields a safe uncertain-commit failure. | Preserves project-wide server collision semantics without relying on a partial ordinary-member list. | SC-022 |
 
   ---
+
+  | **FR-038** | `lint` and `apply` MUST accept exactly one `--file <path>` and MUST read no other declaration or configuration file. Direct reads named by Skill `contentFrom` under FR-025 and File Datasource `spec.files[]` under FR-041 are the only auxiliary-input exceptions. They MUST reject `--repo-root` and `--follow-symlinks` as unknown options. They MUST NOT walk directories, discover a repository root or repository closure, or order declarations. | Makes each invocation predictable without removing approved explicit file inputs. | SC-001–SC-005 |
+  | **FR-039** | The selected declaration MUST be no larger than 1,048,576 bytes and MUST be read through one ordinary bounded file-read operation under the command's overall task timeout. An oversized input or elapsed timeout MUST fail with exit code 2 and no server call. Cooperative cancellation checkpoints or a cancellation-token API are not required product behavior. | Bounds local resource use without exposing internal cancellation machinery as product behavior. | SC-003 |
+  | **FR-040** | `metadata.project` MUST be present in the selected declaration. Skill content MUST use exactly one of inline `spec.content` or the explicit `spec.contentFrom` sidecar governed by FR-025. `.codemie/config.yaml` and every other external declaration-content source MUST NOT be loaded. Runtime configuration MUST come only from the approved flags and environment variables. | Prevents hidden secondary inputs while retaining the approved explicit Skill sidecar. | SC-001, SC-003, SC-007 |
+  | **FR-041** | For a File Datasource, `spec.files` MUST contain one through ten explicit relative path strings governed by DR-014. Lint MUST validate each named file through a direct bounded read. Apply MUST send one repeated multipart `files` part per path, using the file basename as its multipart filename and its exact bytes as the part body. Neither command may enumerate a directory, discover another file, follow a symlink, or create a temporary/staging copy. | Retains existing File Datasource authoring while limiting auxiliary access to explicitly named files. | SC-001, SC-003 |
+
+  **v33.3 supersession rule:** FR-038–FR-041 supersede repository-closure and
+  repository-configuration clauses retained in historical FR-011, FR-014,
+  FR-017, FR-021, FR-022, and FR-024 text. They do not supersede FR-025:
+  `contentFrom` and File Datasource paths remain approved only under their
+  explicit bounded direct-read rules.
 
   ## 15. Data requirements
 
@@ -577,6 +596,14 @@
   * **DR-011** — Datasource create and update MUST use the selected kind's pinned ordinary request formats. Apply MUST construct the exact operation-specific request projection from the declaration and send it on every valid invocation; it MUST NOT read current Datasource configuration to compute a difference or skip an update. Optional authorable fields materialize under DR-012 in both operations. A field exposed only by the create format is projected on create and is not invented in the update format. Integration identifiers exposed by a kind's ordinary authoring request are opaque configuration values, not managed-entity identity or cross-entity references; the tool sends them as authored and does not provision integrations, grant integration access, retrieve credentials, or invent a resolver. Secret-bearing request members remain prohibited from YAML by DR-004/009.
   * **DR-012** — For every field in each entity and per-kind Datasource schema, the pinned applicable create and update contracts MUST identify whether the field is: (a) authoring-required, (b) optional authorable and null-accepting, (c) authoring-only and transformed, (d) operation-inapplicable, (e) tool-owned or mixed-ownership, or (f) read-only/prohibited. A field may be classified as optional authorable only when every request operation in which its direct or transformed outbound property exists accepts JSON null. Omission or explicit YAML null for that class MUST serialize as an explicit JSON property with value null. If any operation containing the outbound property rejects null, the corresponding YAML field MUST instead be authoring-required, and omission or explicit null MUST fail locally before target existence changes the applicable operation. An authoring-only selector with no outbound property, such as the unused side of the `content`/`contentFrom` choice, is transformed away without a fabricated null; a natural-reference field that maps to an outbound ID property inherits that target property's requiredness/nullability. Create-only fields are absent from an update projection because they are operation-inapplicable there, not because their omission invokes a default. The Workflow `meta_config` container is mixed-ownership because FR-028 requires the reserved identity member and DR-007 preserves existing non-reserved members; its outbound container is assembled under those rules rather than treated as a wholly authorable optional field.
   * **DR-013** — Membership, creator, identity, and ability evidence MUST be strictly decoded with duplicate-key rejection. Consumed identifiers and project/name/slug values MUST be non-empty exact strings; `user_abilities` MUST be an array of exact supported action values. Missing, null, empty, duplicate-key, or wrong-type consumed evidence is `E_API_INCOMPATIBLE`, exit 2. Additional unconsumed fields remain tolerated under IR-012. Values and bodies remain process-local and absent from safe diagnostics.
+  * **DR-014 — Explicit File Datasource paths:** `spec.files` MUST be an array of one through ten distinct non-empty relative path strings. Each path resolves from the selected declaration's parent. Absolute paths, empty/dot paths, lexical `..` escape, a canonical target outside the canonical declaration parent, any symlink in the path or at the target, a non-regular file, unreadable content, or duplicate canonical target MUST fail locally before network access. Each file is limited to 33,554,432 bytes; their aggregate decoded byte count is limited to 134,217,728 bytes. Reads MUST be bounded and governed by the overall command timeout. The multipart filename is the target basename and MUST pass the existing control-character/path-separator safety rule. `uploaded_files`, when applicable to update, remains an array of exact server filenames to retain and MUST NOT be treated as local input paths. The tool MUST NOT persist or copy the file bytes outside the intended multipart request.
+
+  ```yaml
+  spec:
+    index_type: file
+    files:
+      - attachments/handbook.pdf
+  ```
 
   ### Per-entity field lists
 
@@ -617,7 +644,7 @@
   | `confluence` | Knowledge-base common fields `description`, `project_space_visible`, `guardrail_assignments`, plus `cql`, `setting_id`, `include_restricted_content`, `include_archived_content`, `include_attachments`, `include_comments`, `keep_markdown_format`, `keep_newlines`, `embedding_model`, `cron_expression`, `timezone`. |
   | `jira` | Knowledge-base common fields plus `jql`, `setting_id`, `embedding_model`, `cron_expression`, `timezone`. |
   | `xray` | Knowledge-base common fields plus `jql`, `setting_id`, `embedding_model`, `cron_expression`, `timezone`. |
-  | `file` | Knowledge-base common fields plus create/update multipart fields `files`, `uploaded_files` (update retained-file list), `csv_separator`, `csv_start_row`, `csv_rows_per_document`, `embedding_model`, `include_email_attachments`; guardrail assignments use the exact body/query representation exposed by the operation. File additions, removals, and content changes are ordinary authoring inputs. |
+  | `file` | Knowledge-base common fields plus `files: [<relative-path>]` under DR-014, `uploaded_files` (update retained server-filename list), `csv_separator`, `csv_start_row`, `csv_rows_per_document`, `embedding_model`, and `include_email_attachments`; guardrail assignments retain the pinned query representation. Apply directly reads only the named files and streams them as the repeated multipart parts required by the server. File additions, removals, and content changes remain ordinary authoring inputs. |
   | `google` | Knowledge-base common fields plus exact create-format `googleDoc`, `setting_id`, `embedding_model`, `cron_expression`, `timezone`. `googleDoc` and `setting_id` are operationally required on create. The current ordinary update accepts `description`, `project_space_visible`, `guardrail_assignments`, `cron_expression`, and `timezone`; create-only fields are not invented in its update projection. Persisted server type `llm_routing_google` maps to authored discriminator `google`. |
   | `azure_devops_wiki` | Knowledge-base common fields plus `wiki_query`, `wiki_name`, `setting_id`, `embedding_model`, `cron_expression`, `timezone`. |
   | `azure_devops_work_item` | Knowledge-base common fields plus `wiql_query`, `setting_id`, `embedding_model`, `cron_expression`, `timezone`. |
@@ -738,6 +765,7 @@
   * **VR-015** — A Datasource declaration MUST satisfy the selected kind's exact DR-010/§15 field names, casing, nesting, required/optional rules, enum values, and constraints. Fields from another kind, client-invented aliases/wrappers, runtime/read-only fields, and secret-bearing request members MUST be rejected locally with exit code 2. A locally valid opaque integration identifier rejected by the server is an exit-1 server rejection; the diagnostic MUST NOT reproduce the identifier or server body.
   * **VR-016** — For each direct or transformed create/update request property, validation MUST use pinned operation nullability rather than infer optionality from the existence of a server default. If JSON null is accepted in every operation containing the property, omission and explicit YAML null are valid and project to JSON null. If null is rejected in any operation containing the property, the corresponding field is authoring-required in YAML; omission or explicit YAML null is exit code 2 before any server call. Authoring-only fields with no outbound property, operation-inapplicable fields, tool-owned/mixed-ownership structures, and read-only fields follow DR-012 and MUST NOT receive a fabricated null property.
   * **VR-017** — Membership, creator, marker, and natural-key equality MUST use exact decoded strings without trimming, case folding, normalization, substring matching, display-name substitution, or role inference. Workflow/Skill candidates whose creator ID differs from the authenticated user ID MUST be excluded, not treated as ambiguity. `write` MUST be present as an exact supported ability value on the selected entity before update.
+  * **VR-018** — Every File Datasource `files[]` path MUST satisfy DR-014 before network access. An absolute/escaping/symlinked/non-regular/unreadable path, duplicate target, unsafe basename, an item count outside 1–10, a per-file or aggregate size excess, or a declaration exceeding 1,048,576 bytes MUST fail with exit code 2. Diagnostics may identify only the selected source location, item index, field path, and fixed category; they MUST NOT reproduce paths, filenames, or content.
 
   ---
 
@@ -891,19 +919,16 @@
   ### AC-FR-014-01 — Lint warns on suspicious credential field
   ```gherkin
   Given the declaration selected by --file contains one or more warning conditions
-  And another declaration discovered for repository closure contains a warning condition
-  And the complete repository closure is valid
   When lint is run repeatedly with the same inputs
   Then each invocation exits code 0
   And stdout contains exactly one valid outcome for the selected declaration
-  And stderr contains warnings only for warning conditions in the selected declaration
+  And stderr contains warnings for warning conditions in the selected declaration
   And every warning source identifies the selected declaration and its canonical field path
   And the warnings are in bytewise ascending fixed warning-code order, then canonical field-path order
   And the warning sequence is identical across invocations
   And no warning contains a field value or any derivative of that value
 
-  Given the selected declaration or another declaration in its repository closure is invalid
-  And one or more parsed declarations contain warning conditions
+  Given the selected declaration is invalid and contains a warning condition
   When lint is run
   Then the tool exits code 2
   And stdout is empty
@@ -1088,7 +1113,8 @@
   And my-skill.md does not exist relative to the YAML file
   When lint is run
   Then the tool exits code 2
-  And the output names the missing sidecar file
+  And stdout is empty
+  And stderr identifies spec.contentFrom and a fixed sidecar category without reproducing the path
   ```
 
   ### AC-FR-025-02 — contentFrom content is inlined at apply time
@@ -1098,6 +1124,7 @@
   When apply is invoked
   Then the server receives the markdown content inline
   And spec.contentFrom does not appear in the API payload
+  And no directory is enumerated
   ```
 
   ### AC-FR-025-03 — Providing both content and contentFrom is a lint failure
@@ -1106,6 +1133,20 @@
   When lint is run
   Then the tool exits code 2
   And the output states the fields are mutually exclusive
+  ```
+
+  ### AC-FR-025-04 — Sidecar path and read remain bounded
+  ```gherkin
+  Given a Skill uses contentFrom
+  When the path is absolute, escapes the declaration parent lexically or canonically, traverses a symlink, names a non-regular or non-.md file, or exceeds 131,072 bytes
+  Then lint and apply exit code 2 before any server call
+  And stdout is empty
+  And stderr identifies spec.contentFrom and a fixed sidecar category without reproducing its path or content
+
+  Given a safe relative .md path beneath the selected declaration's canonical parent
+  When lint or apply is invoked
+  Then exactly that sidecar is opened directly with a bounded read under the command timeout
+  And no sibling file or directory entry is inspected
   ```
 
   ### AC-FR-026-01 — JSON output contains required fields
@@ -1415,6 +1456,72 @@
 
   ---
 
+  ### AC-FR-038-01 — Lint reads only the selected declaration
+  ```gherkin
+  Given a valid declaration selected by --file
+  And the surrounding directories contain invalid YAML, ignored files, symlinks, and more declarations
+  When lint is invoked
+  Then lint reads and validates only the selected declaration
+  And it does not enumerate or open the surrounding files
+  And the result is independent of surrounding-file names and order
+  ```
+
+  ### AC-FR-038-02 — Removed repository options fail locally
+  ```gherkin
+  Given an otherwise valid lint or apply invocation
+  When --repo-root or --follow-symlinks is supplied
+  Then the command exits code 2
+  And stdout is empty
+  And no server call is made
+  ```
+
+  ### AC-FR-039-01 — Input and time are bounded
+  ```gherkin
+  Given the selected file exceeds 1,048,576 bytes
+  When lint or apply is invoked
+  Then the command exits code 2 before parsing or any server call
+
+  Given a selected-file operation exceeds the command timeout
+  When lint or apply is invoked
+  Then the command exits code 2 with a safe timeout diagnostic
+  And no entity write is sent
+  ```
+
+  ### AC-FR-040-01 — Hidden secondary inputs are rejected
+  ```gherkin
+  Given a declaration omits metadata.project or refers to external declaration content other than a valid Skill spec.contentFrom or File Datasource spec.files path
+  When lint or apply is invoked
+  Then the command exits code 2 before any server call
+  And .codemie/config.yaml and the prohibited external source are not opened
+  ```
+
+  ### AC-FR-041-01 — Explicit File Datasource paths become multipart
+  ```gherkin
+  Given one valid File Datasource YAML smaller than 1,048,576 bytes
+  And spec.files contains two distinct safe relative paths beneath the declaration parent
+  And both targets are regular non-symlink files within the per-file and aggregate limits
+  When lint is invoked
+  Then lint directly validates only those two files without enumerating their directories
+
+  When apply is invoked and local validation succeeds
+  Then apply sends two multipart parts named files
+  And each part uses its target basename as its multipart filename
+  And each part body exactly equals its target file bytes
+  And no unlisted, temporary, or staging file is read or created
+  ```
+
+  ### AC-FR-041-02 — Unsafe or oversized File Datasource paths fail locally
+  ```gherkin
+  Given a File Datasource path is absolute, escaping, symlinked, non-regular, unreadable, duplicate, or has an unsafe basename
+  Or one file exceeds 33,554,432 bytes or all files exceed 134,217,728 bytes
+  When lint or apply is invoked
+  Then the command exits code 2 before any server request
+  And stdout is empty
+  And stderr identifies only the item and field path plus a fixed validation category
+  And stderr does not reproduce the path, filename, or content
+  And no unrelated file or directory entry is inspected
+  ```
+
   ## 22. Edge cases and failure scenarios
 
   * Empty YAML or YAML with only comments → lint fails with exit code 2: "no entity declared."
@@ -1604,6 +1711,9 @@
   | Product decision v16 (OQ-29) | SC-002/006/008/009/011/012 | FR-011/014/016/024/026; DR-004/006/009; IR-007; QR-004/007/011; VR-011/012 | AC-FR-003-01, AC-FR-004-01, AC-FR-009-01, AC-FR-011-01–04, AC-FR-014-01, AC-QR-007-01, AC-FR-024-01/02/04/05/06, AC-FR-026-02, AC-FR-029-02, AC-FR-033-01, AC-FR-034-01 |
   | Product decision v21 (PRODUCT-OQ-01/VER-011) | SC-001/002/006 | FR-013/016/026; DR-006; PA-004; QR-004; VR-011 | AC-FR-026-02/03 |
   | Product decision v17 plus current Workflow server/UI evidence (OQ-31) | SC-019 | FR-035; DR-003; VR-013 | AC-FR-035-01/02 |
+  | User decision v33 (single bounded input file) | SC-001–005/007 | FR-004/038–040 | AC-FR-038-01/02, AC-FR-039-01, AC-FR-040-01 |
+  | User correction v33.2; product decision Q23 | SC-001/003 | FR-025/038/040 | AC-FR-025-01–04, AC-FR-040-01 |
+  | User decision v33.3 plus pinned File Datasource multipart contract | SC-001/003/005 | FR-039/041; DR-010/011/014; VR-018 | AC-FR-041-01/02 |
 
   ---
 
@@ -1612,6 +1722,10 @@
   **Approved product behavior:**
   * YAML-first declarative management of assistants, workflows, datasources, skills.
   * One YAML file = one entity; one `apply` invocation = one entity. CI orchestration (loops, ordering) is the caller's responsibility.
+  * `lint` and `apply` read the declaration selected by `--file` plus only its explicitly named Skill `contentFrom` or File Datasource `spec.files[]` inputs. There is no repository walk, repository closure, deterministic repository ordering, `--repo-root`, `--follow-symlinks`, or repository config. Reference existence is checked online by `apply`, not inferred offline by `lint`.
+  * The selected declaration has a documented byte cap and is read once under the command timeout. Cancellation-token plumbing is not product-mandated.
+  * Skill `contentFrom` is a direct relative `.md` sidecar read capped at 131,072 bytes, contained beneath the selected declaration parent, with symlinks prohibited. Apply sends it as inline Skill content. Save continues to emit inline content.
+  * File Datasource `spec.files` remains one to ten explicit relative paths. Each is directly read beneath the selected declaration parent with symlinks prohibited, a 33,554,432-byte per-file limit, and a 134,217,728-byte aggregate limit, then streamed as the pinned multipart part. No temporary file is created. The selected YAML itself remains capped at 1,048,576 bytes.
   * Non-destructive, always-write apply: create when safely missing; update on every valid invocation when safely present; no desired/current comparison, skipped write, or `unchanged` outcome.
   * Offline `lint` + online `apply` + `login` token acquisition. No `plan` in phase 1.
   * Per-environment targeting via `CODEMIE_URL` + `CODEMIE_TOKEN`. No overlay/templating in phase 1.
@@ -1620,7 +1734,7 @@
   * Explicit authored desired-state values are preserved. Required/null-rejecting fields must be authored; optional authorable request fields may be omitted and then materialize as explicit JSON null in every applicable create/update payload. Explicit YAML null is equivalent where the pinned request accepts it. The bounded transformations and mixed-ownership Workflow `meta_config` rule in FR-021/DR-012 still apply.
   * Phase 1: `codemie` assistant type only. CI docs: GitHub Actions + GitLab CI.
   * Kubernetes-style envelope: `apiVersion` / `kind` / `metadata` (identity) / `spec` (config).
-  * Config file at **`.codemie/config.yaml`** (not a flat dotfile): non-secret `url`, `auth_url`, and optional `project` default; no credentials. `metadata.project` may be omitted from YAML when config provides the default. Keycloak endpoint precedence is `--auth-url` > `CODEMIE_AUTH_URL` > config `auth_url`; it is never derived from `url`.
+  * No repository config file is loaded. `metadata.project` is required in the declaration. Keycloak endpoint precedence is `--auth-url` > `CODEMIE_AUTH_URL`; it is never derived from `url`.
   * **Workflow identity:** authored/reported identity is `(project, slug)`; server reconciliation is creator-scoped by reserved v2 marker `{version: 2, project, creator_user_id, slug}`. Only exact current-principal rows match. Other creators' hidden or visible rows are distinct; v1/unmarked rows require explicit adoption.
   * **Workflow legacy adoption:** an unmarked Workflow is adopted only through `--adopt-workflow-id <current-server-uuid>`, with exact project, visibility, write, unmarked, metadata-preservation, and zero-existing-marker checks. Adoption persists the record and reconciles in one operation. The UUID remains absent from YAML, state, and outcomes.
   * **Skill identity:** authored/reported identity is exact `(project, name)`; reconciliation additionally requires `created_by.id` equal to the authenticated `user_id`. For a target, zero current-creator matches creates, one writable match updates, and multiple fail ambiguous. For a reference, zero fails, one resolves read-only, multiple fail ambiguous, and no Skill mutation occurs. Other creators' same-name rows are distinct and ignored.
@@ -1698,7 +1812,7 @@
   Specification status: READY FOR ARCHITECTURE PLANNING
   ```
 
-  Product behavior is bounded and testable: exact project membership qualifies creation; exact server-reported entity `write` ability gates update; Assistant uses exact project/slug lookup; Workflow and Skill reconcile in the authenticated creator namespace; legacy Workflow v1/unmarked state requires explicit adoption; Datasource partial-list misses never prove absence and HTTP 409 is authoritative collision evidence. Strict decoding, zero unauthorized writes, post-write verification, safe diagnostics, and Assistant least privilege remain mandatory. OQ-37/OQ-38 and C-14 are resolved, and no open product question blocks architecture planning. The solution architect must refresh all downstream artifacts for v32 before implementation readiness is reclaimed.
+  Product behavior is bounded and testable: each lint/apply invocation reads one YAML of at most 1,048,576 bytes plus only explicitly named, bounded Skill `contentFrom` or File Datasource inputs; no repository discovery occurs; File Datasource paths are directly streamed to multipart without temporary-file materialization; exact project membership qualifies creation; exact server-reported entity `write` ability gates update; Assistant uses exact project/slug lookup; Workflow and Skill reconcile in the authenticated creator namespace; legacy Workflow v1/unmarked state requires explicit adoption; Datasource partial-list misses never prove absence and HTTP 409 is authoritative collision evidence. Strict decoding, zero unauthorized writes, post-write verification, safe diagnostics, and Assistant least privilege remain mandatory. No open product question blocks architecture planning. The solution architect must refresh all downstream artifacts for v33.3 before implementation readiness is reclaimed.
 
   ### Closed product decisions
 

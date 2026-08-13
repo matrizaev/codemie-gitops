@@ -5,9 +5,8 @@
 # - Every job has an explicit permissions block (minimum: contents: read).
 # - Secrets are not referenced in this file; no secret is available to
 #   fork-triggered pull_request jobs.
-# - O-001's serialized apply control is isolated in codemie-gitops-apply.yml
-#   and requires remote protected-environment activation. O-002 retains broader
-#   portable CI examples and recovery documentation.
+# - Deployment workflow examples live under examples/ci and are not active in
+#   this CLI source repository.
 
 name: CI
 
@@ -26,7 +25,7 @@ permissions:
 
 jobs:
   check:
-    name: cargo check
+    name: Rust quality gate
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -35,14 +34,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
-      - name: Install musl toolchain
-        run: sudo apt-get update -q && sudo apt-get install -y musl-tools
+      - name: rustfmt
+        run: cargo fmt --all -- --check
 
-      - name: Add musl Rust target
-        run: rustup target add x86_64-unknown-linux-musl
-
-      - name: cargo check (locked, musl)
-        run: cargo check --locked
+      - name: Clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
   test:
     name: cargo test
@@ -53,17 +49,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
-      - name: Install musl toolchain
-        run: sudo apt-get update -q && sudo apt-get install -y musl-tools
-
-      - name: Add musl Rust target
-        run: rustup target add x86_64-unknown-linux-musl
-
-      - name: Rust and O-001 unit tests
+      - name: Rust tests
         run: make test
 
-      - name: O-001 checked-in control policy
-        run: python3 scripts/check_o001_controls.py
+      - name: Complete Rust target and feature matrix
+        run: cargo test --locked --all-targets --all-features
 
   audit:
     name: cargo audit (RustSec)

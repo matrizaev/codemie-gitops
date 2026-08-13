@@ -99,6 +99,9 @@ pub enum ErrorCode {
     EWriteUncertain,
     EEntityNotFound,
     EEntityNotExportable,
+    EOutputExists,
+    EOutputPath,
+    EOutputWrite,
     EWorkflowAlreadyMarked,
     // server-rejection (exit 1)
     EServerRejected,
@@ -145,6 +148,9 @@ impl ErrorCode {
             ErrorCode::EWriteUncertain => "E_WRITE_UNCERTAIN",
             ErrorCode::EEntityNotFound => "E_ENTITY_NOT_FOUND",
             ErrorCode::EEntityNotExportable => "E_ENTITY_NOT_EXPORTABLE",
+            ErrorCode::EOutputExists => "E_OUTPUT_EXISTS",
+            ErrorCode::EOutputPath => "E_OUTPUT_PATH",
+            ErrorCode::EOutputWrite => "E_OUTPUT_WRITE",
             ErrorCode::EWorkflowAlreadyMarked => "E_WORKFLOW_ALREADY_MARKED",
             ErrorCode::EServerRejected => "E_SERVER_REJECTED",
             ErrorCode::EUsage => "E_USAGE",
@@ -256,11 +262,58 @@ impl WarningCategory {
 /// from arbitrary input (SEC-005).
 #[derive(Debug, Clone)]
 pub struct SourceLocation {
-    pub file: String,
-    pub line: Option<u32>,
-    pub column: Option<u32>,
-    /// Canonical field path from YAML AST. Must not be echoed from user input.
-    pub field_path: Option<String>,
+    file: SourceFile,
+    line: Option<u32>,
+    column: Option<u32>,
+    field_path: Option<FieldPath>,
+}
+
+#[derive(Debug, Clone)]
+struct SourceFile(String);
+
+impl TryFrom<String> for SourceFile {
+    type Error = InvalidOutputField;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if value.is_empty() || value.len() > 4096 || value.chars().any(char::is_control) {
+            return Err(InvalidOutputField::SourceFile);
+        }
+        Ok(Self(value))
+    }
+}
+
+#[derive(Debug, Clone)]
+struct FieldPath(String);
+
+impl TryFrom<String> for FieldPath {
+    type Error = InvalidOutputField;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if value.is_empty() || value.len() > 1024 || value.chars().any(char::is_control) {
+            return Err(InvalidOutputField::FieldPath);
+        }
+        Ok(Self(value))
+    }
+}
+
+impl SourceLocation {
+    #[allow(
+        dead_code,
+        reason = "diagnostic source context is part of the approved output contract but not emitted by current commands"
+    )]
+    pub fn try_new(
+        file: String,
+        line: Option<u32>,
+        column: Option<u32>,
+        field_path: Option<String>,
+    ) -> Result<Self, InvalidOutputField> {
+        Ok(Self {
+            file: file.try_into()?,
+            line,
+            column,
+            field_path: field_path.map(FieldPath::try_from).transpose()?,
+        })
+    }
 }
 
 // Serde representation mirrors diagnostic.schema.json "source" object.
@@ -278,10 +331,10 @@ struct SourceLocationJson<'a> {
 impl<'a> From<&'a SourceLocation> for SourceLocationJson<'a> {
     fn from(s: &'a SourceLocation) -> Self {
         SourceLocationJson {
-            file: &s.file,
+            file: &s.file.0,
             line: s.line,
             column: s.column,
-            field_path: s.field_path.as_deref(),
+            field_path: s.field_path.as_ref().map(|path| path.0.as_str()),
         }
     }
 }
@@ -293,10 +346,59 @@ impl<'a> From<&'a SourceLocation> for SourceLocationJson<'a> {
 /// HTTP context attached to a diagnostic.
 #[derive(Debug, Clone)]
 pub struct HttpInfo {
-    pub status: u16,
-    pub method: HttpMethod,
-    /// Route template, e.g. `/v1/assistants/{slug}`.
-    pub route_template: String,
+    status: HttpStatus,
+    method: HttpMethod,
+    route_template: RouteTemplate,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HttpStatus(u16);
+
+impl TryFrom<u16> for HttpStatus {
+    type Error = InvalidOutputField;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        (100..=599)
+            .contains(&value)
+            .then_some(Self(value))
+            .ok_or(InvalidOutputField::HttpStatus)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RouteTemplate(String);
+
+impl TryFrom<String> for RouteTemplate {
+    type Error = InvalidOutputField;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if !value.starts_with('/')
+            || value.contains('?')
+            || value.contains('#')
+            || value.chars().any(char::is_control)
+        {
+            return Err(InvalidOutputField::RouteTemplate);
+        }
+        Ok(Self(value))
+    }
+}
+
+impl HttpInfo {
+    #[allow(
+        dead_code,
+        reason = "typed HTTP context is part of the approved diagnostic contract but current safe diagnostics omit it"
+    )]
+    pub fn try_new(
+        status: u16,
+        method: HttpMethod,
+        route_template: String,
+    ) -> Result<Self, InvalidOutputField> {
+        Ok(Self {
+            status: status.try_into()?,
+            method,
+            route_template: route_template.try_into()?,
+        })
+    }
 }
 
 /// Closed set of HTTP methods per diagnostic.schema.json.
@@ -323,9 +425,9 @@ struct HttpInfoJson<'a> {
 impl<'a> From<&'a HttpInfo> for HttpInfoJson<'a> {
     fn from(h: &'a HttpInfo) -> Self {
         HttpInfoJson {
-            status: h.status,
+            status: h.status.0,
             method: h.method,
-            route_template: &h.route_template,
+            route_template: &h.route_template.0,
         }
     }
 }
@@ -339,16 +441,49 @@ impl<'a> From<&'a HttpInfo> for HttpInfoJson<'a> {
 /// Callers must supply only schema-allowlisted fields.
 /// No raw URL, body, server text, credential, or declaration value.
 pub struct DiagnosticInput {
-    pub error_code: ErrorCode,
-    pub category: DiagnosticCategory,
+    error_code: ErrorCode,
+    category: DiagnosticCategory,
     /// Must be 1 or 2, per cli.md §7.
-    pub exit_code: i32,
-    pub source: Option<SourceLocation>,
-    pub http: Option<HttpInfo>,
+    exit_code: i32,
+    source: Option<SourceLocation>,
+    http: Option<HttpInfo>,
     /// Correlation ID matching `[A-Za-z0-9._:-]{1,128}`.
-    pub request_id: Option<String>,
+    request_id: Option<CorrelationId>,
     /// Server-provided correlation ID matching `[A-Za-z0-9._:-]{1,128}`.
-    pub server_correlation_id: Option<String>,
+    server_correlation_id: Option<CorrelationId>,
+}
+
+#[derive(Debug, Clone)]
+struct CorrelationId(String);
+
+impl TryFrom<String> for CorrelationId {
+    type Error = InvalidOutputField;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if value.is_empty()
+            || value.len() > 128
+            || !value.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-')
+            })
+        {
+            return Err(InvalidOutputField::CorrelationId);
+        }
+        Ok(Self(value))
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum InvalidOutputField {
+    #[error("source file is not safe for output")]
+    SourceFile,
+    #[error("field path is not canonical")]
+    FieldPath,
+    #[error("HTTP status is outside the valid range")]
+    HttpStatus,
+    #[error("route template is invalid")]
+    RouteTemplate,
+    #[error("correlation ID is invalid")]
+    CorrelationId,
 }
 
 // Serde representation mirrors diagnostic.schema.json.
@@ -380,12 +515,30 @@ struct DiagnosticJson<'a> {
 /// warning.schema.json.
 #[derive(Debug, Clone)]
 pub struct WarningSource {
-    /// Source file path, bounded to 4,096 bytes.
-    pub file: String,
-    pub line: Option<u32>,
-    pub column: Option<u32>,
-    /// Canonical field path from YAML AST (required for warnings).
-    pub field_path: String,
+    file: SourceFile,
+    line: Option<u32>,
+    column: Option<u32>,
+    field_path: FieldPath,
+}
+
+impl WarningSource {
+    pub fn try_new(
+        file: String,
+        line: Option<u32>,
+        column: Option<u32>,
+        field_path: String,
+    ) -> Result<Self, InvalidOutputField> {
+        Ok(Self {
+            file: file.try_into()?,
+            line,
+            column,
+            field_path: field_path.try_into()?,
+        })
+    }
+
+    pub fn field_path(&self) -> &str {
+        &self.field_path.0
+    }
 }
 
 // Serde representation mirrors warning.schema.json "source" object.
@@ -406,9 +559,31 @@ struct WarningSourceJson<'a> {
 
 /// A fully typed warning record ready for rendering.
 pub struct WarningInput {
-    pub warning_code: WarningCode,
-    pub category: WarningCategory,
-    pub source: WarningSource,
+    warning_code: WarningCode,
+    category: WarningCategory,
+    source: WarningSource,
+}
+
+impl WarningInput {
+    pub fn new(
+        warning_code: WarningCode,
+        category: WarningCategory,
+        source: WarningSource,
+    ) -> Self {
+        Self {
+            warning_code,
+            category,
+            source,
+        }
+    }
+
+    pub fn warning_code(&self) -> WarningCode {
+        self.warning_code
+    }
+
+    pub fn field_path(&self) -> &str {
+        self.source.field_path()
+    }
 }
 
 // Serde representation mirrors warning.schema.json.
@@ -450,13 +625,6 @@ impl<W: Write, E: Write> Renderer<W, E> {
         }
     }
 
-    /// Return the owned output writers. Primarily used by boundary tests to
-    /// assert the stdout/stderr split without touching process-global streams.
-    #[cfg(test)]
-    pub fn into_writers(self) -> (W, E) {
-        (self.stdout, self.stderr)
-    }
-
     /// Emit a successful outcome record to stdout.
     ///
     /// Text mode: fixed template `<action> <kind> <project>/<key>\n`.
@@ -470,18 +638,37 @@ impl<W: Write, E: Write> Renderer<W, E> {
         project: &str,
         key: &EntityKey,
     ) -> io::Result<()> {
+        self.emit_outcome_with_adoption(action, kind, project, key, false)
+    }
+
+    /// Emit a successful outcome, including the save-only Workflow adoption
+    /// marker when the selected unmarked Workflow was read by server ID.
+    pub(crate) fn emit_outcome_with_adoption(
+        &mut self,
+        action: Action,
+        kind: EntityKind,
+        project: &str,
+        key: &EntityKey,
+        adoption_required: bool,
+    ) -> io::Result<()> {
         match self.mode {
             OutputMode::Text => {
                 // Fixed template: no untrusted input can inject record separators
                 // because schema validation has already excluded C0/C1 controls
                 // and bidi characters from these identifier fields.
+                let adoption_suffix = if adoption_required {
+                    " (adoption required on apply)"
+                } else {
+                    ""
+                };
                 writeln!(
                     self.stdout,
-                    "{} {} {}/{}",
+                    "{} {} {}/{}{}",
                     action.as_str(),
                     kind.as_str(),
                     project,
-                    key.value()
+                    key.value(),
+                    adoption_suffix
                 )
             }
             OutputMode::Json => {
@@ -504,6 +691,9 @@ impl<W: Write, E: Write> Renderer<W, E> {
                     key.field_name().to_owned(),
                     serde_json::Value::String(key.value().to_owned()),
                 );
+                if adoption_required {
+                    map.insert("adoptionRequired".to_owned(), serde_json::Value::Bool(true));
+                }
                 let json = serde_json::to_string(&serde_json::Value::Object(map))
                     .expect("serde_json serialization of known-safe map must not fail");
                 writeln!(self.stdout, "{json}")
@@ -527,8 +717,11 @@ impl<W: Write, E: Write> Renderer<W, E> {
                     exit_code: diag.exit_code,
                     source: diag.source.as_ref().map(SourceLocationJson::from),
                     http: diag.http.as_ref().map(HttpInfoJson::from),
-                    request_id: diag.request_id.as_deref(),
-                    server_correlation_id: diag.server_correlation_id.as_deref(),
+                    request_id: diag.request_id.as_ref().map(|id| id.0.as_str()),
+                    server_correlation_id: diag
+                        .server_correlation_id
+                        .as_ref()
+                        .map(|id| id.0.as_str()),
                 };
                 let json = serde_json::to_string(&json_struct)
                     .expect("serde_json serialization of known-safe diagnostic must not fail");
@@ -551,10 +744,10 @@ impl<W: Write, E: Write> Renderer<W, E> {
                     warning_code: warning.warning_code.as_str(),
                     category: warning.category.as_str(),
                     source: WarningSourceJson {
-                        file: &warning.source.file,
+                        file: &warning.source.file.0,
                         line: warning.source.line,
                         column: warning.source.column,
-                        field_path: &warning.source.field_path,
+                        field_path: &warning.source.field_path.0,
                     },
                 };
                 let json = serde_json::to_string(&json_struct)
@@ -583,12 +776,29 @@ pub fn diagnostic_from_app_error(error: &crate::error::AppError) -> DiagnosticIn
     use crate::error::AppError;
     let (error_code, category) = match error {
         AppError::Usage(_) => (ErrorCode::EUsage, DiagnosticCategory::Usage),
-        AppError::Configuration(_) => {
+        AppError::Configuration(_) | AppError::ConfigurationLayer(_) => {
             (ErrorCode::EConfiguration, DiagnosticCategory::Configuration)
         }
+        AppError::InputLayer(_) => (ErrorCode::ESchema, DiagnosticCategory::LocalInput),
         AppError::Schema(_) => (ErrorCode::ESchema, DiagnosticCategory::LocalInput),
+        AppError::ProjectionLayer(error) if error.is_compatibility() => (
+            ErrorCode::EApiIncompatible,
+            DiagnosticCategory::Compatibility,
+        ),
+        AppError::ProjectionLayer(_) => (ErrorCode::EInternal, DiagnosticCategory::Internal),
+        AppError::ParseLayer(error) if error.is_yaml() => {
+            (ErrorCode::EYamlParse, DiagnosticCategory::LocalInput)
+        }
+        AppError::ParseLayer(_) => (ErrorCode::ESchema, DiagnosticCategory::LocalInput),
         AppError::YamlParse(_) => (ErrorCode::EYamlParse, DiagnosticCategory::LocalInput),
         AppError::Authentication(_) => (
+            ErrorCode::EAuthentication,
+            DiagnosticCategory::Authentication,
+        ),
+        AppError::AuthLayer(error) if error.is_connectivity() => {
+            (ErrorCode::EConnectivity, DiagnosticCategory::Connectivity)
+        }
+        AppError::AuthLayer(_) => (
             ErrorCode::EAuthentication,
             DiagnosticCategory::Authentication,
         ),
@@ -600,6 +810,18 @@ pub fn diagnostic_from_app_error(error: &crate::error::AppError) -> DiagnosticIn
             DiagnosticCategory::Authorization,
         ),
         AppError::Connectivity(_) => (ErrorCode::EConnectivity, DiagnosticCategory::Connectivity),
+        AppError::TransportLayer(error) if error.is_write_uncertain() => (
+            ErrorCode::EWriteUncertain,
+            DiagnosticCategory::Reconciliation,
+        ),
+        AppError::TransportLayer(error) if error.is_compatibility() => (
+            ErrorCode::EApiIncompatible,
+            DiagnosticCategory::Compatibility,
+        ),
+        AppError::TransportLayer(error) if error.is_internal() => {
+            (ErrorCode::EInternal, DiagnosticCategory::Internal)
+        }
+        AppError::TransportLayer(_) => (ErrorCode::EConnectivity, DiagnosticCategory::Connectivity),
         AppError::ApiIncompatible(_) => (
             ErrorCode::EApiIncompatible,
             DiagnosticCategory::Compatibility,
@@ -644,6 +866,21 @@ pub fn diagnostic_from_app_error(error: &crate::error::AppError) -> DiagnosticIn
             ErrorCode::EEntityNotExportable,
             DiagnosticCategory::Reconciliation,
         ),
+        AppError::SaveLayer(error) if error.is_output_exists() => {
+            (ErrorCode::EOutputExists, DiagnosticCategory::LocalInput)
+        }
+        AppError::SaveLayer(error) if error.is_output_path() => {
+            (ErrorCode::EOutputPath, DiagnosticCategory::LocalInput)
+        }
+        AppError::SaveLayer(error) if error.is_output_write() => {
+            (ErrorCode::EOutputWrite, DiagnosticCategory::LocalInput)
+        }
+        AppError::SaveLayer(error) if error.is_compatibility() => (
+            ErrorCode::EApiIncompatible,
+            DiagnosticCategory::Compatibility,
+        ),
+        AppError::SaveLayer(_) => (ErrorCode::EInternal, DiagnosticCategory::Internal),
+        AppError::ApplicationLayer(_) => (ErrorCode::EInternal, DiagnosticCategory::Internal),
         AppError::WorkflowAlreadyMarked => (
             ErrorCode::EWorkflowAlreadyMarked,
             DiagnosticCategory::Reconciliation,
@@ -739,12 +976,13 @@ mod tests {
         let warn = WarningInput {
             warning_code: WarningCode::WSuspectedPlaintextSecret,
             category: WarningCategory::SecretLikeField,
-            source: WarningSource {
-                file: "decl.yaml".into(),
-                line: Some(5),
-                column: Some(1),
-                field_path: "spec.apiKey".into(),
-            },
+            source: WarningSource::try_new(
+                "decl.yaml".into(),
+                Some(5),
+                Some(1),
+                "spec.apiKey".into(),
+            )
+            .unwrap(),
         };
         let mut r = Renderer::new(Vec::<u8>::new(), Vec::<u8>::new(), OutputMode::Text);
         r.emit_warning(&warn).unwrap();
@@ -812,6 +1050,43 @@ mod tests {
         .unwrap();
         let out = String::from_utf8(r.stdout).unwrap();
         assert_eq!(out.trim_end_matches('\n'), "valid Assistant p/s");
+    }
+
+    #[test]
+    fn saved_workflow_text_marks_required_adoption() {
+        let mut renderer = Renderer::new(Vec::<u8>::new(), Vec::<u8>::new(), OutputMode::Text);
+        renderer
+            .emit_outcome_with_adoption(
+                Action::Saved,
+                EntityKind::Workflow,
+                "project",
+                &EntityKey::Slug("flow".into()),
+                true,
+            )
+            .unwrap();
+
+        assert_eq!(
+            String::from_utf8(renderer.stdout).unwrap(),
+            "saved Workflow project/flow (adoption required on apply)\n"
+        );
+    }
+
+    #[test]
+    fn saved_workflow_json_marks_required_adoption() {
+        let mut renderer = Renderer::new(Vec::<u8>::new(), Vec::<u8>::new(), OutputMode::Json);
+        renderer
+            .emit_outcome_with_adoption(
+                Action::Saved,
+                EntityKind::Workflow,
+                "project",
+                &EntityKey::Slug("flow".into()),
+                true,
+            )
+            .unwrap();
+
+        let value: serde_json::Value = serde_json::from_slice(renderer.stdout.as_slice()).unwrap();
+        assert_eq!(value["adoptionRequired"], true);
+        assert_eq!(value.as_object().unwrap().len(), 5);
     }
 
     // --- F-007: exactly one physical line per record ---
@@ -934,12 +1209,15 @@ mod tests {
             error_code: ErrorCode::ESchema,
             category: DiagnosticCategory::LocalInput,
             exit_code: 2,
-            source: Some(SourceLocation {
-                file: "decl.yaml".into(),
-                line: Some(10),
-                column: Some(3),
-                field_path: Some("spec.slug".into()),
-            }),
+            source: Some(
+                SourceLocation::try_new(
+                    "decl.yaml".into(),
+                    Some(10),
+                    Some(3),
+                    Some("spec.slug".into()),
+                )
+                .unwrap(),
+            ),
             http: None,
             request_id: None,
             server_correlation_id: None,
@@ -999,12 +1277,13 @@ mod tests {
         let warn = WarningInput {
             warning_code: WarningCode::WSuspectedPlaintextSecret,
             category: WarningCategory::SecretLikeField,
-            source: WarningSource {
-                file: "decl.yaml".into(),
-                line: Some(5),
-                column: Some(1),
-                field_path: "spec.apiKey".into(),
-            },
+            source: WarningSource::try_new(
+                "decl.yaml".into(),
+                Some(5),
+                Some(1),
+                "spec.apiKey".into(),
+            )
+            .unwrap(),
         };
         let mut r = Renderer::new(Vec::<u8>::new(), Vec::<u8>::new(), OutputMode::Json);
         r.emit_warning(&warn).unwrap();

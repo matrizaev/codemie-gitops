@@ -6,7 +6,7 @@
 /// Keycloak token endpoint only.
 ///
 /// Security invariants (ADR-011 §4, SEC-001/002/003/005):
-/// - TLS via rustls: no OpenSSL runtime dependency; musl-compatible.
+/// - TLS via rustls with no OpenSSL runtime dependency.
 /// - All redirects disabled (`redirect::Policy::none()`; preferred per ADR-011 §4).
 /// - Bearer token sent only in the `Authorization` header; never in URL or logs.
 /// - Per-request timeout: 60 s (SEC-003, http-adapter.md §2.4).
@@ -17,12 +17,63 @@
 /// - No credential value appears in tracing events or error messages (SEC-001/005).
 use std::{sync::OnceLock, time::Duration};
 
+use secrecy::{ExposeSecret, SecretString};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::adapters::{ModificationMethod, PreparedRequest, PreparedWrite, PreparedWriteResponse};
 use crate::config::ValidatedUrl;
 use crate::error::AppError;
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum TransportError {
+    #[error("failed to construct the HTTP client")]
+    ClientBuild(#[source] reqwest::Error),
+    #[error("read request could not reach the server")]
+    ReadDispatch(#[source] reqwest::Error),
+    #[error("modifying request dispatch has an uncertain result")]
+    MutationDispatch(#[source] reqwest::Error),
+    #[error("response body could not be read")]
+    ResponseBody(#[source] reqwest::Error),
+    #[error("response is not valid strict JSON")]
+    ResponseJson(#[source] serde_json::Error),
+    #[error("response JSON does not match the operation DTO")]
+    ResponseShape(#[source] serde_json::Error),
+    #[error("API route is invalid")]
+    InvalidRoute,
+}
+
+#[derive(Debug, Clone)]
+struct ApiRoute(String);
+
+impl TryFrom<&str> for ApiRoute {
+    type Error = TransportError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        if !value.starts_with('/')
+            || value.starts_with("//")
+            || value.contains('#')
+            || value.chars().any(char::is_control)
+        {
+            return Err(TransportError::InvalidRoute);
+        }
+        Ok(Self(value.to_owned()))
+    }
+}
+
+impl TransportError {
+    pub(crate) fn is_write_uncertain(&self) -> bool {
+        matches!(self, Self::MutationDispatch(_))
+    }
+
+    pub(crate) fn is_compatibility(&self) -> bool {
+        matches!(self, Self::ResponseJson(_) | Self::ResponseShape(_))
+    }
+
+    pub(crate) fn is_internal(&self) -> bool {
+        matches!(self, Self::ClientBuild(_) | Self::InvalidRoute)
+    }
+}
 
 static RUSTLS_PROVIDER: OnceLock<()> = OnceLock::new();
 
@@ -120,9 +171,8 @@ pub struct ApiClient {
     /// Reqwest client shared across all requests on this instance.
     client: reqwest::Client,
     /// Bearer token. Never logged.
-    token: String,
-    /// Base URL bound at construction; methods accept per-call URL overrides.
-    #[allow(dead_code)]
+    token: SecretString,
+    /// Base URL bound at construction.
     base_url: ValidatedUrl,
 }
 
@@ -132,7 +182,7 @@ impl ApiClient {
     /// Builds the reqwest client once; all requests reuse it. `use_rustls_tls()`
     /// ensures no OpenSSL runtime dependency. `redirect::Policy::none()` disables
     /// all redirects (preferred per ADR-011 §4).
-    pub fn new(base_url: ValidatedUrl, token: String) -> Result<Self, AppError> {
+    pub fn new(base_url: ValidatedUrl, token: SecretString) -> Result<Self, AppError> {
         ensure_rustls_provider();
         let client = reqwest::Client::builder()
             .use_rustls_tls()
@@ -142,7 +192,7 @@ impl ApiClient {
             .build()
             // reqwest error intentionally discarded: it contains no actionable info
             // and we do not leak internal TLS or networking details (SEC-005).
-            .map_err(|_e| AppError::Internal("failed to build API client".into()))?;
+            .map_err(TransportError::ClientBuild)?;
         Ok(ApiClient {
             client,
             token,
@@ -156,36 +206,33 @@ impl ApiClient {
     /// non-ASCII characters that make the header value invalid, a fixed
     /// placeholder is used; the server will return 401 → `Authentication`.
     fn auth_header_value(&self) -> reqwest::header::HeaderValue {
-        reqwest::header::HeaderValue::from_str(&format!("Bearer {}", self.token)).unwrap_or_else(
-            |_e| {
+        reqwest::header::HeaderValue::from_str(&format!("Bearer {}", self.token.expose_secret()))
+            .unwrap_or_else(|_e| {
                 // Non-ASCII token — fall back to a syntactically safe placeholder.
                 reqwest::header::HeaderValue::from_static("Bearer invalid")
-            },
-        )
+            })
     }
 
     /// Construct the full request URL from a base `ValidatedUrl` and a path.
     ///
     /// Strips a trailing `/` from the base and a leading `/` from the path to
     /// prevent double-slash collisions. Callers supply `/v1/…`-style paths.
-    fn join_url(url: &ValidatedUrl, path: &str) -> String {
-        let base = url.as_str().trim_end_matches('/');
-        let rest = path.trim_start_matches('/');
-        format!("{base}/{rest}")
+    fn join_url(url: &ValidatedUrl, route: &ApiRoute) -> url::Url {
+        url.join_api_path(&route.0)
     }
 
     /// Map a reqwest send error to `AppError::Connectivity`.
     ///
     /// The reqwest error is discarded to prevent leaking internal URL, IP
     /// address, or TLS handshake details into the error chain (SEC-005).
-    fn map_send_error(_e: reqwest::Error) -> AppError {
-        AppError::Connectivity("API endpoint unreachable".into())
+    fn map_send_error(error: reqwest::Error) -> AppError {
+        TransportError::ReadDispatch(error).into()
     }
 
     /// Map a modifying-request send failure. Once dispatch has started the
     /// client cannot prove that the server did not commit the request.
-    fn map_modifying_send_error(_e: reqwest::Error) -> AppError {
-        AppError::WriteUncertain("modifying request may have reached the server".into())
+    fn map_modifying_send_error(error: reqwest::Error) -> AppError {
+        TransportError::MutationDispatch(error).into()
     }
 
     /// Classify a non-2xx status into an `AppError`.
@@ -231,10 +278,7 @@ impl ApiClient {
                 "response body exceeds 8 MiB limit".into(),
             ));
         }
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|_e| AppError::Connectivity("failed to read response body".into()))?;
+        let bytes = resp.bytes().await.map_err(TransportError::ResponseBody)?;
         if bytes.len() > RESPONSE_BODY_LIMIT {
             return Err(AppError::ApiIncompatible(
                 "response body exceeds 8 MiB limit".into(),
@@ -248,17 +292,13 @@ impl ApiClient {
     /// Parse failure → `ApiIncompatible`. Depth > 64 → `ApiIncompatible`.
     /// Internal serde_json error messages are discarded (SEC-005).
     fn deserialize_json<T: DeserializeOwned>(body: &[u8]) -> Result<T, AppError> {
-        let value: DuplicateCheckedValue = serde_json::from_slice(body)
-            .map_err(|_e| AppError::ApiIncompatible("response is not valid JSON".into()))?;
-        let value = value.0;
+        let value = crate::strict_json::from_slice(body).map_err(TransportError::ResponseJson)?;
         if json_max_depth(&value, 0) > JSON_MAX_DEPTH {
             return Err(AppError::ApiIncompatible(
                 "response JSON nesting exceeds 64 levels".into(),
             ));
         }
-        serde_json::from_value(value).map_err(|_e| {
-            AppError::ApiIncompatible("response JSON does not match expected shape".into())
-        })
+        serde_json::from_value(value).map_err(|source| TransportError::ResponseShape(source).into())
     }
 
     /// Send an authenticated GET request with up to `GET_MAX_RETRIES` attempts.
@@ -266,12 +306,9 @@ impl ApiClient {
     /// Retries on: send failure (connection error), 429, and 5xx. Each retry
     /// is preceded by a `attempt × RETRY_BASE_JITTER_MS` sleep. 401 and 403
     /// are not retried. POST / PUT / DELETE use separate non-retrying methods.
-    pub async fn get<T: DeserializeOwned>(
-        &self,
-        url: &ValidatedUrl,
-        path: &str,
-    ) -> Result<T, AppError> {
-        let full_url = Self::join_url(url, path);
+    pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, AppError> {
+        let route = ApiRoute::try_from(path)?;
+        let full_url = Self::join_url(&self.base_url, &route);
         let mut last_err =
             AppError::Connectivity("GET request failed after all retry attempts".into());
 
@@ -283,7 +320,7 @@ impl ApiClient {
 
             match self
                 .client
-                .get(&full_url)
+                .get(full_url.clone())
                 .header(reqwest::header::AUTHORIZATION, self.auth_header_value())
                 .send()
                 .await
@@ -317,15 +354,16 @@ impl ApiClient {
     ///
     /// POST may commit server-side state; a blind retry could cause duplicate
     /// writes (ADR-011). The request body is serialized as JSON.
-    async fn post<B, T>(&self, url: &ValidatedUrl, path: &str, body: &B) -> Result<T, AppError>
+    async fn post<B, T>(&self, path: &str, body: &B) -> Result<T, AppError>
     where
         B: Serialize,
         T: DeserializeOwned,
     {
-        let full_url = Self::join_url(url, path);
+        let route = ApiRoute::try_from(path)?;
+        let full_url = Self::join_url(&self.base_url, &route);
         let resp = self
             .client
-            .post(&full_url)
+            .post(full_url)
             .header(reqwest::header::AUTHORIZATION, self.auth_header_value())
             .json(body)
             .send()
@@ -344,15 +382,16 @@ impl ApiClient {
     ///
     /// PUT may commit server-side state; a blind retry could cause duplicate
     /// writes. The request body is serialized as JSON.
-    async fn put<B, T>(&self, url: &ValidatedUrl, path: &str, body: &B) -> Result<T, AppError>
+    async fn put<B, T>(&self, path: &str, body: &B) -> Result<T, AppError>
     where
         B: Serialize,
         T: DeserializeOwned,
     {
-        let full_url = Self::join_url(url, path);
+        let route = ApiRoute::try_from(path)?;
+        let full_url = Self::join_url(&self.base_url, &route);
         let resp = self
             .client
-            .put(&full_url)
+            .put(full_url)
             .header(reqwest::header::AUTHORIZATION, self.auth_header_value())
             .json(body)
             .send()
@@ -372,11 +411,12 @@ impl ApiClient {
     /// The response body is drained (bounded) to release the underlying
     /// TCP connection cleanly, even when the body is not otherwise consumed.
     #[cfg(test)]
-    async fn delete(&self, url: &ValidatedUrl, path: &str) -> Result<(), AppError> {
-        let full_url = Self::join_url(url, path);
+    async fn delete(&self, path: &str) -> Result<(), AppError> {
+        let route = ApiRoute::try_from(path)?;
+        let full_url = Self::join_url(&self.base_url, &route);
         let resp = self
             .client
-            .delete(&full_url)
+            .delete(full_url)
             .header(reqwest::header::AUTHORIZATION, self.auth_header_value())
             .send()
             .await
@@ -397,10 +437,10 @@ impl ApiClient {
     /// Used by adapters to distinguish "not found" (Create path) from errors.
     pub async fn get_optional<T: serde::de::DeserializeOwned>(
         &self,
-        url: &ValidatedUrl,
         path: &str,
     ) -> Result<Option<T>, AppError> {
-        let full_url = Self::join_url(url, path);
+        let route = ApiRoute::try_from(path)?;
+        let full_url = Self::join_url(&self.base_url, &route);
         let mut last_err =
             AppError::Connectivity("GET request failed after all retry attempts".into());
 
@@ -412,7 +452,7 @@ impl ApiClient {
 
             match self
                 .client
-                .get(&full_url)
+                .get(full_url.clone())
                 .header(reqwest::header::AUTHORIZATION, self.auth_header_value())
                 .send()
                 .await
@@ -445,20 +485,16 @@ impl ApiClient {
 
     /// POST that returns `Ok(None)` on authoritative Datasource 409 Conflict
     /// and `Ok(Some(T))` on success. No collision follow-up is performed.
-    async fn post_or_conflict<B, T>(
-        &self,
-        url: &ValidatedUrl,
-        path: &str,
-        body: &B,
-    ) -> Result<Option<T>, AppError>
+    async fn post_or_conflict<B, T>(&self, path: &str, body: &B) -> Result<Option<T>, AppError>
     where
         B: serde::Serialize,
         T: serde::de::DeserializeOwned,
     {
-        let full_url = Self::join_url(url, path);
+        let route = ApiRoute::try_from(path)?;
+        let full_url = Self::join_url(&self.base_url, &route);
         let resp = self
             .client
-            .post(&full_url)
+            .post(full_url)
             .header(reqwest::header::AUTHORIZATION, self.auth_header_value())
             .json(body)
             .send()
@@ -484,16 +520,15 @@ impl ApiClient {
     /// `file_parts` become repeated `files` multipart parts. Not retried.
     async fn post_multipart(
         &self,
-        url: &ValidatedUrl,
         path: &str,
         query_params: &[(String, String)],
         file_parts: Vec<(String, Vec<u8>)>,
     ) -> Result<Option<serde_json::Value>, AppError> {
-        let full_url = Self::join_url_with_query(url, path, query_params);
+        let full_url = Self::join_url_with_query(&self.base_url, path, query_params)?;
         let form = Self::build_multipart_form(file_parts)?;
         let resp = self
             .client
-            .post(&full_url)
+            .post(full_url)
             .header(reqwest::header::AUTHORIZATION, self.auth_header_value())
             .multipart(form)
             .send()
@@ -515,16 +550,15 @@ impl ApiClient {
     /// PUT `multipart/form-data` with scalar query parameters. Not retried.
     async fn put_multipart(
         &self,
-        url: &ValidatedUrl,
         path: &str,
         query_params: &[(String, String)],
         file_parts: Vec<(String, Vec<u8>)>,
     ) -> Result<serde_json::Value, AppError> {
-        let full_url = Self::join_url_with_query(url, path, query_params);
+        let full_url = Self::join_url_with_query(&self.base_url, path, query_params)?;
         let form = Self::build_multipart_form(file_parts)?;
         let resp = self
             .client
-            .put(&full_url)
+            .put(full_url)
             .header(reqwest::header::AUTHORIZATION, self.auth_header_value())
             .multipart(form)
             .send()
@@ -549,7 +583,6 @@ impl ApiClient {
         prepared: PreparedWrite<'_>,
     ) -> Result<PreparedWriteResponse, AppError> {
         let (client, request) = prepared.into_request()?;
-        let url = &client.base_url;
         match request {
             PreparedRequest::Json {
                 method: ModificationMethod::Post,
@@ -557,10 +590,10 @@ impl ApiClient {
                 body,
                 conflict_is_resolution_signal: true,
             } => client
-                .post_or_conflict::<_, serde_json::Value>(url, &path, &body)
+                .post_or_conflict::<_, serde_json::Value>(&path, &body)
                 .await
                 .map(|response| match response {
-                    Some(value) => PreparedWriteResponse::Success(value),
+                    Some(value) => PreparedWriteResponse::Success(value.into()),
                     None => PreparedWriteResponse::Conflict,
                 }),
             PreparedRequest::Json {
@@ -569,28 +602,28 @@ impl ApiClient {
                 body,
                 conflict_is_resolution_signal: false,
             } => client
-                .post::<_, serde_json::Value>(url, &path, &body)
+                .post::<_, serde_json::Value>(&path, &body)
                 .await
-                .map(PreparedWriteResponse::Success),
+                .map(|value| PreparedWriteResponse::Success(value.into())),
             PreparedRequest::Json {
                 method: ModificationMethod::Put,
                 path,
                 body,
                 conflict_is_resolution_signal: _,
             } => client
-                .put::<_, serde_json::Value>(url, &path, &body)
+                .put::<_, serde_json::Value>(&path, &body)
                 .await
-                .map(PreparedWriteResponse::Success),
+                .map(|value| PreparedWriteResponse::Success(value.into())),
             PreparedRequest::Multipart {
                 method: ModificationMethod::Post,
                 path,
                 query_params,
                 file_parts,
             } => client
-                .post_multipart(url, &path, &query_params, file_parts)
+                .post_multipart(&path, &query_params, file_parts)
                 .await
                 .map(|response| match response {
-                    Some(value) => PreparedWriteResponse::Success(value),
+                    Some(value) => PreparedWriteResponse::Success(value.into()),
                     None => PreparedWriteResponse::Conflict,
                 }),
             PreparedRequest::Multipart {
@@ -599,9 +632,9 @@ impl ApiClient {
                 query_params,
                 file_parts,
             } => client
-                .put_multipart(url, &path, &query_params, file_parts)
+                .put_multipart(&path, &query_params, file_parts)
                 .await
-                .map(PreparedWriteResponse::Success),
+                .map(|value| PreparedWriteResponse::Success(value.into())),
         }
     }
 
@@ -610,25 +643,16 @@ impl ApiClient {
         url: &ValidatedUrl,
         path: &str,
         query_params: &[(String, String)],
-    ) -> String {
-        let mut full = Self::join_url(url, path);
+    ) -> Result<url::Url, AppError> {
+        let route = ApiRoute::try_from(path)?;
+        let mut full = Self::join_url(url, &route);
         if !query_params.is_empty() {
-            // Check if there's already a `?` in the path (e.g. from pre-built query strings).
-            let sep = if full.contains('?') { '&' } else { '?' };
-            let mut first = true;
-            for (k, v) in query_params {
-                if first {
-                    full.push(sep);
-                    first = false;
-                } else {
-                    full.push('&');
-                }
-                full.push_str(&encode_query_value(k));
-                full.push('=');
-                full.push_str(&encode_query_value(v));
+            let mut pairs = full.query_pairs_mut();
+            for (key, value) in query_params {
+                pairs.append_pair(key, value);
             }
         }
-        full
+        Ok(full)
     }
 
     /// Build a `reqwest::multipart::Form` from `(filename, bytes)` pairs.
@@ -643,73 +667,6 @@ impl ApiClient {
             form = form.part("files", part);
         }
         Ok(form)
-    }
-}
-
-struct DuplicateCheckedValue(serde_json::Value);
-
-impl<'de> serde::Deserialize<'de> for DuplicateCheckedValue {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        struct Visitor;
-        impl<'de> serde::de::Visitor<'de> for Visitor {
-            type Value = DuplicateCheckedValue;
-            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str("a JSON value without duplicate object keys")
-            }
-            fn visit_bool<E: serde::de::Error>(self, value: bool) -> Result<Self::Value, E> {
-                Ok(DuplicateCheckedValue(value.into()))
-            }
-            fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<Self::Value, E> {
-                Ok(DuplicateCheckedValue(value.into()))
-            }
-            fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<Self::Value, E> {
-                Ok(DuplicateCheckedValue(value.into()))
-            }
-            fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<Self::Value, E> {
-                serde_json::Number::from_f64(value)
-                    .map(serde_json::Value::Number)
-                    .map(DuplicateCheckedValue)
-                    .ok_or_else(|| E::custom("invalid JSON number"))
-            }
-            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
-                Ok(DuplicateCheckedValue(value.into()))
-            }
-            fn visit_string<E: serde::de::Error>(self, value: String) -> Result<Self::Value, E> {
-                Ok(DuplicateCheckedValue(value.into()))
-            }
-            fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
-                Ok(DuplicateCheckedValue(serde_json::Value::Null))
-            }
-            fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
-                self.visit_none()
-            }
-            fn visit_seq<A: serde::de::SeqAccess<'de>>(
-                self,
-                mut sequence: A,
-            ) -> Result<Self::Value, A::Error> {
-                let mut values = Vec::new();
-                while let Some(value) = sequence.next_element::<DuplicateCheckedValue>()? {
-                    values.push(value.0);
-                }
-                Ok(DuplicateCheckedValue(serde_json::Value::Array(values)))
-            }
-            fn visit_map<A: serde::de::MapAccess<'de>>(
-                self,
-                mut map: A,
-            ) -> Result<Self::Value, A::Error> {
-                let mut values = serde_json::Map::new();
-                while let Some((key, value)) = map.next_entry::<String, DuplicateCheckedValue>()? {
-                    if values.insert(key, value.0).is_some() {
-                        return Err(serde::de::Error::custom("duplicate JSON object key"));
-                    }
-                }
-                Ok(DuplicateCheckedValue(serde_json::Value::Object(values)))
-            }
-        }
-        deserializer.deserialize_any(Visitor)
     }
 }
 
@@ -773,10 +730,9 @@ pub fn encode_query_value(value: &str) -> String {
 /// after the check and are never forwarded to logs or output (SEC-005).
 pub async fn preflight_visibility(
     client: &ApiClient,
-    url: &ValidatedUrl,
     effective_project: &str,
 ) -> Result<ExactProjectVisibility, AppError> {
-    let user: UserResponse = client.get(url, "/v1/user").await?;
+    let user: UserResponse = client.get("/v1/user").await?;
 
     if user.user_id.is_empty() || user.projects.iter().any(|project| project.name.is_empty()) {
         return Err(AppError::ApiIncompatible(
@@ -843,7 +799,7 @@ mod tests {
     fn join_url_appends_path() {
         let url = test_url("https://api.example.com");
         assert_eq!(
-            ApiClient::join_url(&url, "/v1/user"),
+            ApiClient::join_url(&url, &ApiRoute::try_from("/v1/user").unwrap()).as_str(),
             "https://api.example.com/v1/user"
         );
     }
@@ -852,18 +808,14 @@ mod tests {
     fn join_url_strips_trailing_slash_from_base() {
         let url = test_url("https://api.example.com/");
         assert_eq!(
-            ApiClient::join_url(&url, "/v1/user"),
+            ApiClient::join_url(&url, &ApiRoute::try_from("/v1/user").unwrap()).as_str(),
             "https://api.example.com/v1/user"
         );
     }
 
     #[test]
-    fn join_url_accepts_path_without_leading_slash() {
-        let url = test_url("https://api.example.com");
-        assert_eq!(
-            ApiClient::join_url(&url, "v1/user"),
-            "https://api.example.com/v1/user"
-        );
+    fn api_route_rejects_path_without_leading_slash() {
+        assert!(ApiRoute::try_from("v1/user").is_err());
     }
 
     // -----------------------------------------------------------------------
@@ -933,9 +885,9 @@ mod tests {
             name: String,
         }
 
-        let url = test_url(&server.url());
+        let _url = test_url(&server.url());
         let client = test_client(&server.url());
-        let item: Item = client.get(&url, "/v1/items").await.unwrap();
+        let item: Item = client.get("/v1/items").await.unwrap();
         assert_eq!(item.id, 42);
         assert_eq!(item.name, "widget");
         _mock.assert_async().await;
@@ -973,12 +925,12 @@ mod tests {
             name: String,
         }
 
-        let url = test_url(&server.url());
+        let _url = test_url(&server.url());
         let client = test_client(&server.url());
         let req = CreateItem {
             name: "new-widget".into(),
         };
-        let item: Item = client.post(&url, "/v1/items", &req).await.unwrap();
+        let item: Item = client.post("/v1/items", &req).await.unwrap();
         assert_eq!(item.id, 99);
         assert_eq!(item.name, "new-widget");
         _mock.assert_async().await;
@@ -997,10 +949,10 @@ mod tests {
             .create_async()
             .await;
 
-        let url = test_url(&server.url());
+        let _url = test_url(&server.url());
         let client = test_client(&server.url());
         let err = client
-            .get::<serde_json::Value>(&url, "/v1/resource")
+            .get::<serde_json::Value>("/v1/resource")
             .await
             .unwrap_err();
         assert!(
@@ -1024,10 +976,10 @@ mod tests {
             .create_async()
             .await;
 
-        let url = test_url(&server.url());
+        let _url = test_url(&server.url());
         let client = test_client(&server.url());
         let err = client
-            .get::<serde_json::Value>(&url, "/v1/resource")
+            .get::<serde_json::Value>("/v1/resource")
             .await
             .unwrap_err();
         assert!(
@@ -1058,10 +1010,10 @@ mod tests {
         #[derive(Serialize)]
         struct Empty {}
 
-        let url = test_url(&server.url());
+        let _url = test_url(&server.url());
         let client = test_client(&server.url());
         let err = client
-            .post::<_, serde_json::Value>(&url, "/v1/resource", &Empty {})
+            .post::<_, serde_json::Value>("/v1/resource", &Empty {})
             .await
             .unwrap_err();
         assert!(
@@ -1089,10 +1041,10 @@ mod tests {
         #[derive(Serialize)]
         struct Empty {}
 
-        let url = test_url(&server.url());
+        let _url = test_url(&server.url());
         let client = test_client(&server.url());
         let err = client
-            .post::<_, serde_json::Value>(&url, "/v1/resource", &Empty {})
+            .post::<_, serde_json::Value>("/v1/resource", &Empty {})
             .await
             .unwrap_err();
         assert!(
@@ -1115,10 +1067,10 @@ mod tests {
             .create_async()
             .await;
 
-        let url = test_url(&server.url());
+        let _url = test_url(&server.url());
         let client = test_client(&server.url());
         let err = client
-            .get::<serde_json::Value>(&url, "/v1/resource")
+            .get::<serde_json::Value>("/v1/resource")
             .await
             .unwrap_err();
         assert!(
@@ -1142,15 +1094,15 @@ mod tests {
             // listener dropped here; port is freed
         };
         let base = format!("http://127.0.0.1:{port}");
-        let url = test_url(&base);
+        let _url = test_url(&base);
         let client = test_client(&base);
 
         let err = client
-            .get::<serde_json::Value>(&url, "/v1/resource")
+            .get::<serde_json::Value>("/v1/resource")
             .await
             .unwrap_err();
         assert!(
-            matches!(err, AppError::Connectivity(_)),
+            err.is_connectivity(),
             "connection refused must produce AppError::Connectivity, got {err:?}"
         );
         assert_eq!(err.exit_code(), 2);
@@ -1171,9 +1123,9 @@ mod tests {
             .create_async()
             .await;
 
-        let url = test_url(&server.url());
+        let _url = test_url(&server.url());
         let client = test_client(&server.url());
-        preflight_visibility(&client, &url, "my-proj")
+        preflight_visibility(&client, "my-proj")
             .await
             .expect("membership must pass regardless of admin role");
         _mock.assert_async().await;
@@ -1196,9 +1148,9 @@ mod tests {
             .create_async()
             .await;
 
-        let url = test_url(&server.url());
+        let _url = test_url(&server.url());
         let client = test_client(&server.url());
-        preflight_visibility(&client, &url, "my-proj")
+        preflight_visibility(&client, "my-proj")
             .await
             .expect("membership must pass regardless of maintainer role");
         _mock.assert_async().await;
@@ -1221,9 +1173,9 @@ mod tests {
             .create_async()
             .await;
 
-        let url = test_url(&server.url());
+        let _url = test_url(&server.url());
         let client = test_client(&server.url());
-        preflight_visibility(&client, &url, "my-proj")
+        preflight_visibility(&client, "my-proj")
             .await
             .expect("project-admin must pass preflight");
         _mock.assert_async().await;
@@ -1242,9 +1194,9 @@ mod tests {
             .create_async()
             .await;
 
-        let url = test_url(&server.url());
+        let _url = test_url(&server.url());
         let client = test_client(&server.url());
-        let error = preflight_visibility(&client, &url, "my-project")
+        let error = preflight_visibility(&client, "my-project")
             .await
             .expect_err("another project's admin role is not sufficient evidence");
         assert!(matches!(error, AppError::VisibilityUnproven(_)));
@@ -1272,12 +1224,12 @@ mod tests {
                 .with_body(response)
                 .create_async()
                 .await;
-            let url = test_url(&server.url());
+            let _url = test_url(&server.url());
             let client = test_client(&server.url());
-            let error = preflight_visibility(&client, &url, "my-project")
+            let error = preflight_visibility(&client, "my-project")
                 .await
                 .expect_err("invalid consumed field must fail compatibility");
-            assert!(matches!(error, AppError::ApiIncompatible(_)));
+            assert!(error.is_api_incompatible());
             visibility.assert_async().await;
         }
     }
@@ -1294,9 +1246,9 @@ mod tests {
             )
             .create_async()
             .await;
-        let url = test_url(&server.url());
+        let _url = test_url(&server.url());
         let client = test_client(&server.url());
-        preflight_visibility(&client, &url, "my-project")
+        preflight_visibility(&client, "my-project")
             .await
             .expect("additive unconsumed fields must remain compatible");
         visibility.assert_async().await;
@@ -1317,11 +1269,9 @@ mod tests {
             .create_async()
             .await;
 
-        let url = test_url(&server.url());
+        let _url = test_url(&server.url());
         let client = test_client(&server.url());
-        let err = preflight_visibility(&client, &url, "proj")
-            .await
-            .unwrap_err();
+        let err = preflight_visibility(&client, "proj").await.unwrap_err();
         assert!(
             matches!(err, AppError::VisibilityUnproven(_)),
             "no qualifying role must produce AppError::VisibilityUnproven, got {err:?}"
@@ -1347,11 +1297,9 @@ mod tests {
             .create_async()
             .await;
 
-        let url = test_url(&server.url());
+        let _url = test_url(&server.url());
         let client = test_client(&server.url());
-        let err = preflight_visibility(&client, &url, "proj")
-            .await
-            .unwrap_err();
+        let err = preflight_visibility(&client, "proj").await.unwrap_err();
         assert!(
             matches!(err, AppError::VisibilityUnproven(_)),
             "empty projects + no global roles must produce VisibilityUnproven, got {err:?}"
@@ -1374,13 +1322,11 @@ mod tests {
             .create_async()
             .await;
 
-        let url = test_url(&server.url());
+        let _url = test_url(&server.url());
         let client = test_client(&server.url());
-        let err = preflight_visibility(&client, &url, "proj")
-            .await
-            .unwrap_err();
+        let err = preflight_visibility(&client, "proj").await.unwrap_err();
         assert!(
-            matches!(err, AppError::ApiIncompatible(_)),
+            err.is_api_incompatible(),
             "missing role fields must fail compatibility, got {err:?}"
         );
         _mock.assert_async().await;
@@ -1399,10 +1345,10 @@ mod tests {
             .create_async()
             .await;
 
-        let url = test_url(&server.url());
+        let _url = test_url(&server.url());
         let client = test_client(&server.url());
         client
-            .delete(&url, "/v1/resource/1")
+            .delete("/v1/resource/1")
             .await
             .expect("204 DELETE must return Ok");
         _mock.assert_async().await;
@@ -1422,9 +1368,9 @@ mod tests {
             .create_async()
             .await;
 
-        let url = test_url(&server.url());
+        let _url = test_url(&server.url());
         let client = test_client(&server.url());
-        let err = client.delete(&url, "/v1/resource/1").await.unwrap_err();
+        let err = client.delete("/v1/resource/1").await.unwrap_err();
         assert!(
             matches!(err, AppError::Authentication(_)),
             "3xx on DELETE must produce AppError::Authentication, got {err:?}"
@@ -1461,12 +1407,12 @@ mod tests {
             status: String,
         }
 
-        let url = test_url(&server.url());
+        let _url = test_url(&server.url());
         let client = test_client(&server.url());
         let req = Update {
             status: "updated".into(),
         };
-        let res: Resource = client.put(&url, "/v1/resource/1", &req).await.unwrap();
+        let res: Resource = client.put("/v1/resource/1", &req).await.unwrap();
         assert_eq!(res.id, 1);
         assert_eq!(res.status, "updated");
         _mock.assert_async().await;
@@ -1478,11 +1424,11 @@ mod tests {
         let duplicate = server.mock("GET", "/v1/user").with_status(200).with_body(
             r#"{"user_id":"user-1","user_id":"user-2","is_admin":true,"is_maintainer":false,"projects":[]}"#,
         ).create_async().await;
-        let url = test_url(&server.url());
-        let error = preflight_visibility(&test_client(&server.url()), &url, "project")
+        let _url = test_url(&server.url());
+        let error = preflight_visibility(&test_client(&server.url()), "project")
             .await
             .unwrap_err();
-        assert!(matches!(error, AppError::ApiIncompatible(_)));
+        assert!(error.is_api_incompatible());
         duplicate.assert_async().await;
     }
 }

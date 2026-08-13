@@ -1,0 +1,97 @@
+# Portable controlled-apply example. Remote protected-environment activation
+# and provider mutex configuration are adopter responsibilities.
+name: CodeMie controlled apply
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: Protected target environment (canonical lowercase name)
+        required: true
+        type: environment
+      declaration_path:
+        description: Repository-relative declaration path
+        required: true
+        type: string
+      mode:
+        description: Apply or exercise the environment mutex without a write
+        required: true
+        default: apply
+        type: choice
+        options:
+          - apply
+          - mutex-drill
+      inventory_approved:
+        description: Complete-visibility identity inventory is clean and approved
+        required: true
+        default: false
+        type: boolean
+      writer_freeze_approved:
+        description: UI and other identity writers are frozen for this window
+        required: true
+        default: false
+        type: boolean
+      control_evidence:
+        description: Non-sensitive ticket or change-control reference
+        required: true
+        type: string
+      codemie_gitops_version:
+        description: Released codemie-gitops tag (for example v0.1.0)
+        required: true
+        type: string
+      codemie_gitops_repository:
+        description: GitHub owner/repository containing release binaries
+        required: true
+        default: matrizaev/codemie-gitops
+        type: string
+
+permissions:
+  contents: read
+
+# The target environment is the complete mutex key. queue:max retains waiting
+# applies instead of replacing an older pending run.
+concurrency:
+  group: codemie-gitops-apply-${{ inputs.target_environment }}
+  queue: max
+
+jobs:
+  controlled:
+    name: Serialized ${{ inputs.mode }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    environment:
+      name: ${{ inputs.target_environment }}
+    steps:
+      - name: Exercise mutex without a server write
+        if: ${{ inputs.mode == 'mutex-drill' }}
+        run: sleep 30
+
+      - name: Checkout exact declaration revision
+        if: ${{ inputs.mode == 'apply' }}
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Download released Linux x86-64 binary
+        if: ${{ inputs.mode == 'apply' }}
+        env:
+          RELEASE_REPOSITORY: ${{ inputs.codemie_gitops_repository }}
+          RELEASE_TAG: ${{ inputs.codemie_gitops_version }}
+        run: |
+          set -euo pipefail
+          asset=codemie-gitops-linux-x86_64
+          base="https://github.com/${RELEASE_REPOSITORY}/releases/download/${RELEASE_TAG}"
+          mkdir -p codemie-gitops-bin
+          curl --fail --silent --show-error --location "$base/$asset" --output "codemie-gitops-bin/$asset"
+          curl --fail --silent --show-error --location "$base/SHA256SUMS" --output codemie-gitops-bin/SHA256SUMS
+          cd codemie-gitops-bin
+          grep -E "^[0-9a-f]{64}  ${asset}$" SHA256SUMS | sha256sum --check --strict -
+          mv "$asset" codemie-gitops
+          chmod 0555 codemie-gitops
+
+      - name: Apply one declaration under the environment mutex
+        if: ${{ inputs.mode == 'apply' }}
+        env:
+          CODEMIE_URL: ${{ secrets.CODEMIE_URL }}
+          CODEMIE_TOKEN: ${{ secrets.CODEMIE_TOKEN }}
+          DECLARATION_PATH: ${{ inputs.declaration_path }}
+        run: ./codemie-gitops-bin/codemie-gitops apply --file "$DECLARATION_PATH"

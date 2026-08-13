@@ -5,7 +5,7 @@ CODEMIE_COMPOSE_OVERRIDE := ops/dev/podman-compose.yml
 CODEMIE_COMPOSE_FILES := -f $(CODEMIE_COMPOSE_FILE) -f $(CODEMIE_COMPOSE_OVERRIDE)
 CODEMIE_DEV_DEPENDENCIES := postgres elasticsearch
 
-.PHONY: format lint test o001-check run dev-server
+.PHONY: format lint test run dev-server
 
 format:
 	cargo fmt --all
@@ -15,12 +15,6 @@ lint:
 
 test:
 	cargo test --locked --all-targets
-	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py'
-	PYTHONDONTWRITEBYTECODE=1 python3 scripts/check_o002_examples.py
-
-o001-check:
-	PYTHONDONTWRITEBYTECODE=1 python3 scripts/check_o001_controls.py
-	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_o001_*.py'
 
 run:
 	cargo run -- $(ARGS)

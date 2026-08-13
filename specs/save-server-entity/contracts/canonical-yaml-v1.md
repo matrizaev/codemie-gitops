@@ -103,8 +103,8 @@ A string containing CR, a disallowed control character, or a line whose
 representation would be ambiguous under the indentation rule uses one
 double-quoted scalar with escaped `\n`/`\r` instead of block style.
 
-The generated Skill main sidecar is not passed through this serializer. Its
-bytes follow DR-SAVE-006 exactly and are never newline-normalized.
+Skill main content is serialized inline as `spec.content` under these scalar
+rules. No generated sidecar exists.
 
 ## 7. Round-trip invariant
 

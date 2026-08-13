@@ -165,7 +165,7 @@
     "assistantMetadata": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["slug"],
+      "required": ["project", "slug"],
       "properties": {
         "project": {"$ref": "#/$defs/projectProperty"},
         "slug": {
@@ -249,7 +249,7 @@
     "skillMetadata": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name"],
+      "required": ["project", "name"],
       "properties": {
         "project": {"$ref": "#/$defs/projectProperty"},
         "name": {"type": "string", "minLength": 3, "maxLength": 64, "pattern": "^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$"}
@@ -301,7 +301,7 @@
     "workflowMetadata": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["slug"],
+      "required": ["project", "slug"],
       "properties": {
         "project": {"$ref": "#/$defs/projectProperty"},
         "slug": {
@@ -580,7 +580,7 @@
     "datasourceMetadata": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["repo_name"],
+      "required": ["project", "repo_name"],
       "properties": {
         "project": {"$ref": "#/$defs/projectProperty"},
         "repo_name": {"type": "string", "minLength": 4, "maxLength": 50, "pattern": "^[a-zA-Z0-9][A-Za-z0-9_-]*$"}

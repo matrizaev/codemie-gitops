@@ -3,10 +3,8 @@
 /// Implements the exact command surface from contracts/cli.md §1:
 ///
 /// ```text
-/// codemie-gitops lint  --file <path> [--repo-root <path>]
-///                      [--follow-symlinks] [--output text|json]
-/// codemie-gitops apply --file <path> [--repo-root <path>] [--url <url>]
-///                      [--follow-symlinks]
+/// codemie-gitops lint  --file <path> [--output text|json]
+/// codemie-gitops apply --file <path> [--url <url>]
 ///                      [--adopt-workflow-id <uuid>] [--output text|json]
 /// codemie-gitops login [--url <url>] [--auth-url <url>]
 ///                      [--client-id <id>] [--email <email>]
@@ -18,14 +16,15 @@
 /// - Secret credentials (`CODEMIE_TOKEN`, `CODEMIE_CLIENT_SECRET`,
 ///   `CODEMIE_PASSWORD`) are resolved from environment only at runtime.
 /// - Non-secret selectors (`--client-id`, `--email`) may be supplied as flags.
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-use crate::auth::{Credentials, login, select_auth_mode};
-use crate::config::{ResolveConfigArgs, find_repo_root, resolve_config};
-use crate::coordinator::{self, ApplyCommand};
-use crate::lint::{self, LintCommand};
+use crate::auth::{AuthStrategy, Credentials, RawAuthSelection, login_with_strategy};
+use crate::config::{ResolveConfigArgs, resolve_config};
+use crate::coordinator::{self, ApplyCommand, RawApplyCommand};
+use crate::lint::{self, LintCommand, RawLintCommand};
 use crate::output::OutputMode;
 use crate::save::SaveKind;
 
@@ -51,15 +50,6 @@ pub enum Command {
         #[arg(long, short = 'f')]
         file: PathBuf,
 
-        /// Repository root directory. Defaults to the nearest ancestor with
-        /// a `.git` directory.
-        #[arg(long)]
-        repo_root: Option<PathBuf>,
-
-        /// Follow symbolic links during discovery and sidecar reads.
-        #[arg(long)]
-        follow_symlinks: bool,
-
         /// Output format: `text` (default) or `json`.
         #[arg(long, default_value = "text")]
         output: OutputMode,
@@ -71,21 +61,12 @@ pub enum Command {
         #[arg(long, short = 'f')]
         file: PathBuf,
 
-        /// Repository root directory. Defaults to the nearest ancestor with
-        /// a `.git` directory.
-        #[arg(long)]
-        repo_root: Option<PathBuf>,
-
-        /// Target API URL. Resolved as flag > CODEMIE_URL > config url.
+        /// Target API URL. Resolved as flag > CODEMIE_URL.
         ///
         /// Accepts `https://` unconditionally and `http://` only for loopback
         /// addresses (runtime-enforced per SEC-002).
         #[arg(long, env = "CODEMIE_URL")]
         url: Option<String>,
-
-        /// Follow symbolic links during discovery and sidecar reads.
-        #[arg(long)]
-        follow_symlinks: bool,
 
         /// Adopt an existing Workflow entity by its canonical UUID.
         ///
@@ -114,13 +95,9 @@ pub enum Command {
         #[arg(long, short = 'f')]
         file: PathBuf,
         #[arg(long)]
-        project: Option<String>,
-        #[arg(long)]
-        repo_root: Option<PathBuf>,
+        project: String,
         #[arg(long, env = "CODEMIE_URL")]
         url: Option<String>,
-        #[arg(long)]
-        follow_symlinks: bool,
         #[arg(long, default_value = "text")]
         output: OutputMode,
     },
@@ -129,7 +106,7 @@ pub enum Command {
     Login {
         /// Target API URL, used for Mode (b) local-auth
         /// (`POST {url}/v1/local-auth/login`).
-        /// Resolved as flag > CODEMIE_URL > config url.
+        /// Resolved as flag > CODEMIE_URL.
         #[arg(long, env = "CODEMIE_URL")]
         url: Option<String>,
 
@@ -159,45 +136,24 @@ pub enum Command {
 /// writes a safe message to stderr and returns the error's exit code.
 ///
 /// Stdout is empty on every failure path in this function.
-pub async fn run() -> i32 {
-    let cli = Cli::parse();
+pub async fn run_from(args: impl IntoIterator<Item = OsString>) -> i32 {
+    let cli = Cli::parse_from(args);
     match cli.command {
-        Command::Lint {
-            file,
-            repo_root,
-            follow_symlinks,
-            output,
-        } => {
-            let effective_repo_root = match resolve_repo_root(repo_root.as_deref()) {
-                Ok(root) => root,
+        Command::Lint { file, output } => {
+            let command = match LintCommand::try_from(RawLintCommand { file }) {
+                Ok(command) => command,
                 Err(error) => {
                     crate::output::write_failure(&error, output);
                     return error.exit_code();
                 }
             };
-            let args = ResolveConfigArgs {
-                flag_url: None,
-                flag_auth_url: None,
-                repo_root: Some(effective_repo_root.clone()),
-            };
-            let config = match resolve_config(&args) {
-                Ok(config) => config,
-                Err(error) => {
-                    crate::output::write_failure(&error, output);
-                    return error.exit_code();
-                }
-            };
-            match lint::lint(LintCommand {
-                file,
-                repo_root: effective_repo_root,
-                default_project: config.project,
-                follow_symlinks,
-            })
-            .await
-            {
+            match lint::lint(command).await {
                 Ok(result) => {
-                    result.write(output);
-                    0
+                    if result.write(output).is_ok() {
+                        0
+                    } else {
+                        2
+                    }
                 }
                 Err(error) => {
                     crate::output::write_failure(&error, output);
@@ -208,23 +164,13 @@ pub async fn run() -> i32 {
 
         Command::Apply {
             file,
-            repo_root,
             url,
-            follow_symlinks,
             adopt_workflow_id,
             output,
         } => {
-            let effective_repo_root = match resolve_repo_root(repo_root.as_deref()) {
-                Ok(root) => root,
-                Err(e) => {
-                    crate::output::write_failure(&e, output);
-                    return e.exit_code();
-                }
-            };
             let args = ResolveConfigArgs {
                 flag_url: url,
                 flag_auth_url: None,
-                repo_root: Some(effective_repo_root.clone()),
             };
             let config = match resolve_config(&args) {
                 Ok(config) => config,
@@ -244,19 +190,25 @@ pub async fn run() -> i32 {
                 }
             };
             let token = std::env::var("CODEMIE_TOKEN").unwrap_or_default();
-            let command = ApplyCommand {
+            let command = match ApplyCommand::try_from(RawApplyCommand {
                 file,
-                repo_root: effective_repo_root,
                 base_url,
                 token,
-                default_project: config.project,
-                follow_symlinks,
                 adopt_workflow_id,
+            }) {
+                Ok(command) => command,
+                Err(error) => {
+                    crate::output::write_failure(&error, output);
+                    return error.exit_code();
+                }
             };
             match coordinator::apply(command).await {
                 Ok(outcome) => {
-                    outcome.write(output);
-                    0
+                    if outcome.write(output).is_ok() {
+                        0
+                    } else {
+                        2
+                    }
                 }
                 Err(e) => {
                     crate::output::write_failure(&e, output);
@@ -273,12 +225,10 @@ pub async fn run() -> i32 {
             workflow_id,
             file,
             project,
-            repo_root,
             url,
-            follow_symlinks,
             output,
         } => {
-            let command = crate::save::SaveCommand {
+            let command = crate::save::RawSaveCommand {
                 kind,
                 project,
                 slug,
@@ -286,28 +236,18 @@ pub async fn run() -> i32 {
                 repo_name,
                 workflow_id,
                 file,
-                repo_root,
                 url,
-                follow_symlinks,
             };
-            let command = match command.validate() {
+            let command = match crate::save::SaveCommand::try_from(command) {
                 Ok(command) => command,
                 Err(error) => {
                     crate::output::write_failure(&error, output);
                     return error.exit_code();
                 }
             };
-            let effective_repo_root = match resolve_repo_root(command.repo_root.as_deref()) {
-                Ok(root) => root,
-                Err(error) => {
-                    crate::output::write_failure(&error, output);
-                    return error.exit_code();
-                }
-            };
             let config = match resolve_config(&ResolveConfigArgs {
-                flag_url: command.url.clone(),
+                flag_url: command.url().map(str::to_owned),
                 flag_auth_url: None,
-                repo_root: Some(effective_repo_root.clone()),
             }) {
                 Ok(config) => config,
                 Err(error) => {
@@ -325,16 +265,20 @@ pub async fn run() -> i32 {
                     return error.exit_code();
                 }
             };
-            let command = crate::save::SaveCommand {
-                repo_root: Some(effective_repo_root),
-                project: command.project.or(config.project),
-                url: Some(base_url.to_string()),
-                ..command
+            let command = match command.with_resolved_url(base_url.to_string()) {
+                Ok(command) => command,
+                Err(error) => {
+                    crate::output::write_failure(&error, output);
+                    return error.exit_code();
+                }
             };
             match crate::save::save(command).await {
                 Ok(outcome) => {
-                    outcome.write(output);
-                    0
+                    if outcome.write(output).is_ok() {
+                        0
+                    } else {
+                        2
+                    }
                 }
                 Err(error) => {
                     crate::output::write_failure(&error, output);
@@ -352,7 +296,6 @@ pub async fn run() -> i32 {
             let args = ResolveConfigArgs {
                 flag_url: url,
                 flag_auth_url: auth_url,
-                repo_root: None,
             };
             let config = match resolve_config(&args) {
                 Ok(c) => c,
@@ -362,16 +305,18 @@ pub async fn run() -> i32 {
                 }
             };
             let credentials = Credentials::from_env(client_id, email);
-            let mode = match select_auth_mode(&credentials, config.auth_url.as_deref()) {
-                Ok(m) => m,
+            let strategy = match AuthStrategy::try_from(RawAuthSelection {
+                credentials,
+                auth_url_configured: config.auth_url.is_some(),
+            }) {
+                Ok(strategy) => strategy,
                 Err(e) => {
                     crate::render::write_app_error_to_stderr(&e, OutputMode::default());
                     return e.exit_code();
                 }
             };
-            match login(
-                mode,
-                &credentials,
+            match login_with_strategy(
+                strategy,
                 config.url.as_ref().map(|u| u.as_str()),
                 config.auth_url.as_ref().map(|u| u.as_str()),
             )
@@ -390,18 +335,6 @@ pub async fn run() -> i32 {
             }
         }
     }
-}
-
-fn resolve_repo_root(
-    explicit: Option<&std::path::Path>,
-) -> Result<PathBuf, crate::error::AppError> {
-    if let Some(root) = explicit {
-        return Ok(root.to_owned());
-    }
-    let cwd = std::env::current_dir().map_err(|_| {
-        crate::error::AppError::Configuration("cannot determine current directory".into())
-    })?;
-    Ok(find_repo_root(&cwd).unwrap_or(cwd))
 }
 
 #[cfg(test)]
@@ -552,6 +485,35 @@ mod tests {
     fn apply_with_file_flag_parses_successfully() {
         let result = Cli::try_parse_from(["codemie-gitops", "apply", "--file", "decl.yaml"]);
         assert!(result.is_ok(), "apply with --file must parse successfully");
+    }
+
+    #[test]
+    fn repository_flags_are_absent_from_file_commands() {
+        for command in ["lint", "apply", "save"] {
+            let cli = Cli::command();
+            let subcommand = cli
+                .get_subcommands()
+                .find(|candidate| candidate.get_name() == command)
+                .expect("file command must exist");
+            assert!(subcommand.get_arguments().all(|argument| {
+                !matches!(argument.get_long(), Some("repo-root" | "follow-symlinks"))
+            }));
+        }
+    }
+
+    #[test]
+    fn save_requires_explicit_project() {
+        let result = Cli::try_parse_from([
+            "codemie-gitops",
+            "save",
+            "--kind",
+            "Skill",
+            "--name",
+            "skill-a",
+            "--file",
+            "skill.yaml",
+        ]);
+        assert!(result.is_err());
     }
 
     // --- F-002: --adopt-workflow-id only on apply ---

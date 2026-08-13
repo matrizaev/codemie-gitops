@@ -21,10 +21,9 @@ the source/API contract.
   transform, operation-specific field boundary, and pinned source location.
 - [`declaration-v1alpha1.schema.json`](declaration-v1alpha1.schema.json) is the
   closed authoring language derived from v24 plus this baseline.
-- [`repository-config.schema.json`](repository-config.schema.json) is the
-  closed, non-secret `.codemie/config.yaml` contract. It permits only `url`,
-  `auth_url`, and `project`; authentication endpoint precedence and credential
-  sources are product/CLI contracts rather than server-derived behavior.
+- [`repository-config.schema.json`](repository-config.schema.json) is a retired
+  deny-all marker retained for stable links. V33 forbids loading repository
+  configuration; endpoint and credential sources are defined by the CLI contract.
 - `research.md` section 2 gives the human-readable source trace.
 
 The manifest has exactly four entity entries: Assistant, Workflow, Datasource,
@@ -64,7 +63,7 @@ and authoritative HTTP 409 fails without retry, guessed lookup, or update.
 
 The Keycloak token endpoint is not inferred from this source baseline,
 `GET /v1/info`, or an API hostname. Product specification v24 requires one
-explicit endpoint from the CLI/environment/repository-config precedence chain.
+explicit endpoint from the CLI/environment precedence chain.
 The backend source only supplies evidence for the separate local-development
 `POST /v1/local-auth/login` route.
 

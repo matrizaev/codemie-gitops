@@ -1,31 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://codemie.epam.com/schemas/gitops/repository-config-v1.json",
-  "title": "codemie-gitops repository configuration",
-  "description": "Closed non-secret schema for .codemie/config.yaml. Version: v25 (SEC-001/SEC-002 remediation).",
-  "type": "object",
-  "additionalProperties": false,
-  "properties": {
-    "url": {
-      "type": "string",
-      "description": "CodeMie API base URL (ValidatedUrl). HTTPS required for non-loopback hosts; HTTP is accepted at schema level for loopback endpoints and enforced at runtime. No userinfo, no fragment, no control characters.",
-      "maxLength": 2048,
-      "format": "uri",
-      "pattern": "^https?://[^@#\\x00-\\x1f\\x7f]+$"
-    },
-    "auth_url": {
-      "type": "string",
-      "description": "Keycloak token endpoint (ValidatedUrl). HTTPS only — no HTTP exception for the identity provider. No userinfo, no fragment, no control characters.",
-      "maxLength": 2048,
-      "format": "uri",
-      "pattern": "^https://[^@#\\x00-\\x1f\\x7f]+$"
-    },
-    "project": {
-      "type": "string",
-      "description": "Default project name. Must not contain control characters or bidi formatting codes.",
-      "minLength": 1,
-      "maxLength": 100,
-      "pattern": "^[^\\u0000-\\u001f\\u007f\\u0080-\\u009f\\u202a-\\u202e\\u2066-\\u2069]+$"
-    }
-  }
+  "$id": "https://codemie.epam.com/schemas/retired-repository-config.json",
+  "title": "Retired repository configuration contract",
+  "description": "Retired by product specification v33. The CLI must not discover or load .codemie/config.yaml.",
+  "not": {}
 }

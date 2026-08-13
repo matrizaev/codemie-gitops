@@ -1,8 +1,8 @@
-# O-001 production apply control. Production and the staging mutex drill use
+# Portable controlled-apply example. Production and the staging mutex drill use
 # static checked-in environment/resource-group names. Remote protection and
 # approval activation remains an adopter responsibility.
 stages:
-  - codemie-build
+  - codemie-fetch
   - codemie-apply
 
 # Required production assertions. Project policy must restrict pipeline
@@ -13,43 +13,41 @@ variables:
   INVENTORY_APPROVED: "false"
   WRITER_FREEZE_APPROVED: "false"
   CONTROL_EVIDENCE: ""
+  CODEMIE_GITOPS_VERSION: "v0.1.0"
+  CODEMIE_GITOPS_RELEASE_REPOSITORY: "matrizaev/codemie-gitops"
 
-codemie_gitops_build:
-  stage: codemie-build
+codemie_gitops_fetch:
+  stage: codemie-fetch
   interruptible: false
-  tags:
-    - codemie-gitops-musl-build
   rules:
     - if: '$CODEMIE_GITOPS_APPLY == "true" && $CI_COMMIT_REF_PROTECTED == "true" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
       when: on_success
     - when: never
   script:
-    - TARGET_ENVIRONMENT=production O001_MODE=apply python3 scripts/check_o001_controls.py --ci-preflight
     - |
-      command -v musl-gcc
-      rustup target list --installed | grep -Fxq x86_64-unknown-linux-musl
-      export CARGO_BUILD_TARGET=x86_64-unknown-linux-musl
-      make lint
-      make test
-      cargo build --locked --release --target x86_64-unknown-linux-musl
-      target/x86_64-unknown-linux-musl/release/codemie-gitops --version
+      set -euo pipefail
+      asset=codemie-gitops-linux-x86_64
+      base="https://github.com/${CODEMIE_GITOPS_RELEASE_REPOSITORY}/releases/download/${CODEMIE_GITOPS_VERSION}"
       mkdir o001-artifact
-      install -m 0755 target/x86_64-unknown-linux-musl/release/codemie-gitops o001-artifact/codemie-gitops
+      curl --fail --silent --show-error --location "$base/$asset" --output "o001-artifact/$asset"
+      curl --fail --silent --show-error --location "$base/SHA256SUMS" --output o001-artifact/SHA256SUMS
       cd o001-artifact
-      sha256sum codemie-gitops > codemie-gitops.sha256
+      grep -E "^[0-9a-f]{64}  ${asset}$" SHA256SUMS | sha256sum --check --strict -
+      mv "$asset" codemie-gitops
+      chmod 0555 codemie-gitops
   artifacts:
     name: "codemie-gitops-$CI_PIPELINE_ID-$CI_JOB_ID"
     expire_in: 1 day
     when: on_success
     paths:
       - o001-artifact/codemie-gitops
-      - o001-artifact/codemie-gitops.sha256
+      - o001-artifact/SHA256SUMS
 
 codemie_gitops_production_apply:
   stage: codemie-apply
   interruptible: false
   needs:
-    - job: codemie_gitops_build
+    - job: codemie_gitops_fetch
       artifacts: true
   rules:
     - if: '$CODEMIE_GITOPS_APPLY == "true" && $CI_COMMIT_REF_PROTECTED == "true" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
@@ -62,8 +60,8 @@ codemie_gitops_production_apply:
   tags:
     - codemie-gitops-production-protected
   script:
-    - (cd o001-artifact && sha256sum --check --strict codemie-gitops.sha256) && chmod 0555 o001-artifact/codemie-gitops
-    - ./o001-artifact/codemie-gitops apply --file "$DECLARATION_PATH" --repo-root "$CI_PROJECT_DIR"
+    - (cd o001-artifact && grep -E '^([0-9a-f]{64})  codemie-gitops-linux-x86_64$' SHA256SUMS | sed 's/codemie-gitops-linux-x86_64$/codemie-gitops/' | sha256sum --check --strict -)
+    - ./o001-artifact/codemie-gitops apply --file "$DECLARATION_PATH"
 
 codemie_gitops_production_mutex_drill:
   stage: codemie-apply

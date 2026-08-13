@@ -41,7 +41,7 @@ Use the target server as the schema source on every invocation.
 ## Decision
 
 Choose option A. The schema documents are the authoring contract; they combine
-approved product strictness, natural references, and authoring-only sidecars
+approved product strictness and natural-reference shapes
 with a pinned server request contract. `yaml-rust2` marked events are the
 recommended parser basis and `jsonschema` is the recommended validator basis.
 All references are local/embedded and network retrieval is disabled.
@@ -61,6 +61,11 @@ The adapter manifest records operation applicability and mixed/tool ownership
 so a generic null filler cannot invent request members.
 
 ## Consequences
+
+Specification v33 narrows the parser input to exactly one bounded declaration.
+The embedded schema permits exactly one of inline Skill `content` or
+`contentFrom`. The parser delegates the latter to the narrow explicit-input
+reader and does not construct a repository symbol table.
 
 ### Positive
 

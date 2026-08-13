@@ -24,11 +24,31 @@
 /// Full authentication implementation is in T-001.
 use std::time::Duration;
 
+use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 
-use crate::config::ValidatedUrl;
+#[cfg(test)]
+use crate::config::ValidatedAuthUrl;
 use crate::error::AppError;
 use crate::http::ensure_rustls_provider;
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum AuthError {
+    #[error("failed to build authentication client")]
+    ClientBuild(#[source] reqwest::Error),
+    #[error("authentication endpoint is unreachable")]
+    Dispatch(#[source] reqwest::Error),
+    #[error("failed to read authentication response")]
+    ResponseBody(#[source] reqwest::Error),
+    #[error("authentication response does not match the token contract")]
+    TokenResponse(#[source] serde_json::Error),
+}
+
+impl AuthError {
+    pub(crate) fn is_connectivity(&self) -> bool {
+        matches!(self, Self::Dispatch(_) | Self::ResponseBody(_))
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Token response
@@ -62,17 +82,106 @@ pub enum AuthMode {
 /// Secret fields are `Option<String>` populated only from environment variables
 /// at runtime; they are never stored in repository config or passed as CLI flags.
 #[derive(Debug)]
+pub(crate) struct SecretValue(SecretString);
+
+impl SecretValue {
+    fn expose(&self) -> &str {
+        self.0.expose_secret()
+    }
+}
+
+impl From<String> for SecretValue {
+    fn from(value: String) -> Self {
+        Self(value.into())
+    }
+}
+
+impl From<&str> for SecretValue {
+    fn from(value: &str) -> Self {
+        Self(value.to_owned().into())
+    }
+}
+
+#[derive(Debug)]
 pub struct Credentials {
     /// Non-null when `CODEMIE_TOKEN` is set.
-    pub bearer_token: Option<String>,
+    bearer_token: Option<SecretValue>,
     /// Non-null when `CODEMIE_CLIENT_SECRET` is set.
-    pub client_secret: Option<String>,
+    client_secret: Option<SecretValue>,
     /// Non-null when `CODEMIE_PASSWORD` is set.
-    pub password: Option<String>,
+    password: Option<SecretValue>,
     /// Non-secret; resolved from `--client-id` > `CODEMIE_CLIENT_ID`.
-    pub client_id: Option<String>,
+    client_id: Option<String>,
     /// Non-secret; resolved from `--email` > `CODEMIE_EMAIL`.
-    pub email: Option<String>,
+    email: Option<String>,
+}
+
+/// Untrusted authentication selection assembled at the CLI boundary.
+pub(crate) struct RawAuthSelection {
+    pub(crate) credentials: Credentials,
+    pub(crate) auth_url_configured: bool,
+}
+
+/// Validated authentication strategy owning exactly the credentials used by
+/// its selected flow.
+#[derive(Debug)]
+pub(crate) enum AuthStrategy {
+    BearerToken {
+        token: SecretValue,
+    },
+    KeycloakClientCredentials {
+        client_id: Option<String>,
+        client_secret: SecretValue,
+    },
+    KeycloakRopc {
+        client_id: String,
+        email: String,
+        password: SecretValue,
+    },
+    LocalAuth {
+        email: String,
+        password: SecretValue,
+    },
+}
+
+impl TryFrom<RawAuthSelection> for AuthStrategy {
+    type Error = AppError;
+
+    fn try_from(raw: RawAuthSelection) -> Result<Self, Self::Error> {
+        let Credentials {
+            bearer_token,
+            client_secret,
+            password,
+            client_id,
+            email,
+        } = raw.credentials;
+        if let Some(token) = bearer_token {
+            return Ok(Self::BearerToken { token });
+        }
+        if let Some(client_secret) = client_secret {
+            return if raw.auth_url_configured {
+                Ok(Self::KeycloakClientCredentials {
+                    client_id,
+                    client_secret,
+                })
+            } else {
+                Err(AppError::Configuration(
+                    "authentication configuration incomplete".into(),
+                ))
+            };
+        }
+        match (email, password, raw.auth_url_configured) {
+            (Some(email), Some(password), true) => Ok(Self::KeycloakRopc {
+                client_id: client_id.unwrap_or_else(|| "codemie-sdk".to_owned()),
+                email,
+                password,
+            }),
+            (Some(email), Some(password), false) => Ok(Self::LocalAuth { email, password }),
+            _ => Err(AppError::Configuration(
+                "authentication configuration incomplete".into(),
+            )),
+        }
+    }
 }
 
 impl Credentials {
@@ -84,9 +193,13 @@ impl Credentials {
     /// CLI flags (flag > env precedence is handled by clap).
     pub fn from_env(client_id: Option<String>, email: Option<String>) -> Self {
         Credentials {
-            bearer_token: std::env::var("CODEMIE_TOKEN").ok(),
-            client_secret: std::env::var("CODEMIE_CLIENT_SECRET").ok(),
-            password: std::env::var("CODEMIE_PASSWORD").ok(),
+            bearer_token: std::env::var("CODEMIE_TOKEN").ok().map(SecretValue::from),
+            client_secret: std::env::var("CODEMIE_CLIENT_SECRET")
+                .ok()
+                .map(SecretValue::from),
+            password: std::env::var("CODEMIE_PASSWORD")
+                .ok()
+                .map(SecretValue::from),
             client_id,
             email,
         }
@@ -106,9 +219,10 @@ impl Credentials {
 /// 5. Any other combination → `E_CONFIGURATION`, exit 2.
 ///
 /// Error messages must not expose credential values (SEC-001).
+#[cfg(test)]
 pub fn select_auth_mode(
     credentials: &Credentials,
-    auth_url: Option<&ValidatedUrl>,
+    auth_url: Option<&ValidatedAuthUrl>,
 ) -> Result<AuthMode, AppError> {
     // 1. Pre-existing bearer token wins over all other modes.
     if credentials.bearer_token.is_some() {
@@ -187,7 +301,8 @@ pub fn build_auth_client() -> Result<reqwest::Client, AppError> {
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(60))
         .build()
-        .map_err(|_e| AppError::Internal("failed to build auth HTTP client".into()))
+        .map_err(AuthError::ClientBuild)
+        .map_err(AppError::from)
 }
 
 /// Map a reqwest send error (network / TLS / connection) to `AppError::Connectivity`.
@@ -195,8 +310,8 @@ pub fn build_auth_client() -> Result<reqwest::Client, AppError> {
 /// Only called when `send()` itself fails — i.e., no HTTP response was received.
 /// A fixed message is used; the original reqwest error string is discarded to
 /// prevent leaking internal URL or TLS details into the error chain (SEC-005).
-fn map_reqwest_error(_e: reqwest::Error) -> AppError {
-    AppError::Connectivity("authentication endpoint unreachable".into())
+fn map_reqwest_error(source: reqwest::Error) -> AppError {
+    AuthError::Dispatch(source).into()
 }
 
 /// Extract the bearer token from an authentication HTTP response.
@@ -227,13 +342,10 @@ async fn extract_token_from_response(resp: reqwest::Response) -> Result<String, 
     }
 
     // 2xx: read the body and extract access_token.
-    let bytes = resp.bytes().await.map_err(|_e| {
-        AppError::Connectivity("failed to read authentication response body".into())
-    })?;
+    let bytes = resp.bytes().await.map_err(AuthError::ResponseBody)?;
 
-    let token_resp: TokenResponse = serde_json::from_slice(&bytes).map_err(|_e| {
-        AppError::Authentication("authentication response did not contain access_token".into())
-    })?;
+    let token_resp: TokenResponse =
+        serde_json::from_slice(&bytes).map_err(AuthError::TokenResponse)?;
 
     Ok(token_resp.access_token)
 }
@@ -286,7 +398,8 @@ pub async fn login(
         // ------------------------------------------------------------------
         AuthMode::BearerToken => credentials
             .bearer_token
-            .clone()
+            .as_ref()
+            .map(|token| token.expose().to_owned())
             .ok_or_else(|| AppError::Authentication("bearer token is not set".into())),
 
         // ------------------------------------------------------------------
@@ -300,7 +413,8 @@ pub async fn login(
             })?;
             let client_secret = credentials
                 .client_secret
-                .as_deref()
+                .as_ref()
+                .map(SecretValue::expose)
                 .ok_or_else(|| AppError::Authentication("client_secret is not set".into()))?;
 
             let mut params: Vec<(String, String)> = vec![
@@ -338,9 +452,13 @@ pub async fn login(
             let email = credentials.email.as_deref().ok_or_else(|| {
                 AppError::Authentication("email is not set for Keycloak ROPC".into())
             })?;
-            let password = credentials.password.as_deref().ok_or_else(|| {
-                AppError::Authentication("password is not set for Keycloak ROPC".into())
-            })?;
+            let password = credentials
+                .password
+                .as_ref()
+                .map(SecretValue::expose)
+                .ok_or_else(|| {
+                    AppError::Authentication("password is not set for Keycloak ROPC".into())
+                })?;
 
             // Mode (c) ROPC body: MUST NOT include client_secret (spec v26, ADR-011 §1a).
             let params: Vec<(String, String)> = vec![
@@ -371,9 +489,13 @@ pub async fn login(
             let email = credentials.email.as_deref().ok_or_else(|| {
                 AppError::Authentication("email is not set for local-auth".into())
             })?;
-            let password = credentials.password.as_deref().ok_or_else(|| {
-                AppError::Authentication("password is not set for local-auth".into())
-            })?;
+            let password = credentials
+                .password
+                .as_ref()
+                .map(SecretValue::expose)
+                .ok_or_else(|| {
+                    AppError::Authentication("password is not set for local-auth".into())
+                })?;
 
             let login_url = format!("{}/v1/local-auth/login", url.trim_end_matches('/'));
 
@@ -397,13 +519,71 @@ pub async fn login(
     }
 }
 
+/// Execute a validated authentication strategy.
+pub(crate) async fn login_with_strategy(
+    strategy: AuthStrategy,
+    url: Option<&str>,
+    auth_url: Option<&str>,
+) -> Result<String, AppError> {
+    let (mode, credentials) = match strategy {
+        AuthStrategy::BearerToken { token } => (
+            AuthMode::BearerToken,
+            Credentials {
+                bearer_token: Some(token),
+                client_secret: None,
+                password: None,
+                client_id: None,
+                email: None,
+            },
+        ),
+        AuthStrategy::KeycloakClientCredentials {
+            client_id,
+            client_secret,
+        } => (
+            AuthMode::KeycloakClientCredentials,
+            Credentials {
+                bearer_token: None,
+                client_secret: Some(client_secret),
+                password: None,
+                client_id,
+                email: None,
+            },
+        ),
+        AuthStrategy::KeycloakRopc {
+            client_id,
+            email,
+            password,
+        } => (
+            AuthMode::KeycloakRopc,
+            Credentials {
+                bearer_token: None,
+                client_secret: None,
+                password: Some(password),
+                client_id: Some(client_id),
+                email: Some(email),
+            },
+        ),
+        AuthStrategy::LocalAuth { email, password } => (
+            AuthMode::LocalAuth,
+            Credentials {
+                bearer_token: None,
+                client_secret: None,
+                password: Some(password),
+                client_id: None,
+                email: Some(email),
+            },
+        ),
+    };
+    login(mode, &credentials, url, auth_url).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ValidatedUrl;
+    use crate::config::ValidatedAuthUrl;
 
-    fn make_auth_url() -> ValidatedUrl {
-        ValidatedUrl::try_from("https://auth.example.com/token")
+    fn make_auth_url() -> ValidatedAuthUrl {
+        ValidatedAuthUrl::try_from("https://auth.example.com/token")
             .expect("test auth URL must be valid")
     }
 
@@ -421,6 +601,27 @@ mod tests {
     fn auth_mode_variants_are_distinct() {
         assert_ne!(AuthMode::KeycloakClientCredentials, AuthMode::LocalAuth);
         assert_ne!(AuthMode::KeycloakRopc, AuthMode::BearerToken);
+    }
+
+    #[test]
+    fn validated_auth_strategy_owns_only_selected_secret_and_redacts_debug() {
+        let strategy = AuthStrategy::try_from(RawAuthSelection {
+            credentials: Credentials {
+                bearer_token: Some("bearer-secret".into()),
+                client_secret: Some("unused-client-secret".into()),
+                password: Some("unused-password".into()),
+                client_id: Some("unused-client".into()),
+                email: Some("unused@example.com".into()),
+            },
+            auth_url_configured: true,
+        })
+        .unwrap();
+
+        assert!(matches!(&strategy, AuthStrategy::BearerToken { .. }));
+        let debug = format!("{strategy:?}");
+        assert!(!debug.contains("bearer-secret"));
+        assert!(!debug.contains("unused-client-secret"));
+        assert!(!debug.contains("unused-password"));
     }
 
     // --- select_auth_mode ---
@@ -1028,8 +1229,8 @@ mod tests {
 
         let err = result.unwrap_err();
         assert!(
-            matches!(err, AppError::Connectivity(_)),
-            "connection error must produce AppError::Connectivity, got {:?}",
+            err.is_connectivity(),
+            "connection error must preserve connectivity taxonomy, got {:?}",
             err
         );
         assert_eq!(err.exit_code(), 2);

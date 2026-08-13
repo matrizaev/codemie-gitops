@@ -27,12 +27,12 @@
     "deploymentDrift": "verification-and-release-contract-test"
   },
   "clientConfigurationContract": {
-    "repositorySchema": "repository-config.schema.json",
-    "repositoryAllowedKeys": ["url", "auth_url", "project"],
-    "targetUrlPrecedence": ["--url", "CODEMIE_URL", "config.url"],
-    "authUrlPrecedence": ["--auth-url", "CODEMIE_AUTH_URL", "config.auth_url"],
+    "repositorySchema": null,
+    "repositoryAllowedKeys": [],
+    "targetUrlPrecedence": ["--url", "CODEMIE_URL"],
+    "authUrlPrecedence": ["--auth-url", "CODEMIE_AUTH_URL"],
     "authUrlRequiredFor": "keycloak_client_credentials",
-    "authUrlNeverDerivedFrom": ["--url", "CODEMIE_URL", "config.url", "hostname-or-path-convention"],
+    "authUrlNeverDerivedFrom": ["--url", "CODEMIE_URL", "hostname-or-path-convention"],
     "credentialPrecedence": {
       "bearer_token": ["CODEMIE_TOKEN"],
       "client_id": ["--client-id", "CODEMIE_CLIENT_ID"],
@@ -45,7 +45,7 @@
     "secretFlagPolicy": "exit-2-before-network",
     "securityNote": "SEC-001 remediation (v25): bearer_token, client_secret, and password are environment-only. Supplying --token, --client-secret, or --password as a CLI flag is E_USAGE exit 2 before network access.",
     "missingOrInvalidSelectedAuthUrl": "exit-2-before-network",
-    "credentialsInRepositoryConfig": "reject"
+    "repositoryConfigPolicy": "must-not-load"
   },
   "projectionPolicy": {
     "authoringRequired": "present and non-null before network; server defaults are not materialized",
@@ -54,12 +54,12 @@
     "operationInapplicable": "absent from that operation without a fabricated property",
     "mixedOwned": "assembled by the named read/merge/write rule",
     "readOnlyOrProhibited": "rejected in declarations",
-    "identityProjectDefault": "metadata.project may be absent only when repository config supplies the non-empty effective project"
+    "identityProjectDefault": "none; metadata.project is required inline"
   },
   "capabilityPreflight": {
     "route": "GET /v1/user",
     "appliesToEntityKinds": ["Assistant", "Workflow", "Datasource", "Skill"],
-    "effectiveProjectSource": "validated metadata.project after repository-config defaulting",
+    "effectiveProjectSource": "validated inline metadata.project",
     "consumedFields": ["user_id", "projects", "projects[].name"],
     "consumedFieldTypes": {
       "user_id": "non-empty string",
@@ -282,7 +282,7 @@
       "createRequestFields": ["name", "description", "content", "project", "visibility", "categories", "toolkits", "mcp_servers", "companion_files", "enabled_builtin_subagents"],
       "updateRequestFields": ["name", "description", "content", "project", "visibility", "categories", "toolkits", "mcp_servers", "companion_files", "enabled_builtin_subagents"],
       "fieldClasses": {
-        "authoringRequired": ["spec.description", "spec.visibility", "spec.categories", "spec.toolkits", "spec.mcp_servers", "spec.companion_files", "spec.enabled_builtin_subagents", "exactly one of spec.content/spec.contentFrom"],
+        "authoringRequired": ["metadata.project", "spec.description", "spec.visibility", "spec.categories", "spec.toolkits", "spec.mcp_servers", "spec.companion_files", "spec.enabled_builtin_subagents", "exactly one of spec.content/spec.contentFrom"],
         "optionalNull": [],
         "authoringOnly": ["metadata.project", "metadata.name", "spec.contentFrom"],
         "operationInapplicable": ["unused content/contentFrom selector"],
@@ -292,7 +292,7 @@
       "authorTransform": {
         "metadata.name": "name",
         "metadata.project": "project",
-        "contentFrom": "content bytes read from the scalar path relative to the declaring YAML"
+        "contentFrom": "bounded UTF-8 content read from the relative .md path under the selected declaration parent"
       },
       "pagination": {
         "pageBase": 0,
@@ -420,7 +420,7 @@
           "updateRequestFields": ["name", "project_name", "description", "project_space_visible", "uploaded_files", "files", "csv_separator", "csv_start_row", "csv_rows_per_document", "embedding_model", "guardrail_assignments", "include_email_attachments"],
           "identityReadFields": ["repo_name", "project_name", "index_type", "user_abilities"],
           "transportTransform": {
-            "files": "each YAML-relative, repository-contained regular file becomes one UploadFile multipart part named files; transmit bytes without text transcoding and basename as filename",
+            "files": "resolve each of 1-10 explicit relative paths from the selected declaration parent; reject escape/symlink/non-regular/duplicate targets; bounded-read exact bytes and emit repeated multipart files parts using safe basenames; no directory walk or temporary/staging copy",
             "uploaded_files": "update-only JSON-encoded UTF-8 compact array in the uploaded_files query parameter",
             "guardrail_assignments": "JSON-encoded UTF-8 compact array in the guardrail_assignments query parameter",
             "otherFields": "FastAPI Depends scalar query parameters; no JSON body",

@@ -1,7 +1,7 @@
-/// Marked YAML parsing, closed schema validation, and `contentFrom` sidecar expansion.
+/// Marked YAML parsing, closed schema validation, and explicit `contentFrom` expansion.
 ///
 /// Implements F-004: parse bounded YAML, reject injection vectors, validate
-/// against the bundled v1alpha1 JSON Schema, expand Skill sidecars, and return
+/// against the bundled v1alpha1 JSON Schema, expand explicit Skill content, and return
 /// a typed `ParsedDeclaration` ready for downstream projection.
 ///
 /// # YAML resource budgets enforced (SEC-003)
@@ -17,20 +17,61 @@
 /// - YAML aliases (`*alias_name`) — pre-parse raw byte scan.
 /// - YAML tags (`!!type`, `!tag`, `!<verbose>`) — raw scan and `Value::Tagged` tree walk.
 /// - YAML merge keys (`<<`) — `Value::Mapping` key tree walk.
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value as JsonValue;
 use serde_yaml::Value as YamlValue;
+use yaml_rust2::parser::{Event, MarkedEventReceiver, Parser};
+use yaml_rust2::scanner::Marker;
 
-use crate::cancellation::CancellationToken;
-use crate::discovery::{
-    MAX_AGGREGATE_UPLOAD_BYTES, MAX_SIDECAR_FILE_BYTES, load_sidecar_file,
-    load_sidecar_file_cancellable, resolve_sidecar_path,
+use crate::declaration_schema::{
+    AssistantDeclaration, CodemieGitopsV1alpha1Declaration, DatasourceDeclaration, DatasourceSpec,
+    SkillDeclaration, WorkflowDeclaration,
 };
 use crate::error::AppError;
 use crate::schema::DECLARATION_SCHEMA_JSON;
 
-type SidecarLoader<'a> = dyn Fn(&Path, &str) -> Result<Vec<u8>, AppError> + 'a;
+type SidecarLoader<'a> = dyn Fn(&str) -> Result<Vec<u8>, AppError> + 'a;
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ParseError {
+    #[error("YAML input is malformed in {path}")]
+    Yaml {
+        path: PathBuf,
+        #[source]
+        source: serde_yaml::Error,
+    },
+    #[error("YAML value in {path} cannot be represented as JSON")]
+    JsonConversion {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("validated declaration does not match its typed DTO")]
+    TypedDeclaration(#[source] serde_json::Error),
+    #[error("restricted YAML parsing failed in {path}")]
+    RestrictedYaml {
+        path: PathBuf,
+        #[source]
+        source: yaml_rust2::scanner::ScanError,
+    },
+    #[error("contentFrom sidecar is not valid UTF-8 in {path}")]
+    SidecarUtf8 {
+        path: PathBuf,
+        #[source]
+        source: std::string::FromUtf8Error,
+    },
+}
+
+impl ParseError {
+    pub(crate) fn is_yaml(&self) -> bool {
+        matches!(
+            self,
+            Self::Yaml { .. } | Self::JsonConversion { .. } | Self::RestrictedYaml { .. }
+        )
+    }
+}
 
 // ---------------------------------------------------------------------------
 // YAML resource budget constants (SEC-003, F-004)
@@ -54,7 +95,7 @@ pub const MAX_YAML_COLLECTION_MEMBERS: usize = 10_000;
 // ---------------------------------------------------------------------------
 
 /// The entity kind discriminated from the `kind` field of a v1alpha1 declaration.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntityKind {
     Assistant,
     Workflow,
@@ -73,18 +114,506 @@ impl std::fmt::Display for EntityKind {
     }
 }
 
+/// A closed, schema-validated declaration value.
+///
+/// Keeping the discriminator and its payload in one enum prevents callers
+/// from constructing a declaration whose `kind` disagrees with its data.
+#[derive(Debug, Clone)]
+enum Declaration {
+    Assistant {
+        typed: Box<AssistantDeclaration>,
+    },
+    Workflow {
+        typed: Box<WorkflowDeclaration>,
+    },
+    Datasource {
+        typed: Box<DatasourceDeclaration>,
+    },
+    Skill {
+        typed: Box<SkillDeclaration>,
+    },
+    #[cfg(test)]
+    Fixture {
+        kind: EntityKind,
+        json: JsonValue,
+    },
+}
+
+impl Declaration {
+    fn try_new(kind: EntityKind, json: JsonValue) -> Result<Self, AppError> {
+        let typed: CodemieGitopsV1alpha1Declaration =
+            serde_json::from_value(json.clone()).map_err(ParseError::TypedDeclaration)?;
+        match (kind, typed) {
+            (
+                EntityKind::Assistant,
+                CodemieGitopsV1alpha1Declaration::AssistantDeclaration(typed),
+            ) => Ok(Self::Assistant {
+                typed: Box::new(typed),
+            }),
+            (
+                EntityKind::Workflow,
+                CodemieGitopsV1alpha1Declaration::WorkflowDeclaration(typed),
+            ) => Ok(Self::Workflow {
+                typed: Box::new(typed),
+            }),
+            (
+                EntityKind::Datasource,
+                CodemieGitopsV1alpha1Declaration::DatasourceDeclaration(typed),
+            ) => Ok(Self::Datasource {
+                typed: Box::new(typed),
+            }),
+            (EntityKind::Skill, CodemieGitopsV1alpha1Declaration::SkillDeclaration(typed)) => {
+                Ok(Self::Skill {
+                    typed: Box::new(typed),
+                })
+            }
+            _ => Err(AppError::Schema(
+                "declaration kind does not match its typed payload".into(),
+            )),
+        }
+    }
+
+    fn kind(&self) -> EntityKind {
+        match self {
+            Self::Assistant { .. } => EntityKind::Assistant,
+            Self::Workflow { .. } => EntityKind::Workflow,
+            Self::Datasource { .. } => EntityKind::Datasource,
+            Self::Skill { .. } => EntityKind::Skill,
+            #[cfg(test)]
+            Self::Fixture { kind, .. } => *kind,
+        }
+    }
+
+    #[cfg(test)]
+    fn value(&self) -> JsonValue {
+        match self {
+            Self::Assistant { typed } => serde_json::to_value(typed),
+            Self::Workflow { typed } => serde_json::to_value(typed),
+            Self::Datasource { typed } => serde_json::to_value(typed),
+            Self::Skill { typed } => serde_json::to_value(typed),
+            #[cfg(test)]
+            Self::Fixture { json, .. } => return json.clone(),
+        }
+        .expect("typed declaration serialization is infallible")
+    }
+}
+
 /// A parsed, safety-checked, schema-validated, and sidecar-expanded declaration.
 #[derive(Debug, Clone)]
 pub struct ParsedDeclaration {
-    /// Entity kind extracted from the `kind` field.
-    pub kind: EntityKind,
-    /// The fully validated JSON value. For Skill declarations with
-    /// `spec.contentFrom`, that field has been replaced by `spec.content`
-    /// containing the sidecar file's UTF-8 contents.
-    pub value: serde_json::Value,
-    /// Absolute path of the source declaration file (for diagnostics only;
-    /// never emitted in output per cli.md §9).
-    pub source_path: PathBuf,
+    declaration: Declaration,
+    source_path: PathBuf,
+}
+
+pub(crate) enum ParsedNaturalIdentity<'a> {
+    Assistant {
+        project: &'a str,
+        slug: &'a str,
+    },
+    Workflow {
+        project: &'a str,
+        slug: &'a str,
+    },
+    Skill {
+        project: &'a str,
+        name: &'a str,
+    },
+    Datasource {
+        project: &'a str,
+        repository: &'a str,
+        index_type: &'static str,
+    },
+}
+
+/// Borrowed entity-specific declaration DTO. The variants retain the schema
+/// discriminator and payload together so downstream code cannot mix entity
+/// kinds while constructing requests or validating references.
+pub(crate) enum ParsedDeclarationRef<'a> {
+    Assistant(&'a AssistantDeclaration),
+    Workflow(&'a WorkflowDeclaration),
+    Datasource(&'a DatasourceDeclaration),
+    Skill(&'a SkillDeclaration),
+    #[cfg(test)]
+    Fixture(EntityKind, &'a JsonValue),
+}
+
+impl ParsedDeclaration {
+    /// Returns the entity kind certified by the closed declaration variant.
+    pub(crate) fn kind(&self) -> EntityKind {
+        self.declaration.kind()
+    }
+
+    /// Returns the schema-validated declaration representation.
+    #[cfg(test)]
+    pub(crate) fn value(&self) -> JsonValue {
+        self.declaration.value()
+    }
+
+    pub(crate) fn typed(&self) -> ParsedDeclarationRef<'_> {
+        match &self.declaration {
+            Declaration::Assistant { typed, .. } => ParsedDeclarationRef::Assistant(typed.as_ref()),
+            Declaration::Workflow { typed, .. } => ParsedDeclarationRef::Workflow(typed.as_ref()),
+            Declaration::Datasource { typed, .. } => {
+                ParsedDeclarationRef::Datasource(typed.as_ref())
+            }
+            Declaration::Skill { typed, .. } => ParsedDeclarationRef::Skill(typed.as_ref()),
+            #[cfg(test)]
+            Declaration::Fixture { kind, json } => ParsedDeclarationRef::Fixture(*kind, json),
+        }
+    }
+
+    /// Serialize the trusted DTO for boundary-specific reference projection.
+    pub(crate) fn reference_value(&self) -> Result<JsonValue, AppError> {
+        match &self.declaration {
+            Declaration::Assistant { typed } => serde_json::to_value(typed),
+            Declaration::Workflow { typed } => serde_json::to_value(typed),
+            Declaration::Datasource { typed } => serde_json::to_value(typed),
+            Declaration::Skill { typed } => serde_json::to_value(typed),
+            #[cfg(test)]
+            Declaration::Fixture { json, .. } => return Ok(json.clone()),
+        }
+        .map_err(ParseError::TypedDeclaration)
+        .map_err(AppError::from)
+    }
+
+    pub(crate) fn workflow_name(&self) -> Option<&str> {
+        match &self.declaration {
+            Declaration::Workflow { typed, .. } => Some(&typed.spec.name),
+            #[cfg(test)]
+            Declaration::Fixture {
+                kind: EntityKind::Workflow,
+                json,
+            } => json.pointer("/spec/name").and_then(JsonValue::as_str),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn workflow_is_autonomous(&self) -> bool {
+        match &self.declaration {
+            Declaration::Workflow { typed, .. } => matches!(
+                typed.spec.mode,
+                crate::declaration_schema::WorkflowSpecMode::Autonomous
+            ),
+            #[cfg(test)]
+            Declaration::Fixture {
+                kind: EntityKind::Workflow,
+                json,
+            } => json.pointer("/spec/mode").and_then(JsonValue::as_str) == Some("Autonomous"),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn file_datasource_paths(&self) -> Option<Vec<&str>> {
+        match &self.declaration {
+            Declaration::Datasource { typed, .. } => match &typed.spec {
+                DatasourceSpec::FileDatasourceSpec(spec) => {
+                    Some(spec.files.iter().map(|path| path.as_str()).collect())
+                }
+                _ => None,
+            },
+            #[cfg(test)]
+            Declaration::Fixture {
+                kind: EntityKind::Datasource,
+                json,
+            } => json
+                .pointer("/spec/files")
+                .and_then(JsonValue::as_array)
+                .map(|files| files.iter().filter_map(JsonValue::as_str).collect()),
+            _ => None,
+        }
+    }
+
+    /// Returns canonical paths for secret-like authored string fields. Open
+    /// extension maps are intentionally inspected here, at the declaration
+    /// boundary, rather than exposing their raw JSON to lint orchestration.
+    pub(crate) fn suspicious_secret_paths(&self) -> Vec<String> {
+        let mut paths = BTreeSet::new();
+        let value = match &self.declaration {
+            Declaration::Assistant { typed } => serde_json::to_value(typed),
+            Declaration::Workflow { typed } => serde_json::to_value(typed),
+            Declaration::Datasource { typed } => serde_json::to_value(typed),
+            Declaration::Skill { typed } => serde_json::to_value(typed),
+            #[cfg(test)]
+            Declaration::Fixture { json, .. } => Ok(json.clone()),
+        };
+        let Ok(value) = value else {
+            return Vec::new();
+        };
+        collect_suspicious_paths(&value, &CanonicalWarningPath::root(), &mut paths);
+        paths.into_iter().collect()
+    }
+
+    /// Returns the declaration's diagnostic-only source path.
+    pub(crate) fn source_path(&self) -> &Path {
+        &self.source_path
+    }
+
+    pub(crate) fn natural_identity(&self) -> Result<ParsedNaturalIdentity<'_>, AppError> {
+        match &self.declaration {
+            Declaration::Assistant { typed, .. } => Ok(ParsedNaturalIdentity::Assistant {
+                project: typed.metadata.project.as_str(),
+                slug: &typed.metadata.slug,
+            }),
+            Declaration::Workflow { typed, .. } => Ok(ParsedNaturalIdentity::Workflow {
+                project: typed.metadata.project.as_str(),
+                slug: &typed.metadata.slug,
+            }),
+            Declaration::Skill { typed, .. } => Ok(ParsedNaturalIdentity::Skill {
+                project: typed.metadata.project.as_str(),
+                name: &typed.metadata.name,
+            }),
+            Declaration::Datasource { typed, .. } => {
+                let index_type = match typed.spec {
+                    DatasourceSpec::GitDatasourceSpec(_) => "git",
+                    DatasourceSpec::SvnDatasourceSpec(_) => "svn",
+                    DatasourceSpec::ConfluenceDatasourceSpec(_) => "confluence",
+                    DatasourceSpec::JiraDatasourceSpec(_) => "jira",
+                    DatasourceSpec::XrayDatasourceSpec(_) => "xray",
+                    DatasourceSpec::FileDatasourceSpec(_) => "file",
+                    DatasourceSpec::GoogleDatasourceSpec(_) => "google",
+                    DatasourceSpec::AzureWikiDatasourceSpec(_) => "azure_devops_wiki",
+                    DatasourceSpec::AzureWorkItemDatasourceSpec(_) => "azure_devops_work_item",
+                    DatasourceSpec::SharepointDatasourceSpec(_) => "sharepoint",
+                };
+                Ok(ParsedNaturalIdentity::Datasource {
+                    project: typed.metadata.project.as_str(),
+                    repository: &typed.metadata.repo_name,
+                    index_type,
+                })
+            }
+            #[cfg(test)]
+            Declaration::Fixture { kind, json } => fixture_identity(*kind, json),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn graph_identity(&self) -> Result<(EntityKind, &str, &str), AppError> {
+        match &self.declaration {
+            Declaration::Assistant { typed, .. } => Ok((
+                EntityKind::Assistant,
+                typed.metadata.project.as_str(),
+                &typed.metadata.slug,
+            )),
+            Declaration::Workflow { typed, .. } => Ok((
+                EntityKind::Workflow,
+                typed.metadata.project.as_str(),
+                &typed.metadata.slug,
+            )),
+            Declaration::Skill { typed, .. } => Ok((
+                EntityKind::Skill,
+                typed.metadata.project.as_str(),
+                &typed.metadata.name,
+            )),
+            Declaration::Datasource { typed, .. } => Ok((
+                EntityKind::Datasource,
+                typed.metadata.project.as_str(),
+                &typed.metadata.repo_name,
+            )),
+            #[cfg(test)]
+            Declaration::Fixture { kind, json } => {
+                let project = json
+                    .pointer("/metadata/project")
+                    .and_then(JsonValue::as_str)
+                    .ok_or_else(|| AppError::Schema("metadata.project is required".into()))?;
+                let field = match kind {
+                    EntityKind::Assistant | EntityKind::Workflow => "slug",
+                    EntityKind::Skill => "name",
+                    EntityKind::Datasource => "repo_name",
+                };
+                let key = json
+                    .get("metadata")
+                    .and_then(|metadata| metadata.get(field))
+                    .and_then(JsonValue::as_str)
+                    .ok_or_else(|| AppError::Schema("natural identity key is required".into()))?;
+                Ok((*kind, project, key))
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixture(
+        kind: EntityKind,
+        value: JsonValue,
+        source_path: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            declaration: Declaration::Fixture { kind, json: value },
+            source_path: source_path.into(),
+        }
+    }
+}
+
+const MAX_WARNING_FIELD_PATH_LENGTH: usize = 1024;
+
+#[derive(Clone)]
+struct CanonicalWarningPath {
+    rendered: String,
+    extendable: bool,
+}
+
+impl CanonicalWarningPath {
+    fn root() -> Self {
+        Self {
+            rendered: String::new(),
+            extendable: true,
+        }
+    }
+
+    fn child_key(&self, key: &str) -> Self {
+        if !self.extendable
+            || key.is_empty()
+            || !key
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        {
+            return Self {
+                rendered: self.rendered.clone(),
+                extendable: false,
+            };
+        }
+        let rendered = if self.rendered.is_empty() {
+            key.to_owned()
+        } else {
+            format!("{}.{key}", self.rendered)
+        };
+        if rendered.len() > MAX_WARNING_FIELD_PATH_LENGTH {
+            return Self {
+                rendered: self.rendered.clone(),
+                extendable: false,
+            };
+        }
+        Self {
+            rendered,
+            extendable: true,
+        }
+    }
+
+    fn child_index(&self, index: usize) -> Self {
+        if !self.extendable {
+            return self.clone();
+        }
+        let rendered = format!("{}[{index}]", self.rendered);
+        if rendered.len() > MAX_WARNING_FIELD_PATH_LENGTH {
+            return Self {
+                rendered: self.rendered.clone(),
+                extendable: false,
+            };
+        }
+        Self {
+            rendered,
+            extendable: true,
+        }
+    }
+
+    fn warning_path(&self) -> Option<&str> {
+        (!self.rendered.is_empty()).then_some(self.rendered.as_str())
+    }
+}
+
+fn collect_suspicious_paths(
+    value: &JsonValue,
+    path: &CanonicalWarningPath,
+    output: &mut BTreeSet<String>,
+) {
+    match value {
+        JsonValue::Object(object) => {
+            let mut keys: Vec<_> = object.keys().collect();
+            keys.sort_unstable();
+            for key in keys {
+                let child_path = path.child_key(key);
+                let child = &object[key];
+                if credential_field_name(key)
+                    && child.as_str().is_some_and(resembles_plaintext_secret)
+                    && let Some(path) = child_path.warning_path()
+                {
+                    output.insert(path.to_owned());
+                }
+                collect_suspicious_paths(child, &child_path, output);
+            }
+        }
+        JsonValue::Array(array) => {
+            for (index, child) in array.iter().enumerate() {
+                collect_suspicious_paths(child, &path.child_index(index), output);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn credential_field_name(field: &str) -> bool {
+    let normalized: String = field
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect();
+    ["token", "secret", "password", "apikey", "credential"]
+        .iter()
+        .any(|marker| normalized.contains(marker))
+}
+
+fn resembles_plaintext_secret(value: &str) -> bool {
+    if value.len() < 20 {
+        return false;
+    }
+    let mut classes = [false; 4];
+    let mut distinct = BTreeSet::new();
+    for character in value.chars() {
+        distinct.insert(character);
+        if character.is_ascii_lowercase() {
+            classes[0] = true;
+        } else if character.is_ascii_uppercase() {
+            classes[1] = true;
+        } else if character.is_ascii_digit() {
+            classes[2] = true;
+        } else {
+            classes[3] = true;
+        }
+    }
+    classes.into_iter().filter(|present| *present).count() >= 3 && distinct.len() >= 12
+}
+
+#[cfg(test)]
+fn fixture_identity(
+    kind: EntityKind,
+    json: &JsonValue,
+) -> Result<ParsedNaturalIdentity<'_>, AppError> {
+    let field = |pointer: &str| {
+        json.pointer(pointer)
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| AppError::Schema(format!("required field {pointer} is absent")))
+    };
+    let project = field("/metadata/project")?;
+    Ok(match kind {
+        EntityKind::Assistant => ParsedNaturalIdentity::Assistant {
+            project,
+            slug: field("/metadata/slug")?,
+        },
+        EntityKind::Workflow => ParsedNaturalIdentity::Workflow {
+            project,
+            slug: field("/metadata/slug")?,
+        },
+        EntityKind::Skill => ParsedNaturalIdentity::Skill {
+            project,
+            name: field("/metadata/name")?,
+        },
+        EntityKind::Datasource => ParsedNaturalIdentity::Datasource {
+            project,
+            repository: field("/metadata/repo_name")?,
+            index_type: match field("/spec/index_type")? {
+                "git" => "git",
+                "svn" => "svn",
+                "confluence" => "confluence",
+                "jira" => "jira",
+                "xray" => "xray",
+                "file" => "file",
+                "google" => "google",
+                "azure_devops_wiki" => "azure_devops_wiki",
+                "azure_devops_work_item" => "azure_devops_work_item",
+                "sharepoint" => "sharepoint",
+                _ => return Err(AppError::Schema("datasource kind is unsupported".into())),
+            },
+        },
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -92,12 +621,6 @@ pub struct ParsedDeclaration {
 // ---------------------------------------------------------------------------
 
 /// Parse, safety-check, validate, and expand a raw YAML declaration string.
-///
-/// `raw_yaml` is the file content as returned by
-/// `discovery::load_declaration_file`. `file_path` is the absolute path of
-/// the declaring YAML file (used for sidecar resolution and error messages
-/// only; not emitted in output). `repo_root` is the repository root used for
-/// path-containment checks. `follow_symlinks` governs sidecar symlink policy.
 ///
 /// # Errors
 ///
@@ -111,65 +634,32 @@ pub struct ParsedDeclaration {
 /// - JSON Schema validation failure (unknown fields, missing required fields,
 ///   wrong types, pattern mismatches, etc.).
 /// - `contentFrom` sidecar: file not found, permission error, or budget exceeded.
-#[cfg(test)]
-pub fn parse_and_validate(
+pub(crate) fn parse_and_validate_with_sidecar(
     raw_yaml: &str,
     file_path: &Path,
-    repo_root: &Path,
-    follow_symlinks: bool,
-) -> Result<ParsedDeclaration, AppError> {
-    parse_and_validate_inner(raw_yaml, file_path, repo_root, follow_symlinks, None, None)
-}
-
-/// Coordinator-only parsing entry point with cooperative cancellation for
-/// sidecar expansion and phase checkpoints.
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn parse_and_validate_cancellable(
-    raw_yaml: &str,
-    file_path: &Path,
-    repo_root: &Path,
-    follow_symlinks: bool,
-    cancellation: &CancellationToken,
-) -> Result<ParsedDeclaration, AppError> {
-    parse_and_validate_inner(
-        raw_yaml,
-        file_path,
-        repo_root,
-        follow_symlinks,
-        Some(cancellation),
-        None,
-    )
-}
-
-pub(crate) fn parse_and_validate_cancellable_with_sidecar(
-    raw_yaml: &str,
-    file_path: &Path,
-    repo_root: &Path,
-    follow_symlinks: bool,
-    cancellation: &CancellationToken,
     sidecar: &SidecarLoader<'_>,
 ) -> Result<ParsedDeclaration, AppError> {
-    parse_and_validate_inner(
-        raw_yaml,
-        file_path,
-        repo_root,
-        follow_symlinks,
-        Some(cancellation),
-        Some(sidecar),
-    )
+    parse_and_validate_inner(raw_yaml, file_path, sidecar)
+}
+
+#[cfg(test)]
+pub(crate) fn parse_and_validate(
+    raw_yaml: &str,
+    file_path: &Path,
+) -> Result<ParsedDeclaration, AppError> {
+    let declaration_parent = file_path.parent().unwrap_or_else(|| Path::new("."));
+    let sidecar = |relative: &str| {
+        std::fs::read(declaration_parent.join(relative))
+            .map_err(|_| AppError::Schema("Skill contentFrom cannot be read".into()))
+    };
+    parse_and_validate_with_sidecar(raw_yaml, file_path, &sidecar)
 }
 
 fn parse_and_validate_inner(
     raw_yaml: &str,
     file_path: &Path,
-    repo_root: &Path,
-    follow_symlinks: bool,
-    cancellation: Option<&CancellationToken>,
-    sidecar: Option<&SidecarLoader<'_>>,
+    sidecar: &SidecarLoader<'_>,
 ) -> Result<ParsedDeclaration, AppError> {
-    if let Some(cancellation) = cancellation {
-        cancellation.checkpoint()?;
-    }
     // Step 1 — Per-file byte limit (must precede any AST allocation, SEC-003).
     if raw_yaml.len() > MAX_YAML_FILE_BYTES {
         return Err(AppError::YamlParse(format!(
@@ -183,21 +673,22 @@ fn parse_and_validate_inner(
     scan_for_injections(raw_yaml, file_path)?;
 
     // Step 3 — Parse to serde_yaml::Value.
-    let yaml_value: YamlValue = serde_yaml::from_str(raw_yaml).map_err(|e| {
-        AppError::YamlParse(format!("'{}': YAML parse error: {e}", file_path.display()))
-    })?;
+    let yaml_value: YamlValue =
+        serde_yaml::from_str(raw_yaml).map_err(|source| ParseError::Yaml {
+            path: file_path.to_owned(),
+            source,
+        })?;
 
     // Step 4 — Tree-walk: depth, scalar size, collection members, tagged
     // values, and merge keys.
     check_yaml_tree(&yaml_value, 0, file_path)?;
 
     // Step 5 — Convert to serde_json::Value for schema validation.
-    let json_value: JsonValue = serde_json::to_value(&yaml_value).map_err(|e| {
-        AppError::YamlParse(format!(
-            "'{}': cannot represent YAML as JSON (non-string mapping key?): {e}",
-            file_path.display()
-        ))
-    })?;
+    let json_value: JsonValue =
+        serde_json::to_value(&yaml_value).map_err(|source| ParseError::JsonConversion {
+            path: file_path.to_owned(),
+            source,
+        })?;
 
     // Step 6 — Validate against the bundled v1alpha1 JSON Schema.
     let json_value = validate_against_schema(json_value, file_path)?;
@@ -208,36 +699,20 @@ fn parse_and_validate_inner(
         kind == EntityKind::Skill && json_value.pointer("/spec/contentFrom").is_some();
 
     // Step 8 — Expand contentFrom sidecar for Skill declarations.
-    let json_value = expand_content_from(
-        json_value,
-        &kind,
-        file_path,
-        repo_root,
-        follow_symlinks,
-        cancellation,
-        sidecar,
-    )?;
+    let json_value = expand_content_from(json_value, &kind, file_path, sidecar)?;
 
     // `contentFrom` is an authoring-only selector whose sidecar bytes become
     // `spec.content`. Revalidate the transformed declaration so the exact same
     // closed-schema invariants (including Skill content length) govern inline
     // and sidecar-authored content.
     let json_value = if expands_content_from {
-        if let Some(cancellation) = cancellation {
-            cancellation.checkpoint()?;
-        }
         validate_against_schema(json_value, file_path)?
     } else {
         json_value
     };
 
-    if let Some(cancellation) = cancellation {
-        cancellation.checkpoint()?;
-    }
-
     Ok(ParsedDeclaration {
-        kind,
-        value: json_value,
+        declaration: Declaration::try_new(kind, json_value)?,
         source_path: file_path.to_owned(),
     })
 }
@@ -246,132 +721,73 @@ fn parse_and_validate_inner(
 // Pre-parse raw byte injection scanner (ADR-001)
 // ---------------------------------------------------------------------------
 
-/// Scan raw YAML bytes for injection vectors: anchors, aliases, and tags.
-///
-/// Tracks double-quoted and single-quoted string boundaries so that `&`, `*`,
-/// and `!` inside quoted scalars are not misclassified. Characters inside block
-/// scalars are not separately tracked; in practice, declaration block scalars
-/// do not contain `&word` or `*word` sequences (see note below).
-///
-/// # False positives
-///
-/// A YAML block scalar (introduced by `|` or `>`) can contain arbitrary text.
-/// If block scalar content contains `&word` or `*word`, this scanner will
-/// produce a false positive and reject the document. This is acceptable because:
-/// 1. The closed v1alpha1 schema does not produce block scalars that legitimately
-///    need `&word` or `*word` in unquoted positions.
-/// 2. The alternative (a full YAML event scanner) would require an additional
-///    dependency not present in Cargo.toml.
-///
-/// # Standard YAML type tags
-///
-/// Standard YAML type tags (`!!str`, `!!int`, `!!bool`, `!!null`, etc.) are
-/// consumed by `serde_yaml` and do not survive as `Value::Tagged` nodes.
-/// This scanner catches them via the raw `!!` pattern in unquoted context.
-/// Non-standard tags (e.g. `!!python/object:...`) survive as `Value::Tagged`
-/// and are caught by the `check_yaml_tree` tree walk regardless.
+/// Structurally inspect YAML events for anchors, aliases, and tags before
+/// `serde_yaml` resolves them into a value tree.
 fn scan_for_injections(raw: &str, file_path: &Path) -> Result<(), AppError> {
-    let bytes = raw.as_bytes();
-    let len = bytes.len();
-    let mut i = 0;
-    let mut in_double = false;
-    let mut in_single = false;
+    let mut receiver = RestrictedYamlEvents::default();
+    Parser::new_from_str(raw)
+        .load(&mut receiver, true)
+        .map_err(|source| ParseError::RestrictedYaml {
+            path: file_path.to_owned(),
+            source,
+        })?;
+    receiver.finish(file_path)
+}
 
-    while i < len {
-        let b = bytes[i];
+#[derive(Debug, Clone, Copy)]
+enum RestrictedYamlEvent {
+    Anchor,
+    Alias,
+    Tag,
+}
 
-        // ---- Single-quoted string handling ----
-        if b == b'\'' && !in_double {
-            if in_single {
-                // `''` inside a single-quoted string is an escaped apostrophe.
-                if i + 1 < len && bytes[i + 1] == b'\'' {
-                    i += 2;
-                    continue;
-                }
-                // End of single-quoted string.
-                in_single = false;
-            } else {
-                // Start of single-quoted string.
-                in_single = true;
-            }
-            i += 1;
-            continue;
+#[derive(Default)]
+struct RestrictedYamlEvents {
+    rejected: Option<RestrictedYamlEvent>,
+}
+
+impl RestrictedYamlEvents {
+    fn inspect_node(&mut self, anchor_id: usize, tag_present: bool) {
+        if self.rejected.is_none() && anchor_id != 0 {
+            self.rejected = Some(RestrictedYamlEvent::Anchor);
         }
-
-        // Inside a single-quoted string every byte is literal.
-        if in_single {
-            i += 1;
-            continue;
-        }
-
-        // ---- Double-quoted string handling ----
-        if b == b'"' {
-            in_double = !in_double;
-            i += 1;
-            continue;
-        }
-
-        if in_double {
-            // Backslash introduces an escape sequence; skip two bytes.
-            if b == b'\\' {
-                i += 2;
-            } else {
-                i += 1;
-            }
-            continue;
-        }
-
-        // ---- Unquoted context: check for injection patterns ----
-        match b {
-            b'#' => {
-                // Comment: advance to end of line.
-                while i < len && bytes[i] != b'\n' {
-                    i += 1;
-                }
-            }
-            b'&' => {
-                // Anchor indicator: `&` immediately followed by a word character.
-                if i + 1 < len && is_word_byte(bytes[i + 1]) {
-                    return Err(AppError::YamlParse(format!(
-                        "'{}': YAML anchor found; anchors are not permitted (ADR-001)",
-                        file_path.display()
-                    )));
-                }
-                i += 1;
-            }
-            b'*' => {
-                // Alias indicator: `*` immediately followed by a word character.
-                if i + 1 < len && is_word_byte(bytes[i + 1]) {
-                    return Err(AppError::YamlParse(format!(
-                        "'{}': YAML alias found; aliases are not permitted (ADR-001)",
-                        file_path.display()
-                    )));
-                }
-                i += 1;
-            }
-            b'!' => {
-                // Tag indicator: `!` followed by `!`, `<`, or a word character.
-                if i + 1 < len
-                    && (bytes[i + 1] == b'!' || bytes[i + 1] == b'<' || is_word_byte(bytes[i + 1]))
-                {
-                    return Err(AppError::YamlParse(format!(
-                        "'{}': YAML tag found; tags are not permitted (ADR-001)",
-                        file_path.display()
-                    )));
-                }
-                i += 1;
-            }
-            _ => i += 1,
+        if self.rejected.is_none() && tag_present {
+            self.rejected = Some(RestrictedYamlEvent::Tag);
         }
     }
 
-    Ok(())
+    fn finish(self, file_path: &Path) -> Result<(), AppError> {
+        let Some(rejected) = self.rejected else {
+            return Ok(());
+        };
+        let (subject, plural) = match rejected {
+            RestrictedYamlEvent::Anchor => ("anchor", "anchors"),
+            RestrictedYamlEvent::Alias => ("alias", "aliases"),
+            RestrictedYamlEvent::Tag => ("tag", "tags"),
+        };
+        Err(AppError::YamlParse(format!(
+            "'{}': YAML {subject} found; {plural} are not permitted (ADR-001)",
+            file_path.display()
+        )))
+    }
 }
 
-/// Returns `true` if `b` is an ASCII alphanumeric byte or underscore.
-#[inline]
-fn is_word_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
+impl MarkedEventReceiver for RestrictedYamlEvents {
+    fn on_event(&mut self, event: Event, _marker: Marker) {
+        if self.rejected.is_some() {
+            return;
+        }
+        match event {
+            Event::Alias(_) => self.rejected = Some(RestrictedYamlEvent::Alias),
+            Event::Scalar(_, _, anchor_id, tag) => {
+                self.inspect_node(anchor_id, tag.is_some());
+            }
+            Event::SequenceStart(anchor_id, tag) | Event::MappingStart(anchor_id, tag) => {
+                self.inspect_node(anchor_id, tag.is_some());
+            }
+            _ => {}
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -547,10 +963,7 @@ fn expand_content_from(
     mut value: JsonValue,
     kind: &EntityKind,
     file_path: &Path,
-    repo_root: &Path,
-    follow_symlinks: bool,
-    cancellation: Option<&CancellationToken>,
-    sidecar: Option<&SidecarLoader<'_>>,
+    sidecar: &SidecarLoader<'_>,
 ) -> Result<JsonValue, AppError> {
     if *kind != EntityKind::Skill {
         return Ok(value);
@@ -566,42 +979,12 @@ fn expand_content_from(
         None => return Ok(value), // `spec.content` is used directly
     };
 
-    let sidecar_bytes = match sidecar {
-        Some(sidecar) => sidecar(file_path, &relative_path)?,
-        None => {
-            // Resolve and load through the discovery module (enforces symlink,
-            // containment, and open-then-fstat behavior).
-            let sidecar_path =
-                resolve_sidecar_path(&relative_path, file_path, repo_root, follow_symlinks)?;
-            match cancellation {
-                Some(cancellation) => load_sidecar_file_cancellable(
-                    &sidecar_path,
-                    MAX_SIDECAR_FILE_BYTES,
-                    cancellation,
-                )?,
-                None => load_sidecar_file(&sidecar_path, MAX_SIDECAR_FILE_BYTES)?,
-            }
-        }
-    };
-
-    // Aggregate upload budget: for a single Skill declaration there is exactly
-    // one `contentFrom` sidecar, so the aggregate equals the per-file size.
-    if sidecar_bytes.len() as u64 > MAX_AGGREGATE_UPLOAD_BYTES {
-        return Err(AppError::Schema(format!(
-            "'{}': contentFrom sidecar aggregate upload budget exceeded \
-             ({} bytes > {MAX_AGGREGATE_UPLOAD_BYTES} bytes)",
-            file_path.display(),
-            sidecar_bytes.len(),
-        )));
-    }
+    let sidecar_bytes = sidecar(&relative_path)?;
 
     // The Skill content field is UTF-8 text.
-    let content = String::from_utf8(sidecar_bytes).map_err(|_| {
-        AppError::Schema(format!(
-            "'{}': contentFrom sidecar at '{}' is not valid UTF-8",
-            file_path.display(),
-            relative_path,
-        ))
+    let content = String::from_utf8(sidecar_bytes).map_err(|source| ParseError::SidecarUtf8 {
+        path: file_path.to_owned(),
+        source,
     })?;
 
     // Replace contentFrom with content in the JSON value.
@@ -621,26 +1004,15 @@ fn expand_content_from(
 mod tests {
     use super::*;
     use std::fs;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     // --- Test helpers -------------------------------------------------------
 
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    fn temp_dir(label: &str) -> (PathBuf, TempGuard) {
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let pid = std::process::id();
-        let path = std::env::temp_dir().join(format!("codemie_parse_{pid}_{n}_{label}"));
-        fs::create_dir_all(&path).expect("create temp dir");
-        let guard = TempGuard(path.clone());
-        (path, guard)
-    }
-
-    struct TempGuard(PathBuf);
-    impl Drop for TempGuard {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
+    fn temp_dir(label: &str) -> (PathBuf, tempfile::TempDir) {
+        let guard = tempfile::Builder::new()
+            .prefix(&format!("codemie_parse_{label}_"))
+            .tempdir()
+            .expect("create temp dir");
+        (guard.path().to_owned(), guard)
     }
 
     fn init_git(root: &Path) {
@@ -735,14 +1107,14 @@ spec:
         fs::write(&file, minimal_workflow_yaml()).unwrap();
 
         let raw = fs::read_to_string(&file).unwrap();
-        let result = parse_and_validate(&raw, &file, &root, false);
+        let result = parse_and_validate(&raw, &file);
         assert!(
             result.is_ok(),
             "valid Workflow YAML must parse: {:?}",
             result
         );
         let decl = result.unwrap();
-        assert_eq!(decl.kind, EntityKind::Workflow);
+        assert_eq!(decl.kind(), EntityKind::Workflow);
     }
 
     #[test]
@@ -753,10 +1125,10 @@ spec:
         fs::write(&file, minimal_skill_yaml_inline()).unwrap();
 
         let raw = fs::read_to_string(&file).unwrap();
-        let result = parse_and_validate(&raw, &file, &root, false);
+        let result = parse_and_validate(&raw, &file);
         assert!(result.is_ok(), "valid Skill YAML must parse: {:?}", result);
         let decl = result.unwrap();
-        assert_eq!(decl.kind, EntityKind::Skill);
+        assert_eq!(decl.kind(), EntityKind::Skill);
     }
 
     // ---------------------------------------------------------------------------
@@ -772,7 +1144,7 @@ spec:
         let yaml = format!("{}\nunknown_extra_field: oops\n", minimal_workflow_yaml());
         fs::write(&file, &yaml).unwrap();
 
-        let err = parse_and_validate(&yaml, &file, &root, false)
+        let err = parse_and_validate(&yaml, &file)
             .expect_err("unknown field must produce a schema error");
         assert_eq!(err.exit_code(), 2, "schema errors must be exit 2");
         let msg = format!("{err}");
@@ -796,8 +1168,8 @@ spec:
         let yaml = "apiVersion: codemie.epam.com/v1alpha1\nfoo: &anchor value\nbar: *anchor\n";
         fs::write(&file, yaml).unwrap();
 
-        let err = parse_and_validate(yaml, &file, &root, false)
-            .expect_err("YAML alias must produce a YamlParse error");
+        let err =
+            parse_and_validate(yaml, &file).expect_err("YAML alias must produce a YamlParse error");
         assert_eq!(err.exit_code(), 2);
         let msg = format!("{err}");
         assert!(
@@ -816,7 +1188,7 @@ spec:
         let yaml = "apiVersion: codemie.epam.com/v1alpha1\nfoo: &myanchor value\n";
         fs::write(&file, yaml).unwrap();
 
-        let err = parse_and_validate(yaml, &file, &root, false)
+        let err = parse_and_validate(yaml, &file)
             .expect_err("YAML anchor must produce a YamlParse error");
         assert_eq!(err.exit_code(), 2);
         let msg = format!("{err}");
@@ -836,8 +1208,8 @@ spec:
         let yaml = "apiVersion: codemie.epam.com/v1alpha1\nfoo: !!python/object:os.system bar\n";
         fs::write(&file, yaml).unwrap();
 
-        let err = parse_and_validate(yaml, &file, &root, false)
-            .expect_err("YAML tag must produce a YamlParse error");
+        let err =
+            parse_and_validate(yaml, &file).expect_err("YAML tag must produce a YamlParse error");
         assert_eq!(err.exit_code(), 2);
         let msg = format!("{err}");
         assert!(
@@ -856,7 +1228,7 @@ spec:
         let yaml = "key:\n  valid: true\n invalid_indent: oops\n";
         fs::write(&file, yaml).unwrap();
 
-        let err = parse_and_validate(yaml, &file, &root, false)
+        let err = parse_and_validate(yaml, &file)
             .expect_err("malformed YAML must produce a YamlParse error");
         assert_eq!(err.exit_code(), 2);
     }
@@ -881,7 +1253,7 @@ spec:
         let decl_file = root.join("skill.yaml");
         fs::write(&decl_file, &yaml_str).unwrap();
 
-        let result = parse_and_validate(&yaml_str, &decl_file, &root, false);
+        let result = parse_and_validate(&yaml_str, &decl_file);
         assert!(
             result.is_ok(),
             "contentFrom expansion must succeed: {:?}",
@@ -889,10 +1261,11 @@ spec:
         );
 
         let decl = result.unwrap();
-        assert_eq!(decl.kind, EntityKind::Skill);
+        assert_eq!(decl.kind(), EntityKind::Skill);
 
         // contentFrom should be replaced by content.
-        let spec = decl.value.get("spec").expect("spec must exist");
+        let value = decl.value();
+        let spec = value.get("spec").expect("spec must exist");
         assert!(
             spec.get("contentFrom").is_none(),
             "contentFrom must be removed after expansion"
@@ -934,7 +1307,7 @@ spec:
         let declaration_file = root.join("skill.yaml");
         fs::write(&declaration_file, &yaml).expect("declaration must write");
 
-        let error = parse_and_validate(&yaml, &declaration_file, &root, false)
+        let error = parse_and_validate(&yaml, &declaration_file)
             .expect_err("out-of-schema sidecar content must fail");
         assert_eq!(error.exit_code(), 2);
         assert!(matches!(error, AppError::Schema(_)));
@@ -950,10 +1323,10 @@ spec:
         let declaration_file = root.join("skill.yaml");
         fs::write(&declaration_file, &yaml).expect("declaration must write");
 
-        let declaration = parse_and_validate(&yaml, &declaration_file, &root, false)
+        let declaration = parse_and_validate(&yaml, &declaration_file)
             .expect("boundary sidecar content must pass");
         assert_eq!(
-            declaration.value.pointer("/spec/content"),
+            declaration.value().pointer("/spec/content"),
             Some(&JsonValue::String(expected))
         );
     }
@@ -1002,15 +1375,12 @@ spec:
         fs::write(&decl_file, "placeholder").unwrap();
 
         // The normal path should succeed (file is small).
-        let result = expand_content_from(
-            json_val.clone(),
-            &EntityKind::Skill,
-            &decl_file,
-            &root,
-            false,
-            None,
-            None,
-        );
+        let sidecar = |relative: &str| {
+            std::fs::read(root.join(relative))
+                .map_err(|_| AppError::Schema("sidecar cannot be read".into()))
+        };
+        let result =
+            expand_content_from(json_val.clone(), &EntityKind::Skill, &decl_file, &sidecar);
         assert!(
             result.is_ok(),
             "small sidecar must not exceed budget: {:?}",
@@ -1023,25 +1393,6 @@ spec:
     // ---------------------------------------------------------------------------
 
     #[test]
-    fn cancellable_parser_observes_invocation_cancellation() {
-        let (root, _g) = temp_dir("cancelled");
-        init_git(&root);
-        let file = root.join("decl.yaml");
-        let cancellation = CancellationToken::default();
-        cancellation.cancel();
-
-        let error = parse_and_validate_cancellable(
-            minimal_workflow_yaml(),
-            &file,
-            &root,
-            false,
-            &cancellation,
-        )
-        .expect_err("cancelled parsing must stop at its invocation checkpoint");
-        assert!(matches!(error, AppError::Timeout(_)));
-    }
-
-    #[test]
     fn yaml_exceeding_file_byte_limit_is_yaml_parse_error() {
         let (root, _g) = temp_dir("byte_limit");
         init_git(&root);
@@ -1051,7 +1402,7 @@ spec:
         let large = "x".repeat(MAX_YAML_FILE_BYTES + 1);
         fs::write(&file, &large).unwrap();
 
-        let err = parse_and_validate(&large, &file, &root, false)
+        let err = parse_and_validate(&large, &file)
             .expect_err("file exceeding byte limit must produce YamlParse error");
         assert_eq!(err.exit_code(), 2);
     }
@@ -1070,7 +1421,7 @@ spec:
         let file = root.join("decl.yaml");
         fs::write(&file, &yaml).unwrap();
 
-        let err = parse_and_validate(&yaml, &file, &root, false)
+        let err = parse_and_validate(&yaml, &file)
             .expect_err("deep nesting must produce YamlParse error");
         assert_eq!(err.exit_code(), 2);
     }
@@ -1086,7 +1437,7 @@ spec:
         let file = root.join("decl.yaml");
         fs::write(&file, &yaml).unwrap();
 
-        let err = parse_and_validate(&yaml, &file, &root, false)
+        let err = parse_and_validate(&yaml, &file)
             .expect_err("oversized scalar must produce YamlParse error");
         assert_eq!(err.exit_code(), 2);
     }
@@ -1144,6 +1495,21 @@ spec:
             result.is_ok(),
             "* inside single-quoted string must be allowed: {:?}",
             result
+        );
+    }
+
+    #[test]
+    fn scanner_allows_indicator_text_in_block_scalar() {
+        let (root, _g) = temp_dir("indicator_block_scalar");
+        init_git(&root);
+        let file = root.join("x.yaml");
+        let result = scan_for_injections(
+            "key: |\n  This text mentions &anchor, *alias, and !!tag literally.\n",
+            &file,
+        );
+        assert!(
+            result.is_ok(),
+            "indicator text inside a block scalar is data: {result:?}"
         );
     }
 

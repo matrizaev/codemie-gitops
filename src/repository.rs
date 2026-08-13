@@ -19,6 +19,39 @@ use crate::parse::{
 };
 use crate::validate::{validate_graph, validate_natural};
 
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum RepositoryError {
+    #[error("cannot canonicalize repository root {path}")]
+    RepositoryRoot {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("repository path is unavailable: {path}")]
+    PathUnavailable {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("generated declaration is not valid UTF-8")]
+    GeneratedUtf8(#[source] std::string::FromUtf8Error),
+    #[error("overlay path is outside repository: {path}")]
+    OutsideRepository {
+        path: PathBuf,
+        #[source]
+        source: std::path::StripPrefixError,
+    },
+}
+
+impl RepositoryError {
+    pub(crate) fn is_configuration(&self) -> bool {
+        matches!(
+            self,
+            Self::RepositoryRoot { .. } | Self::OutsideRepository { .. }
+        )
+    }
+}
+
 pub trait RepositoryView {
     fn yaml_paths(&self) -> Result<Vec<PathBuf>, AppError>;
     fn open_yaml(&self, path: &Path, cancellation: &CancellationToken) -> Result<String, AppError>;
@@ -39,8 +72,11 @@ pub struct DiskRepositoryView {
 
 impl DiskRepositoryView {
     pub fn new(repo_root: &Path, follow_symlinks: bool) -> Result<Self, AppError> {
-        let repo_root = std::fs::canonicalize(repo_root)
-            .map_err(|_| AppError::Configuration("cannot canonicalize repository root".into()))?;
+        let repo_root =
+            std::fs::canonicalize(repo_root).map_err(|source| RepositoryError::RepositoryRoot {
+                path: repo_root.to_owned(),
+                source,
+            })?;
         Ok(Self {
             repo_root,
             follow_symlinks,
@@ -54,12 +90,12 @@ impl RepositoryView for DiskRepositoryView {
             files
                 .into_iter()
                 .map(|file| {
-                    if file.byte_len > MAX_YAML_FILE_BYTES as u64 {
+                    if file.byte_len() > MAX_YAML_FILE_BYTES as u64 {
                         return Err(AppError::YamlParse(
                             "declaration exceeds the 1 MiB byte limit".into(),
                         ));
                     }
-                    Ok(file.path)
+                    Ok(file.into_path())
                 })
                 .collect()
         })?
@@ -163,9 +199,9 @@ impl RepositoryView for OverlayRepositoryView {
     fn open_yaml(&self, path: &Path, cancellation: &CancellationToken) -> Result<String, AppError> {
         if path == self.yaml_path {
             cancellation.checkpoint()?;
-            return String::from_utf8(self.yaml.clone()).map_err(|_| {
-                AppError::YamlParse("generated declaration is not valid UTF-8".into())
-            });
+            return String::from_utf8(self.yaml.clone())
+                .map_err(RepositoryError::GeneratedUtf8)
+                .map_err(AppError::from);
         }
         self.disk.open_yaml(path, cancellation)
     }
@@ -216,11 +252,17 @@ fn canonical_new_path(disk: &DiskRepositoryView, path: &Path) -> Result<PathBuf,
         .file_name()
         .ok_or_else(|| AppError::Configuration("overlay path has no filename".into()))?;
     let normalized = std::fs::canonicalize(parent)
-        .map_err(|_| AppError::Configuration("overlay path parent is unavailable".into()))?
+        .map_err(|source| RepositoryError::PathUnavailable {
+            path: parent.to_owned(),
+            source,
+        })?
         .join(filename);
-    let relative = normalized
-        .strip_prefix(&disk.repo_root)
-        .map_err(|_| AppError::Configuration("overlay path must be inside repository".into()))?;
+    let relative = normalized.strip_prefix(&disk.repo_root).map_err(|source| {
+        RepositoryError::OutsideRepository {
+            path: normalized.clone(),
+            source,
+        }
+    })?;
     if relative.components().any(|component| {
         matches!(
             component,
@@ -257,8 +299,11 @@ pub fn load_target_declaration(
     cancellation: &CancellationToken,
 ) -> Result<ParsedDeclaration, AppError> {
     cancellation.checkpoint()?;
-    let target_path = std::fs::canonicalize(request.file)
-        .map_err(|_| AppError::Schema("target declaration file is unavailable".into()))?;
+    let target_path =
+        std::fs::canonicalize(request.file).map_err(|source| RepositoryError::PathUnavailable {
+            path: request.file.to_owned(),
+            source,
+        })?;
     let view = DiskRepositoryView::new(request.repo_root, request.follow_symlinks)?;
     let mut declarations =
         load_repository_declarations(&view, request.default_project, cancellation)?;
@@ -266,7 +311,7 @@ pub fn load_target_declaration(
 
     let target_index = declarations
         .iter()
-        .position(|declaration| declaration.source_path == target_path)
+        .position(|declaration| declaration.source_path() == target_path)
         .ok_or_else(|| {
             AppError::Schema(
                 "target file is not a discovered YAML declaration in the repository".into(),
@@ -313,7 +358,7 @@ pub fn validate_overlay(
     let mut declarations = load_repository_declarations(view, default_project, cancellation)?;
     let target = declarations
         .iter()
-        .position(|declaration| declaration.source_path == view.yaml_path)
+        .position(|declaration| declaration.source_path() == view.yaml_path)
         .ok_or_else(|| AppError::Schema("generated declaration was not validated".into()))?;
     Ok(declarations.swap_remove(target))
 }
@@ -322,12 +367,7 @@ fn materialize_effective_project(
     declaration: &mut ParsedDeclaration,
     default_project: Option<&str>,
 ) -> Result<(), AppError> {
-    let metadata = declaration
-        .value
-        .get_mut("metadata")
-        .and_then(serde_json::Value::as_object_mut)
-        .ok_or_else(|| AppError::Schema("declaration metadata is required".into()))?;
-    if metadata.get("project").is_none() {
+    if !declaration.has_project() {
         let project = default_project
             .filter(|value| !value.is_empty())
             .ok_or_else(|| {
@@ -335,10 +375,7 @@ fn materialize_effective_project(
                     "metadata.project is required when repository project is not configured".into(),
                 )
             })?;
-        metadata.insert(
-            "project".to_owned(),
-            serde_json::Value::String(project.to_owned()),
-        );
+        declaration.set_default_project(project)?;
     }
     Ok(())
 }
@@ -391,7 +428,7 @@ spec:
                 .unwrap();
 
         let declaration = validate_overlay(&overlay, Some("demo"), &cancellation()).unwrap();
-        assert_eq!(declaration.kind.to_string(), "Assistant");
+        assert_eq!(declaration.kind().to_string(), "Assistant");
         assert!(!yaml_path.exists());
     }
 
@@ -442,7 +479,7 @@ spec:
 
         let declaration = validate_overlay(&overlay, Some("demo"), &cancellation()).unwrap();
         assert_eq!(
-            declaration.value["spec"]["content"],
+            declaration.value()["spec"]["content"],
             String::from_utf8(content.to_vec()).unwrap()
         );
         assert!(!sidecar_path.exists());

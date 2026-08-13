@@ -1,26 +1,8 @@
-mod adapters;
-mod auth;
-mod cancellation;
-mod cli;
-mod config;
-mod coordinator;
-mod discovery;
-mod error;
-mod http;
-mod lint;
-mod output;
-mod parse;
-mod projection;
-mod render;
-mod repository;
-mod save;
-mod schema;
-pub mod validate;
-
+use std::process::ExitCode;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> ExitCode {
     // Initialize structured tracing early so any diagnostic output produced
     // during startup is captured. The RUST_LOG env var controls the filter;
     // JSON format is available via RUST_LOG_FORMAT=json (configured in T-002).
@@ -28,6 +10,5 @@ async fn main() {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    let exit_code = cli::run().await;
-    std::process::exit(exit_code);
+    codemie_gitops::run(std::env::args_os()).await
 }

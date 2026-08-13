@@ -1,3 +1,5 @@
+#[cfg(test)]
+use std::collections::HashMap;
 /// Offline natural and graph reference validation (F-005).
 ///
 /// # Natural validation (`validate_natural`)
@@ -27,11 +29,14 @@
 ///
 /// All violations are reported as `AppError::Schema` (exit 2).
 /// No network access occurs (contracts/cli.md §4).
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::collections::HashSet;
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 
+use crate::declaration_schema::{ExecutionConfigAssistantsItem, WorkflowState};
 use crate::error::AppError;
-use crate::parse::{EntityKind, ParsedDeclaration};
+use crate::parse::{EntityKind, ParsedDeclaration, ParsedDeclarationRef};
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -52,7 +57,7 @@ use crate::parse::{EntityKind, ParsedDeclaration};
 ///
 /// Returns `AppError::Schema` (exit 2) for any violation.
 pub fn validate_natural(decl: &ParsedDeclaration) -> Result<(), AppError> {
-    match decl.kind {
+    match decl.kind() {
         EntityKind::Workflow => validate_workflow_local(decl),
         // Other kinds: all semantic invariants are covered by the schema (F-004).
         _ => Ok(()),
@@ -68,6 +73,7 @@ pub fn validate_natural(decl: &ParsedDeclaration) -> Result<(), AppError> {
 ///    against the index.
 ///
 /// Returns `AppError::Schema` (exit 2) for any violation.
+#[cfg(test)]
 pub fn validate_graph(decls: &[ParsedDeclaration]) -> Result<(), AppError> {
     let index = build_graph_index(decls)?;
     validate_all_references(decls, &index)
@@ -78,56 +84,50 @@ pub fn validate_graph(decls: &[ParsedDeclaration]) -> Result<(), AppError> {
 // ---------------------------------------------------------------------------
 
 fn validate_workflow_local(decl: &ParsedDeclaration) -> Result<(), AppError> {
-    let exec = match decl.value.pointer("/spec/execution_config") {
-        Some(v) => v,
-        // Missing execution_config: the schema already catches this, so treat
-        // as no-op here to avoid double-reporting.
-        None => return Ok(()),
+    let ParsedDeclarationRef::Workflow(workflow) = decl.typed() else {
+        #[cfg(test)]
+        if let ParsedDeclarationRef::Fixture(EntityKind::Workflow, value) = decl.typed() {
+            return validate_workflow_local_fixture(value, decl.source_path());
+        }
+        return Ok(());
     };
+    let exec = &workflow.spec.execution_config;
 
     // Check uniqueness and collect actor IDs in each array.
-    let actor_ids = collect_unique_ids(exec, "assistants", &decl.source_path)?;
-    let tool_ids = collect_unique_ids(exec, "tools", &decl.source_path)?;
-    let node_ids = collect_unique_ids(exec, "custom_nodes", &decl.source_path)?;
+    let actor_ids = collect_unique(
+        exec.assistants.iter().map(|actor| match actor {
+            ExecutionConfigAssistantsItem::PersistedWorkflowActor(actor) => actor.id.as_str(),
+            ExecutionConfigAssistantsItem::InlineWorkflowActor(actor) => actor.id.as_str(),
+        }),
+        "assistants",
+        decl.source_path(),
+    )?;
+    let tool_ids = collect_unique(
+        exec.tools.iter().map(|tool| tool.id.as_str()),
+        "tools",
+        decl.source_path(),
+    )?;
+    let node_ids = collect_unique(
+        exec.custom_nodes.iter().map(|node| node.id.as_str()),
+        "custom_nodes",
+        decl.source_path(),
+    )?;
 
-    // Validate state-local references.
-    let states = exec
-        .get("states")
-        .and_then(|v| v.as_array())
-        .map(|a| a.as_slice())
-        .unwrap_or(&[]);
-
-    for (i, state) in states.iter().enumerate() {
-        if let Some(aid) = state.get("assistant_id").and_then(|v| v.as_str())
-            && !actor_ids.contains(aid)
-        {
+    for (i, state) in exec.states.iter().enumerate() {
+        let (field, id, valid) = match state {
+            WorkflowState::Variant0 { assistant_id, .. } => {
+                ("assistant_id", assistant_id.as_str(), &actor_ids)
+            }
+            WorkflowState::Variant1 { custom_node_id, .. } => {
+                ("custom_node_id", custom_node_id.as_str(), &node_ids)
+            }
+            WorkflowState::Variant2 { tool_id, .. } => ("tool_id", tool_id.as_str(), &tool_ids),
+        };
+        if !valid.contains(id) {
             return Err(AppError::Schema(format!(
-                "'{}': workflow state[{i}].assistant_id '{}' does not match \
-                 any id in execution_config.assistants; \
-                 states[].assistant_id must reference a workflow-local actor id \
-                 (FR-035)",
-                decl.source_path.display(),
-                aid,
-            )));
-        }
-        if let Some(nid) = state.get("custom_node_id").and_then(|v| v.as_str())
-            && !node_ids.contains(nid)
-        {
-            return Err(AppError::Schema(format!(
-                "'{}': workflow state[{i}].custom_node_id '{}' does not match \
-                 any id in execution_config.custom_nodes",
-                decl.source_path.display(),
-                nid,
-            )));
-        }
-        if let Some(tid) = state.get("tool_id").and_then(|v| v.as_str())
-            && !tool_ids.contains(tid)
-        {
-            return Err(AppError::Schema(format!(
-                "'{}': workflow state[{i}].tool_id '{}' does not match \
-                 any id in execution_config.tools",
-                decl.source_path.display(),
-                tid,
+                "'{}': workflow state[{i}].{field} '{}' does not match any id in execution_config",
+                decl.source_path().display(),
+                id,
             )));
         }
     }
@@ -138,20 +138,14 @@ fn validate_workflow_local(decl: &ParsedDeclaration) -> Result<(), AppError> {
 /// Collect the `id` values from `exec[field]` array; fail on duplicates.
 ///
 /// Returns the complete `HashSet<String>` of IDs for caller use.
-fn collect_unique_ids(
-    exec: &serde_json::Value,
+fn collect_unique<'a>(
+    ids: impl Iterator<Item = &'a str>,
     field: &str,
     source_path: &Path,
 ) -> Result<HashSet<String>, AppError> {
-    let arr = match exec.get(field).and_then(|v| v.as_array()) {
-        Some(a) => a,
-        None => return Ok(HashSet::new()),
-    };
     let mut seen: HashSet<String> = HashSet::new();
-    for item in arr {
-        if let Some(id) = item.get("id").and_then(|v| v.as_str())
-            && !seen.insert(id.to_owned())
-        {
+    for id in ids {
+        if !seen.insert(id.to_owned()) {
             return Err(AppError::Schema(format!(
                 "'{}': duplicate actor id '{}' in execution_config.{field}; \
                  ids must be unique within the workflow (FR-035)",
@@ -163,6 +157,50 @@ fn collect_unique_ids(
     Ok(seen)
 }
 
+#[cfg(test)]
+fn validate_workflow_local_fixture(
+    declaration: &serde_json::Value,
+    source_path: &Path,
+) -> Result<(), AppError> {
+    let Some(exec) = declaration.pointer("/spec/execution_config") else {
+        return Ok(());
+    };
+    let ids = |field: &str| {
+        exec.get(field)
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|item| item.get("id").and_then(serde_json::Value::as_str))
+    };
+    let actor_ids = collect_unique(ids("assistants"), "assistants", source_path)?;
+    let tool_ids = collect_unique(ids("tools"), "tools", source_path)?;
+    let node_ids = collect_unique(ids("custom_nodes"), "custom_nodes", source_path)?;
+    for (index, state) in exec
+        .get("states")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        for (field, valid) in [
+            ("assistant_id", &actor_ids),
+            ("custom_node_id", &node_ids),
+            ("tool_id", &tool_ids),
+        ] {
+            if let Some(id) = state.get(field).and_then(serde_json::Value::as_str)
+                && !valid.contains(id)
+            {
+                return Err(AppError::Schema(format!(
+                    "'{}': workflow state[{index}].{field} '{}' does not match any id in execution_config",
+                    source_path.display(),
+                    id
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Graph index
 // ---------------------------------------------------------------------------
@@ -172,6 +210,7 @@ fn collect_unique_ids(
 /// Kept separate from `parse::EntityKind` so that validate's internal types
 /// are stable and `Hash`-derivable without coupling to the parse module's
 /// derive list.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum GraphKind {
     Assistant,
@@ -180,6 +219,7 @@ enum GraphKind {
     Datasource,
 }
 
+#[cfg(test)]
 impl GraphKind {
     fn as_str(self) -> &'static str {
         match self {
@@ -191,6 +231,7 @@ impl GraphKind {
     }
 }
 
+#[cfg(test)]
 impl From<&EntityKind> for GraphKind {
     fn from(ek: &EntityKind) -> Self {
         match ek {
@@ -203,6 +244,7 @@ impl From<&EntityKind> for GraphKind {
 }
 
 /// Composite natural-key tuple for graph index lookups.
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct GraphKey {
     project: String,
@@ -210,22 +252,6 @@ struct GraphKey {
     /// The kind-specific key field value: slug (Assistant/Workflow), name
     /// (Skill), or repo_name (Datasource).
     key: String,
-}
-
-/// Extract the natural-key field value (slug / name / repo_name) for a
-/// declaration.
-///
-/// Returns `None` when the field is absent; the schema already catches that.
-fn natural_key_of(kind: &EntityKind, value: &serde_json::Value) -> Option<String> {
-    let field = match kind {
-        EntityKind::Assistant | EntityKind::Workflow => "slug",
-        EntityKind::Skill => "name",
-        EntityKind::Datasource => "repo_name",
-    };
-    value
-        .pointer(&format!("/metadata/{field}"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_owned())
 }
 
 /// Build the `(project, kind, key) → source_path` index from all declarations.
@@ -237,31 +263,20 @@ fn natural_key_of(kind: &EntityKind, value: &serde_json::Value) -> Option<String
 /// string) because effective-project resolution is a caller-layer concern
 /// (F-002/F-004); validate_graph validates references against the same project
 /// string that is present in the declaration.
+#[cfg(test)]
 fn build_graph_index(decls: &[ParsedDeclaration]) -> Result<HashMap<GraphKey, PathBuf>, AppError> {
     let mut index: HashMap<GraphKey, PathBuf> = HashMap::new();
 
     for decl in decls {
-        let project = decl
-            .value
-            .pointer("/metadata/project")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_owned();
-
-        let key_val = match natural_key_of(&decl.kind, &decl.value) {
-            Some(k) => k,
-            // Missing natural key: the schema already caught this; skip to
-            // avoid confusing downstream diagnostics.
-            None => continue,
-        };
+        let (kind, project, key_val) = decl.graph_identity()?;
 
         let gk = GraphKey {
-            project: project.clone(),
-            kind: GraphKind::from(&decl.kind),
-            key: key_val.clone(),
+            project: project.to_owned(),
+            kind: GraphKind::from(&kind),
+            key: key_val.to_owned(),
         };
 
-        if let Some(existing_path) = index.insert(gk.clone(), decl.source_path.clone()) {
+        if let Some(existing_path) = index.insert(gk.clone(), decl.source_path().to_owned()) {
             return Err(AppError::Schema(format!(
                 "duplicate {} '{}' in project '{}': \
                  first declared in '{}', also declared in '{}' \
@@ -270,7 +285,7 @@ fn build_graph_index(decls: &[ParsedDeclaration]) -> Result<HashMap<GraphKey, Pa
                 key_val,
                 project,
                 existing_path.display(),
-                decl.source_path.display(),
+                decl.source_path().display(),
             )));
         }
     }
@@ -285,6 +300,7 @@ fn build_graph_index(decls: &[ParsedDeclaration]) -> Result<HashMap<GraphKey, Pa
 /// Resolve a single cross-entity reference against the index.
 ///
 /// `ref_kind_label` is a human-readable kind name used in the error message.
+#[cfg(test)]
 fn resolve_ref(
     index: &HashMap<GraphKey, PathBuf>,
     project: &str,
@@ -313,26 +329,17 @@ fn resolve_ref(
     Ok(())
 }
 
-/// Extract `(project, key_field_value)` from a reference object such as
-/// `skillKey`, `assistantKey`, or `datasourceKey`.
-///
-/// Returns `None` when either field is absent or not a string.
-fn ref_pair(obj: &serde_json::Value, key_field: &str) -> Option<(String, String)> {
-    let project = obj.get("project")?.as_str()?.to_owned();
-    let key = obj.get(key_field)?.as_str()?.to_owned();
-    Some((project, key))
-}
-
 // ---------------------------------------------------------------------------
 // Cross-entity reference validation
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
 fn validate_all_references(
     decls: &[ParsedDeclaration],
     index: &HashMap<GraphKey, PathBuf>,
 ) -> Result<(), AppError> {
     for decl in decls {
-        match decl.kind {
+        match decl.kind() {
             EntityKind::Workflow => validate_workflow_refs(decl, index)?,
             EntityKind::Assistant => validate_assistant_refs(decl, index)?,
             // Skill and Datasource have no outgoing cross-entity references in
@@ -349,62 +356,46 @@ fn validate_all_references(
 /// - Persisted actors: `assistantRef.{project, slug}` → resolved Assistant.
 /// - Inline actors: `skillRefs[].{project, name}` → resolved Skill;
 ///   `datasourceRefs[].{project, repo_name}` → resolved Datasource.
+#[cfg(test)]
 fn validate_workflow_refs(
     decl: &ParsedDeclaration,
     index: &HashMap<GraphKey, PathBuf>,
 ) -> Result<(), AppError> {
-    let exec = match decl.value.pointer("/spec/execution_config") {
-        Some(v) => v,
-        None => return Ok(()),
-    };
-
-    let actors = exec
-        .get("assistants")
-        .and_then(|v| v.as_array())
-        .map(|a| a.as_slice())
-        .unwrap_or(&[]);
-
-    for actor in actors {
-        // Persisted actor form: has `assistantRef: {project, slug}`.
-        if let Some(assistant_ref) = actor.get("assistantRef")
-            && let Some((project, slug)) = ref_pair(assistant_ref, "slug")
-        {
-            resolve_ref(
-                index,
-                &project,
-                GraphKind::Assistant,
-                &slug,
-                &decl.source_path,
-                "Assistant",
-            )?;
+    let ParsedDeclarationRef::Workflow(workflow) = decl.typed() else {
+        #[cfg(test)]
+        if let ParsedDeclarationRef::Fixture(EntityKind::Workflow, value) = decl.typed() {
+            return validate_workflow_refs_fixture(value, decl.source_path(), index);
         }
-
-        // Inline actor form: `skillRefs[]: [{project, name}]`.
-        if let Some(skill_refs) = actor.get("skillRefs").and_then(|v| v.as_array()) {
-            for sr in skill_refs {
-                if let Some((project, name)) = ref_pair(sr, "name") {
+        return Ok(());
+    };
+    for actor in &workflow.spec.execution_config.assistants {
+        match actor {
+            ExecutionConfigAssistantsItem::PersistedWorkflowActor(actor) => resolve_ref(
+                index,
+                &actor.assistant_ref.project,
+                GraphKind::Assistant,
+                &actor.assistant_ref.slug,
+                decl.source_path(),
+                "Assistant",
+            )?,
+            ExecutionConfigAssistantsItem::InlineWorkflowActor(actor) => {
+                for reference in &actor.skill_refs {
                     resolve_ref(
                         index,
-                        &project,
+                        &reference.project,
                         GraphKind::Skill,
-                        &name,
-                        &decl.source_path,
+                        &reference.name,
+                        decl.source_path(),
                         "Skill",
                     )?;
                 }
-            }
-        }
-
-        // Inline actor form: `datasourceRefs[]: [{project, repo_name}]`.
-        if let Some(ds_refs) = actor.get("datasourceRefs").and_then(|v| v.as_array()) {
-            for dr in ds_refs {
-                if let Some((project, repo_name)) = ref_pair(dr, "repo_name") {
+                for reference in &actor.datasource_refs {
                     resolve_ref(
                         index,
-                        &project,
+                        &reference.project,
                         GraphKind::Datasource,
-                        &repo_name,
-                        &decl.source_path,
+                        &reference.repo_name,
+                        decl.source_path(),
                         "Datasource",
                     )?;
                 }
@@ -421,65 +412,150 @@ fn validate_workflow_refs(
 /// - `spec.context[].ref.{project, repo_name}` → resolved Datasource.
 /// - `spec.sub_assistants[].{project, slug}` → resolved Assistant.
 /// - `spec.skills[].{project, name}` → resolved Skill.
+#[cfg(test)]
 fn validate_assistant_refs(
     decl: &ParsedDeclaration,
     index: &HashMap<GraphKey, PathBuf>,
 ) -> Result<(), AppError> {
-    let spec = match decl.value.pointer("/spec") {
-        Some(v) => v,
-        None => return Ok(()),
+    let ParsedDeclarationRef::Assistant(assistant) = decl.typed() else {
+        #[cfg(test)]
+        if let ParsedDeclarationRef::Fixture(EntityKind::Assistant, value) = decl.typed() {
+            return validate_assistant_refs_fixture(value, decl.source_path(), index);
+        }
+        return Ok(());
     };
+    for context in &assistant.spec.context {
+        resolve_ref(
+            index,
+            &context.ref_.project,
+            GraphKind::Datasource,
+            &context.ref_.repo_name,
+            decl.source_path(),
+            "Datasource",
+        )?;
+    }
+    for reference in &assistant.spec.sub_assistants {
+        resolve_ref(
+            index,
+            &reference.project,
+            GraphKind::Assistant,
+            &reference.slug,
+            decl.source_path(),
+            "Assistant",
+        )?;
+    }
+    for reference in &assistant.spec.skills {
+        resolve_ref(
+            index,
+            &reference.project,
+            GraphKind::Skill,
+            &reference.name,
+            decl.source_path(),
+            "Skill",
+        )?;
+    }
 
-    // context[].ref → datasourceKey {project, repo_name}
-    if let Some(context) = spec.get("context").and_then(|v| v.as_array()) {
-        for ctx in context {
-            if let Some(ref_val) = ctx.get("ref")
-                && let Some((project, repo_name)) = ref_pair(ref_val, "repo_name")
+    Ok(())
+}
+
+#[cfg(test)]
+fn fixture_ref_pair<'a>(value: &'a serde_json::Value, field: &str) -> Option<(&'a str, &'a str)> {
+    Some((value.get("project")?.as_str()?, value.get(field)?.as_str()?))
+}
+
+#[cfg(test)]
+fn validate_workflow_refs_fixture(
+    declaration: &serde_json::Value,
+    source_path: &Path,
+    index: &HashMap<GraphKey, PathBuf>,
+) -> Result<(), AppError> {
+    for actor in declaration
+        .pointer("/spec/execution_config/assistants")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let Some((project, slug)) = actor
+            .get("assistantRef")
+            .and_then(|value| fixture_ref_pair(value, "slug"))
+        {
+            resolve_ref(
+                index,
+                project,
+                GraphKind::Assistant,
+                slug,
+                source_path,
+                "Assistant",
+            )?;
+        }
+        for (array, field, kind, label) in [
+            ("skillRefs", "name", GraphKind::Skill, "Skill"),
+            (
+                "datasourceRefs",
+                "repo_name",
+                GraphKind::Datasource,
+                "Datasource",
+            ),
+        ] {
+            for reference in actor
+                .get(array)
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
             {
-                resolve_ref(
-                    index,
-                    &project,
-                    GraphKind::Datasource,
-                    &repo_name,
-                    &decl.source_path,
-                    "Datasource",
-                )?;
+                if let Some((project, key)) = fixture_ref_pair(reference, field) {
+                    resolve_ref(index, project, kind, key, source_path, label)?;
+                }
             }
         }
     }
+    Ok(())
+}
 
-    // sub_assistants[] → assistantKey {project, slug}
-    if let Some(sub_assts) = spec.get("sub_assistants").and_then(|v| v.as_array()) {
-        for sa in sub_assts {
-            if let Some((project, slug)) = ref_pair(sa, "slug") {
-                resolve_ref(
-                    index,
-                    &project,
-                    GraphKind::Assistant,
-                    &slug,
-                    &decl.source_path,
-                    "Assistant",
-                )?;
+#[cfg(test)]
+fn validate_assistant_refs_fixture(
+    declaration: &serde_json::Value,
+    source_path: &Path,
+    index: &HashMap<GraphKey, PathBuf>,
+) -> Result<(), AppError> {
+    let Some(spec) = declaration.get("spec") else {
+        return Ok(());
+    };
+    for context in spec
+        .get("context")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let Some((project, key)) = context
+            .get("ref")
+            .and_then(|value| fixture_ref_pair(value, "repo_name"))
+        {
+            resolve_ref(
+                index,
+                project,
+                GraphKind::Datasource,
+                key,
+                source_path,
+                "Datasource",
+            )?;
+        }
+    }
+    for (array, field, kind, label) in [
+        ("sub_assistants", "slug", GraphKind::Assistant, "Assistant"),
+        ("skills", "name", GraphKind::Skill, "Skill"),
+    ] {
+        for reference in spec
+            .get(array)
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let Some((project, key)) = fixture_ref_pair(reference, field) {
+                resolve_ref(index, project, kind, key, source_path, label)?;
             }
         }
     }
-
-    // skills[] → skillKey {project, name}
-    if let Some(skills) = spec.get("skills").and_then(|v| v.as_array()) {
-        for sk in skills {
-            if let Some((project, name)) = ref_pair(sk, "name") {
-                resolve_ref(
-                    index,
-                    &project,
-                    GraphKind::Skill,
-                    &name,
-                    &decl.source_path,
-                    "Skill",
-                )?;
-            }
-        }
-    }
-
     Ok(())
 }
 
@@ -502,44 +578,44 @@ mod tests {
 
     /// Minimal Skill declaration with the given project and name.
     fn skill_decl(project: &str, name: &str) -> ParsedDeclaration {
-        ParsedDeclaration {
-            kind: EntityKind::Skill,
-            value: serde_json::json!({
+        ParsedDeclaration::fixture(
+            EntityKind::Skill,
+            serde_json::json!({
                 "apiVersion": "codemie.epam.com/v1alpha1",
                 "kind": "Skill",
                 "metadata": {"project": project, "name": name},
                 "spec": {}
             }),
-            source_path: p(&format!("skills/{name}.yaml")),
-        }
+            p(&format!("skills/{name}.yaml")),
+        )
     }
 
     /// Minimal Datasource declaration with the given project and repo_name.
     fn datasource_decl(project: &str, repo_name: &str) -> ParsedDeclaration {
-        ParsedDeclaration {
-            kind: EntityKind::Datasource,
-            value: serde_json::json!({
+        ParsedDeclaration::fixture(
+            EntityKind::Datasource,
+            serde_json::json!({
                 "apiVersion": "codemie.epam.com/v1alpha1",
                 "kind": "Datasource",
                 "metadata": {"project": project, "repo_name": repo_name},
                 "spec": {}
             }),
-            source_path: p(&format!("datasources/{repo_name}.yaml")),
-        }
+            p(&format!("datasources/{repo_name}.yaml")),
+        )
     }
 
     /// Minimal Assistant declaration with the given project and slug.
     fn assistant_decl(project: &str, slug: &str) -> ParsedDeclaration {
-        ParsedDeclaration {
-            kind: EntityKind::Assistant,
-            value: serde_json::json!({
+        ParsedDeclaration::fixture(
+            EntityKind::Assistant,
+            serde_json::json!({
                 "apiVersion": "codemie.epam.com/v1alpha1",
                 "kind": "Assistant",
                 "metadata": {"project": project, "slug": slug},
                 "spec": {}
             }),
-            source_path: p(&format!("assistants/{slug}.yaml")),
-        }
+            p(&format!("assistants/{slug}.yaml")),
+        )
     }
 
     /// Workflow declaration with an inline actor.
@@ -569,9 +645,9 @@ mod tests {
             })
             .collect();
 
-        ParsedDeclaration {
-            kind: EntityKind::Workflow,
-            value: serde_json::json!({
+        ParsedDeclaration::fixture(
+            EntityKind::Workflow,
+            serde_json::json!({
                 "apiVersion": "codemie.epam.com/v1alpha1",
                 "kind": "Workflow",
                 "metadata": {"project": project, "slug": slug},
@@ -584,8 +660,8 @@ mod tests {
                     }
                 }
             }),
-            source_path: p(&format!("workflows/{slug}.yaml")),
-        }
+            p(&format!("workflows/{slug}.yaml")),
+        )
     }
 
     /// Workflow declaration with a persisted actor.
@@ -613,9 +689,9 @@ mod tests {
             })
             .collect();
 
-        ParsedDeclaration {
-            kind: EntityKind::Workflow,
-            value: serde_json::json!({
+        ParsedDeclaration::fixture(
+            EntityKind::Workflow,
+            serde_json::json!({
                 "apiVersion": "codemie.epam.com/v1alpha1",
                 "kind": "Workflow",
                 "metadata": {"project": project, "slug": slug},
@@ -628,8 +704,8 @@ mod tests {
                     }
                 }
             }),
-            source_path: p(&format!("workflows/{slug}.yaml")),
-        }
+            p(&format!("workflows/{slug}.yaml")),
+        )
     }
 
     /// Workflow declaration with duplicate actor IDs.
@@ -638,9 +714,9 @@ mod tests {
             {"id": id, "system_prompt": "first"},
             {"id": id, "system_prompt": "second"},
         ]);
-        ParsedDeclaration {
-            kind: EntityKind::Workflow,
-            value: serde_json::json!({
+        ParsedDeclaration::fixture(
+            EntityKind::Workflow,
+            serde_json::json!({
                 "apiVersion": "codemie.epam.com/v1alpha1",
                 "kind": "Workflow",
                 "metadata": {"project": project, "slug": slug},
@@ -653,8 +729,8 @@ mod tests {
                     }
                 }
             }),
-            source_path: p(&format!("workflows/{slug}.yaml")),
-        }
+            p(&format!("workflows/{slug}.yaml")),
+        )
     }
 
     /// Assistant declaration that references a Skill and a Datasource.
@@ -677,9 +753,9 @@ mod tests {
             .iter()
             .map(|(p, s)| serde_json::json!({"project": p, "slug": s}))
             .collect();
-        ParsedDeclaration {
-            kind: EntityKind::Assistant,
-            value: serde_json::json!({
+        ParsedDeclaration::fixture(
+            EntityKind::Assistant,
+            serde_json::json!({
                 "apiVersion": "codemie.epam.com/v1alpha1",
                 "kind": "Assistant",
                 "metadata": {"project": project, "slug": slug},
@@ -689,8 +765,8 @@ mod tests {
                     "sub_assistants": sub_assts,
                 }
             }),
-            source_path: p(&format!("assistants/{slug}.yaml")),
-        }
+            p(&format!("assistants/{slug}.yaml")),
+        )
     }
 
     // -----------------------------------------------------------------------
@@ -700,9 +776,9 @@ mod tests {
     /// A Workflow with no actors and no states passes validate_natural (happy path).
     #[test]
     fn valid_workflow_with_no_actors_passes_natural() {
-        let decl = ParsedDeclaration {
-            kind: EntityKind::Workflow,
-            value: serde_json::json!({
+        let decl = ParsedDeclaration::fixture(
+            EntityKind::Workflow,
+            serde_json::json!({
                 "apiVersion": "codemie.epam.com/v1alpha1",
                 "kind": "Workflow",
                 "metadata": {"project": "my-project", "slug": "my-flow"},
@@ -715,8 +791,8 @@ mod tests {
                     }
                 }
             }),
-            source_path: p("workflows/my-flow.yaml"),
-        };
+            p("workflows/my-flow.yaml"),
+        );
         let result = validate_natural(&decl);
         assert!(
             result.is_ok(),
@@ -753,7 +829,7 @@ mod tests {
             assert!(
                 result.is_ok(),
                 "{} must pass validate_natural (no-op): {result:?}",
-                decl.kind
+                decl.kind()
             );
         }
     }
@@ -809,9 +885,9 @@ mod tests {
     /// A Workflow state referencing an unknown tool_id fails with AppError::Schema.
     #[test]
     fn workflow_state_refs_missing_tool_id_fails_validate_natural() {
-        let decl = ParsedDeclaration {
-            kind: EntityKind::Workflow,
-            value: serde_json::json!({
+        let decl = ParsedDeclaration::fixture(
+            EntityKind::Workflow,
+            serde_json::json!({
                 "apiVersion": "codemie.epam.com/v1alpha1",
                 "kind": "Workflow",
                 "metadata": {"project": "p", "slug": "wf"},
@@ -824,8 +900,8 @@ mod tests {
                     }
                 }
             }),
-            source_path: p("workflows/wf.yaml"),
-        };
+            p("workflows/wf.yaml"),
+        );
         let err =
             validate_natural(&decl).expect_err("unknown tool_id must fail with AppError::Schema");
         assert_eq!(err.exit_code(), 2);
@@ -839,9 +915,9 @@ mod tests {
     /// A Workflow state referencing an unknown custom_node_id fails.
     #[test]
     fn workflow_state_refs_missing_custom_node_id_fails_validate_natural() {
-        let decl = ParsedDeclaration {
-            kind: EntityKind::Workflow,
-            value: serde_json::json!({
+        let decl = ParsedDeclaration::fixture(
+            EntityKind::Workflow,
+            serde_json::json!({
                 "apiVersion": "codemie.epam.com/v1alpha1",
                 "kind": "Workflow",
                 "metadata": {"project": "p", "slug": "wf"},
@@ -854,8 +930,8 @@ mod tests {
                     }
                 }
             }),
-            source_path: p("workflows/wf.yaml"),
-        };
+            p("workflows/wf.yaml"),
+        );
         let err = validate_natural(&decl)
             .expect_err("unknown custom_node_id must fail with AppError::Schema");
         assert_eq!(err.exit_code(), 2);

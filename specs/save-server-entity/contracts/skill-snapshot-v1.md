@@ -75,12 +75,12 @@ The declaration stores the server response's content string together with its
 validated encoding and decoded `size_bytes`, as required by the existing
 schema. It does not create companion sidecars.
 
-## 5. Main sidecar
+## 5. Inline main content
 
 Main `content` from the stable detail becomes exact UTF-8 bytes in the derived
-Markdown sidecar. No BOM, newline conversion, or trailing newline is added.
-The YAML contains only the sidecar basename in `spec.contentFrom` and omits
-`spec.content`.
+inline `spec.content`. No BOM, newline conversion, or trailing newline is added
+to the recovered content. The YAML includes `spec.content` and omits
+`spec.contentFrom`.
 
 ## 6. Confidentiality and retention
 

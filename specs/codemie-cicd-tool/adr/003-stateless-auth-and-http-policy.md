@@ -57,21 +57,19 @@ and identity-provider topology.
 
 ## Decision
 
-Credentials come only from approved flags/environment sources. The CLI stores
-no token, cookie, request/response body, or declaration/sidecar copy. Successful
+Credentials come only from approved environment sources and non-secret
+selectors may use their approved flags. The CLI stores no token, cookie,
+request/response body, or declaration copy. Successful
 `login` writes the token once to stdout and is the sole sensitive-output
 exception.
 
 For Keycloak, the token endpoint is explicit configuration resolved exactly as
-`--auth-url` > `CODEMIE_AUTH_URL` > repository config `auth_url`. The selected
+`--auth-url` > `CODEMIE_AUTH_URL`. The selected
 value is validated and contacted as-is. The CLI never derives or probes an
-endpoint from `--url`, `CODEMIE_URL`, repository config `url`, a hostname,
-realm, path convention, or another value. A missing endpoint or invalid higher-precedence endpoint is exit 2 before
-network access. ~~Client ID, client secret, bearer token, email, and password
-resolve only from their flag-over-environment pairs and are forbidden in
-repository config.~~ (Superseded by ADR-011: secret credentials resolve from
-environment only; secret-value flags are not accepted; see ADR-011 for the
-normative credential-input and URL/TLS/redirect policy.)
+endpoint from `--url`, `CODEMIE_URL`, a hostname,
+realm, path convention, or another value. A missing endpoint or invalid higher-
+precedence endpoint is exit 2 before network access. ADR-011 is normative for
+the environment-only secret channels and v33 removal of repository config.
 
 All failures leave stdout empty. The transport converts failures to an internal
 classification containing only HTTP status/method/route template, a locally
@@ -114,8 +112,7 @@ or secret-like values.
 - Ensure bounded body draining and zero tool-created logs containing bodies.
 - Document shell-safe login piping and CI secret masking.
 - Test endpoint precedence, missing-endpoint no-network behavior, exact URL
-  use, rejection of credential keys in repository config, and mixed-mode
-  rejection.
+  use, absence of config-file reads, and mixed-mode rejection.
 
 ## References
 

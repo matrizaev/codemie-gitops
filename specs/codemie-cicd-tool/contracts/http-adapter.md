@@ -104,7 +104,7 @@ Secret credential values (`CODEMIE_TOKEN`, `CODEMIE_CLIENT_SECRET`,
 (`--token`, `--client-secret`, `--password`) are not accepted and their
 presence is an `E_USAGE`, exit-2 failure before this transport is invoked.
 Non-secret selectors (`--client-id`, `--email`) have flag-over-environment
-sources. No credential is ever loaded from repository config.
+sources. No credential or endpoint is ever loaded from repository config.
 
 ### 2.3 Redirect policy (SEC-002, ADR-011)
 
@@ -127,17 +127,14 @@ being reduced below the defaults listed here.
 
 | Dimension | Default limit | Rationale |
 |---|---|---|
-| YAML/config bytes per file | 1 MiB (1,048,576 B) | Generous for CI declarations; covers complex Workflows |
+| Selected YAML bytes | 1 MiB (1,048,576 B) | Bounded single declaration |
 | YAML documents per file | 1 | Each declaration file contains exactly one entity |
 | YAML nesting depth | 32 levels | Covers all defined schema structures with headroom |
 | YAML alias/anchor expanded nodes | 1,000 | Prevents alias-bomb expansion |
 | YAML scalar length | 128 KiB | Covers large system prompts; well above 30,000 byte Skill content cap |
 | YAML collection members (array or object) | 10,000 | Per-level cap |
-| Repository files visited (discovery) | 10,000 files | CI workspace ceiling |
-| Sidecar / File per-file bytes | 32 MiB | Per-file upload ceiling |
-| Aggregate upload bytes per invocation | 128 MiB | All File parts in one apply call |
-| Multipart parts per File Datasource | 10 | Existing schema cap; enforced before upload |
-| Multipart basename length | 255 bytes | Filesystem maximum |
+| Skill sidecar bytes | 128 KiB (131,072 B); resulting UTF-8 content must be 100–30,000 characters | One explicit `contentFrom` read |
+| File Datasource bytes | 32 MiB per file; 128 MiB aggregate; 1–10 files | Explicit `spec.files` paths only |
 | Query parameter total length | 8 KiB | Covers compact JSON-encoded query fields |
 | Response header bytes | 16 KiB | Per-response header block |
 | Response body bytes | 8 MiB | Per API response body drain |
@@ -150,11 +147,9 @@ being reduced below the defaults listed here.
 | Concurrency | 1 (sequential) | One entity per invocation; no concurrent requests |
 
 Enforcement:
-- YAML/config limits: reject before allocation (refuse to allocate an AST
+- YAML limits: reject before allocation (refuse to allocate an AST
   that would exceed nesting or node budget; fail with `E_YAML_PARSE` or
   `E_SCHEMA`, exit 2)
-- File/sidecar limits: reject before streaming (check size before opening;
-  stream with bounded read; fail with `E_SIDECAR`, exit 2)
 - Response body: bounded drain (do not allocate the full body before reaching
   the limit; discard excess and classify as `E_CONNECTIVITY` or
   `E_API_INCOMPATIBLE`, exit 2)
@@ -166,11 +161,8 @@ Enforcement:
 
 ### 2.5 Safe file open (SEC-003)
 
-File handles must be opened and validated on the same file object (open-then-
-fstat on the same descriptor). The tool must never canonicalize a
-repository-relative path and then reopen the canonical path as a separate
-operation. This prevents TOCTOU races where a symlink or file is swapped
-between the check and the read.
+The selected declaration and explicitly authored auxiliary inputs use bounded
+open-and-verify reads. No directory enumeration or implicit path lookup occurs.
 
 ### 2.6 Other transport controls
 
@@ -193,7 +185,7 @@ Deployment/source drift is tested during verification and release; it never
 authorizes runtime adaptation or silent contract widening.
 
 Authentication endpoint selection is outside target-API discovery. Keycloak
-uses exactly `--auth-url` > `CODEMIE_AUTH_URL` > repository config `auth_url`;
+uses exactly `--auth-url` > `CODEMIE_AUTH_URL`;
 the selected endpoint is validated as `ValidatedUrl` with HTTPS required and
 contacted as-is. Transport performs no derivation, well-known discovery,
 hostname rewrite, realm/path synthesis, or probe from the CodeMie target URL.
@@ -390,8 +382,8 @@ creator rows is an unresolved reference; one supplies an invocation-local Skill
 ID; multiple same-creator rows are ambiguous. Reference reads require
 membership but not Skill `write`, because they do not mutate the Skill.
 
-`contentFrom` resolves relative to the declaring YAML and is sent only as inline
-`content`; path and content never cross the diagnostic boundary.
+Skill `contentFrom` is resolved relative to the selected declaration parent and
+read once under the sidecar/path/timeout policy; apply sends only inline content.
 
 ## 7. Datasource
 
@@ -421,10 +413,12 @@ use; locally valid rejection is exit 1. Provider forms require a separately
 reviewed bundled deployment schema. Bedrock vendor import is unsupported
 because it is not ordinary CRUD.
 
-File alone uses `POST`/`PUT /v1/index/knowledge_base/file`. Resolve every
-authored path relative to its declaring YAML, require a repository-contained
-regular file, and stream its bytes as a repeated multipart `files` part using
-the basename as the upload filename. Scalar fields are query parameters because
+File alone uses `POST`/`PUT /v1/index/knowledge_base/file`. Each authored
+`spec.files[]` is an explicit relative path under DR-014. Apply resolves it from
+the selected declaration parent, rejects escape/symlink/non-regular/duplicate
+targets, reads exact bytes under per-file/aggregate/deadline bounds, and emits a
+repeated multipart `files` part using the safe basename. It enumerates no
+directory and creates no temporary/staging copy. Scalar fields remain query parameters because
 the pinned endpoint binds the request with FastAPI `Depends`; compact JSON
 strings encode `uploaded_files` (PUT only) and `guardrail_assignments`. The
 logical typed projection contains null for omitted/explicit-null optional

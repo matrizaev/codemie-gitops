@@ -1,3 +1,27 @@
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ApplicationError {
+    #[error("{operation} worker failed")]
+    Worker {
+        operation: &'static str,
+        #[source]
+        source: tokio::task::JoinError,
+    },
+    #[error("validated output context could not be constructed")]
+    OutputField(#[from] crate::render::InvalidOutputField),
+    #[error("{operation} JSON encoding failed")]
+    JsonEncoding {
+        operation: &'static str,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("{operation} JSON decoding failed")]
+    JsonDecoding {
+        operation: &'static str,
+        #[source]
+        source: serde_json::Error,
+    },
+}
+
 /// Top-level error enum for all application error categories.
 ///
 /// Each variant maps to an exit code and error code per the CLI contract exit
@@ -11,6 +35,38 @@
 /// conditions (ambiguity, adoption required, uncertain write, etc.).
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
+    /// Typed configuration-source or validated-origin failure.
+    #[error("configuration error: {0}")]
+    ConfigurationLayer(#[from] crate::config::ConfigError),
+
+    /// Typed parser/DTO conversion failure with its source retained.
+    #[error("schema error: {0}")]
+    ParseLayer(#[from] crate::parse::ParseError),
+
+    /// Typed HTTP transport/response failure with its source retained.
+    #[error("transport error: {0}")]
+    TransportLayer(#[from] crate::http::TransportError),
+
+    /// Typed authentication transport/decoding failure.
+    #[error("authentication error: {0}")]
+    AuthLayer(#[from] crate::auth::AuthError),
+
+    /// Typed save projection and direct-output failure with its source retained.
+    #[error("save error: {0}")]
+    SaveLayer(#[from] crate::save::publication::SaveError),
+
+    /// Typed request-projection failure with its source retained.
+    #[error("projection error: {0}")]
+    ProjectionLayer(#[from] crate::projection::ProjectionError),
+
+    /// Typed explicit-input failure with its source retained.
+    #[error("input error: {0}")]
+    InputLayer(#[from] crate::input::InputError),
+
+    /// Typed orchestration failure with worker/encoding sources retained.
+    #[error("application error: {0}")]
+    ApplicationLayer(#[from] ApplicationError),
+
     /// E_USAGE (exit 2): unrecognised or forbidden CLI flag/option.
     #[error("usage error: {0}")]
     Usage(String),
@@ -98,6 +154,7 @@ impl AppError {
     /// Maps the error variant to the CLI contract exit code.
     pub fn exit_code(&self) -> i32 {
         match self {
+            AppError::TransportLayer(error) if error.is_write_uncertain() => 1,
             AppError::Reconciliation(_)
             | AppError::EntityNotFound
             | AppError::EntityNotExportable
@@ -106,6 +163,19 @@ impl AppError {
             | AppError::WriteUncertain(_) => 1,
             _ => 2,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_api_incompatible(&self) -> bool {
+        matches!(self, Self::ApiIncompatible(_))
+            || matches!(self, Self::TransportLayer(error) if error.is_compatibility())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_connectivity(&self) -> bool {
+        matches!(self, Self::Connectivity(_))
+            || matches!(self, Self::AuthLayer(error) if error.is_connectivity())
+            || matches!(self, Self::TransportLayer(error) if !error.is_compatibility() && !error.is_write_uncertain() && !error.is_internal())
     }
 }
 

@@ -2,7 +2,7 @@
 
 ## 1. Document status
 
-- **Status:** APPROVED — v2
+- **Status:** APPROVED — v3.3; downstream artifact refresh required
 - **Specification owner:** Product Specification Owner (named owner pending)
 - **Source request:** User request, 2026-08-11: add a command that saves an
   entity YAML from the CodeMie server locally so resources created through the
@@ -10,10 +10,10 @@
 - **Related Jira issues:** None provided.
 - **Related Confluence pages:** None provided.
 - **Parent product specification:**
-  [`../codemie-cicd-tool.md`](../codemie-cicd-tool.md), v29.
+  [`../codemie-cicd-tool.md`](../codemie-cicd-tool.md), v33.3.
 - **Pinned target baseline:** CodeMie backend tag `2.42.0`, commit
   `2a481c290c99bf30ef80aadafa03d876a7f5f732`.
-- **Last reviewed:** 2026-08-12.
+- **Last reviewed:** 2026-08-13.
 
 This specification approves the bounded server-to-declaration capability that
 the parent specification deferred under OQ-14 and “bidirectional sync.” It does
@@ -26,6 +26,24 @@ SVN branch, while persisted `index_type` supplies the declaration's code
 strategy field. This correction does not change the command surface, natural
 identity, supported entity kinds, or non-exportability boundary.
 
+Version 3 aligns save output with the parent specification's single-file
+declaration model. Save emits exactly one YAML file, with Skill content inline;
+it does not construct or validate a repository view. It writes the final file
+directly without a staging file, temporary file, rename-based publication, or
+cross-file transaction. Existing targets remain a visible refusal condition.
+
+Version 3.2 aligns explicit auxiliary-input terminology with parent v33.3.
+Save continues to emit inline Skill content, although lint/apply also accept
+bounded `contentFrom`. File Datasource remains non-exportable because a valid
+path-based declaration requires original local source files and the pinned
+read contract exposes filenames but not those original bytes.
+
+Version 3.3 resolves the save-success output conflict in favor of the existing
+per-entity outcome contract. Save reports `action`, `kind`, `project`, and the
+kind's natural selector in both output modes; ID-selected unmarked Workflow
+save additionally reports `adoptionRequired: true`. It continues to exclude
+paths, URLs, server IDs, content, timestamps, users, and external provenance.
+
 ## 2. Executive summary
 
 Platform authors can create CodeMie Assistants, Workflows, Skills, and
@@ -37,18 +55,18 @@ content, and per-kind Datasource fields.
 
 This feature adds one command, `codemie-gitops save`, which reads one existing
 server entity, converts it into the existing
-`codemie.epam.com/v1alpha1` declaration language, validates the prospective
-repository offline, and publishes the local artifacts without overwriting
-existing files. The command makes no modifying server request.
+`codemie.epam.com/v1alpha1` declaration language, validates that one generated
+declaration offline, and writes the requested local YAML without intentionally
+overwriting an existing file. The command makes no modifying server request.
 
 The initial release supports the four product entity kinds: Assistant,
 Workflow, Skill, and Datasource. Deprecated Autonomous Workflows are
 non-exportable in v1 because the pinned server's exhaustive Workflow list
 routes exclude them. It reverses managed-entity server references
 to natural keys, removes server-owned IDs and runtime fields, stores a Skill's
-main instructions in an adjacent Markdown sidecar, and emits deterministic
-canonical YAML. A known secret, masked value, unsupported subtype, or required
-state that cannot be reconstructed fails before any local output is published.
+main instructions inline in YAML, and emits deterministic canonical YAML. A
+known secret, masked value, unsupported subtype, or required state that cannot
+be reconstructed fails before the output write begins.
 
 An unmarked UI-created Workflow is selected only by a reviewed server UUID plus
 a caller-chosen slug. `save` does not mark or adopt it. The successful outcome
@@ -58,9 +76,9 @@ may use the existing
 written to YAML, a sidecar, local state, or command output.
 
 The most important scope boundary is that `save` is one-entity and
-non-recursive. A successful save must pass the current repository-closure lint
-rules, so declarations for referenced dependencies must already exist locally.
-Authors onboard leaf resources first, then their dependants.
+non-recursive. It validates only its one generated declaration; it does not
+inspect neighboring declarations or require a locally complete dependency
+closure. References must still be exactly recoverable from the server.
 
 ## 3. Evidence consulted
 
@@ -341,7 +359,7 @@ and remain in the declaration.
   command.
 - The declaration schema already supports all four entity kinds and natural
   references.
-- `lint` validates the complete discovered repository closure offline.
+- `lint` validates only the declaration selected by `--file` offline.
 - `apply` always sends a create or update after safe resolution; it does not
   establish generic ownership.
 - Assistant identity is project+slug and has a direct read route.
@@ -473,53 +491,59 @@ and remain in the declaration.
 | **FR-SAVE-002** | Each invocation MUST target exactly one server entity and one YAML declaration. | Preserves the existing one-entity orchestration model. | SC-SAVE-001–005 |
 | **FR-SAVE-003** | `save` MUST support Assistant, Workflow, Skill, and Datasource, subject only to the representability rules in this specification. | Matches the product's four-entity model. | SC-SAVE-001–005 |
 | **FR-SAVE-004** | `save` MUST make only non-mutating CodeMie requests. It MUST NOT send POST, PUT, PATCH, DELETE, adopt, update a marker, or call `apply`. | Saving local state must not change the source server. | All |
-| **FR-SAVE-005** | The effective project MUST resolve as `--project` then `.codemie/config.yaml.project`; an absent or invalid higher-precedence value MUST fail before network access and MUST NOT fall back. | There is no source declaration from which to obtain project. | SC-SAVE-001–007 |
-| **FR-SAVE-006** | Target URL and bearer token MUST use the existing `--url` > `CODEMIE_URL` > config `url` and environment-only `CODEMIE_TOKEN` contracts. Secret-bearing CLI flags MUST remain unsupported. | Reuses the approved configuration and secret boundary. | All online scenarios |
+| **FR-SAVE-005** | `--project <project>` MUST supply the effective project; an absent or invalid value MUST fail before network access. Save MUST NOT discover project from a repository configuration file. | There is no source declaration from which to obtain project. | SC-SAVE-001–007 |
+| **FR-SAVE-006** | Target URL MUST resolve as `--url` > `CODEMIE_URL`, and bearer token MUST use environment-only `CODEMIE_TOKEN`. Secret-bearing CLI flags MUST remain unsupported. | Reuses the approved flag/environment secret boundary without repository config. | All online scenarios |
 | **FR-SAVE-007** | Assistant MUST be selected only by exact effective project+`--slug` through the pinned direct lookup. A null-slug Assistant is not representable and MUST NOT be selected by ID or display name. | Keeps Assistant adoption on its approved natural identity. | SC-SAVE-004 |
 | **FR-SAVE-008** | Without `--id`, Workflow MUST be resolved by exhaustive exact effective project+valid reserved-marker `--slug`. Display name MUST NOT select or break ties. | Preserves Workflow identity. | SC-SAVE-002 |
 | **FR-SAVE-009** | Workflow alone MAY accept `--id <canonical-uuid>` together with `--slug <desired-natural-key>` for an unmarked candidate. The tool MUST select only that ID, prove exact project, prove complete marker visibility, require no reserved member on the candidate, and require zero valid or invalid marker conflicts for the desired project+slug. A marked candidate MUST fail and direct the actor to natural-key selection without echoing the ID. | Safely covers UI-created unmarked Workflows. | SC-SAVE-003 |
 | **FR-SAVE-010** | ID-selected Workflow save MUST NOT alter or adopt the server Workflow. Its successful outcome MUST include `adoptionRequired: true`; only a later explicit `apply --adopt-workflow-id` operation may adopt it using the same reviewed UUID out of band. | Separates local conversion from server adoption. | SC-SAVE-003 |
 | **FR-SAVE-011** | Skill MUST be selected by exhaustive, complete-visibility, exact effective project+`--name` resolution. More than one exact result MUST fail; current creator, newest, first, and ID MUST NOT break the tie. | Server uniqueness is creator-scoped. | SC-SAVE-001 |
 | **FR-SAVE-012** | Datasource MUST be selected by exhaustive, complete-visibility, exact effective project+`--repo-name` resolution. More than one exact result MUST fail, including rows with different persisted discriminator values under the same approved natural key. Discriminator fields MUST NOT participate in natural-key filtering or break a tie. The unique row's source-pinned discriminator combination selects the reverse projection under DR-SAVE-008. | Prevents arbitrary adoption of duplicate Datasources and preserves the backend's separate VCS/strategy meanings. | SC-SAVE-005 |
-| **FR-SAVE-013** | The command MUST reverse-project every selected entity into exactly one `codemie.epam.com/v1alpha1` declaration using the current closed schema. It MUST emit `metadata.project` explicitly even when config supplied it. | Makes saved output self-contained and portable. | SC-SAVE-001–005 |
+| **FR-SAVE-013** | The command MUST reverse-project every selected entity into exactly one `codemie.epam.com/v1alpha1` declaration using the current closed schema. It MUST emit the explicit `--project` value as `metadata.project`. | Makes saved output self-contained and portable. | SC-SAVE-001–005 |
 | **FR-SAVE-014** | The reverse projection MUST include every current authorable value required to reproduce the selected entity's declarative state, including concrete server-selected defaults and explicit nulls. It MUST NOT guess, invent, or substitute a value. | Avoids incomplete or misleading ownership. | SC-SAVE-005, 007 |
 | **FR-SAVE-015** | The tool MUST exclude every field classified as server-owned, audit, usage, reaction, status, processing, history, transport-only, or otherwise prohibited by the declaration contract. | Keeps declarations focused on authored desired state. | All |
 | **FR-SAVE-016** | Every managed-entity server ID MUST either be converted to the exact approved natural-reference position or excluded. No managed-entity server ID may appear in YAML, Skill sidecars, persistent client state, success output, warnings, or diagnostics. Workflow-local graph IDs and schema-approved opaque configuration IDs are not managed-entity IDs and MUST retain their existing semantics. | Preserves portability without corrupting local graph/configuration identifiers. | SC-SAVE-002–004 |
 | **FR-SAVE-017** | Assistant, Workflow, and inline Workflow resource references MUST be converted to the natural-key forms already defined by DR-003 and FR-035 of the parent specification. Every referenced target MUST resolve exactly and expose the fields needed for a valid natural key. Missing, inaccessible, null-key, or ambiguous targets MUST fail without guessing. | Reverses the apply-time transformation safely. | SC-SAVE-002, 004 |
-| **FR-SAVE-018** | `save` MUST NOT recursively save referenced entities. Before publication, the prospective repository including the new declaration MUST pass the same parsing, schema, semantic, sidecar, duplicate-identity, and repository-reference checks as `lint`. A missing local dependency MUST fail with exit 2 and no publication. | Guarantees immediate offline validity while keeping one-entity scope. | SC-SAVE-004 |
-| **FR-SAVE-019** | For Skill, the main server content MUST be written to one adjacent Markdown sidecar and the YAML MUST use `spec.contentFrom`. The sidecar path is derived as specified in DR-SAVE-006. Inline main Skill content is not emitted in this release. | Keeps long content reviewable and deterministic. | SC-SAVE-001 |
+| **FR-SAVE-018** | `save` MUST NOT recursively save referenced entities. It MUST validate the generated declaration's syntax, schema, semantics, and local reference shapes without inspecting other local files. | Preserves one-entity scope and single-file validation. | SC-SAVE-004 |
+| **FR-SAVE-019** | For Skill, the main server content MUST be written inline to `spec.content` in the YAML. Save MUST NOT emit or reference a sidecar. | Preserves one-file output. | SC-SAVE-001 |
 | **FR-SAVE-020** | Skill companion-file metadata and content MUST be fully read and represented in the existing `spec.companion_files` declaration form. Missing, duplicate-path, incompatible, over-budget, or inaccessible content MUST fail the whole save. | Detail alone exposes only metadata; partial Skill export is unsafe. | SC-SAVE-001 |
 | **FR-SAVE-021** | Workflow reverse projection MUST strictly decode `yaml_config` and `meta_config`, remove only the valid reserved identity member from authored `spec.meta_config`, preserve all non-reserved authorable values, and reverse the server resource-ID positions defined by the declaration contract. Malformed or conflicting metadata MUST fail and MUST NOT be rewritten. | Preserves mixed ownership and adoption safety. | SC-SAVE-002, 003 |
 | **FR-SAVE-022** | A Datasource MUST use only the current per-kind authorable fields. Secret fields, encrypted settings, server/runtime fields, and cross-kind fields MUST never be written. File, provider-defined, and Bedrock Datasources MUST fail as non-exportable in this release. | The current server cannot provide a safe complete declaration for those cases. | SC-SAVE-005 |
 | **FR-SAVE-023** | If a required authorable value is masked, redacted, encrypted, secret-classified, omitted from the pinned read contract, or otherwise not faithfully reconstructable, the command MUST fail as non-exportable. It MUST NOT write a mask token, placeholder, empty value, discovered default, or partial declaration. | Prevents silent state loss and secret export. | SC-SAVE-005 |
-| **FR-SAVE-024** | The tool MUST render deterministic canonical YAML and deterministic Skill sidecar placement under DR-SAVE-007. Two saves of the same normalized server state to equivalent empty destinations MUST produce byte-identical artifacts. | Produces stable reviewable diffs. | SC-SAVE-001–004 |
-| **FR-SAVE-025** | The command MUST reject an existing YAML target or derived Skill sidecar before network access and MUST recheck non-overwrite at publication. It MUST NOT offer a force/replace path in this release. | Protects repository-owned state. | SC-SAVE-006 |
-| **FR-SAVE-026** | The command MUST not publish any final output until server resolution, complete reverse projection, secret/non-exportable checks, compatibility checks, and prospective offline validation all pass. | Prevents partial or invalid state. | All |
-| **FR-SAVE-027** | A successful invocation MUST publish all required final artifacts without replacing existing paths. Publication MUST use complete-file staging and no-replace operations; for Skill, YAML MUST be published only after the complete referenced sidecar. Save does not roll back a previously published sidecar. | Defines observable no-clobber behavior. | SC-SAVE-001, 006, 008 |
-| **FR-SAVE-028** | Success MUST emit exactly one `saved` outcome line to stdout in the selected text or JSON mode and nothing else to stdout. Failures MUST leave stdout empty and emit exactly one safe diagnostic line to stderr. | Keeps CI/script behavior unambiguous. | All |
-| **FR-SAVE-029** | `save` MUST NOT emit YAML or content to stdout, and MUST NOT include target URL, output path, server ID, response content, user identity, timestamp, Git/CI provenance, or adoption UUID in the successful outcome. | Avoids content leakage and preserves the current provenance boundary. | All |
+| **FR-SAVE-024** | The tool MUST render deterministic canonical YAML. Two saves of the same normalized server state to equivalent empty destinations MUST produce byte-identical YAML. | Produces stable reviewable diffs. | SC-SAVE-001–004 |
+| **FR-SAVE-025** | The command MUST reject an existing YAML target before network access and MUST NOT offer a force/replace path in this release. | Protects an already present local declaration. | SC-SAVE-006 |
+| **FR-SAVE-026** | The command MUST not begin the final-file write until server resolution, complete reverse projection, secret/non-exportable checks, compatibility checks, and generated-declaration validation all pass. | Prevents knowingly invalid output while acknowledging direct-write failures. | All |
+| **FR-SAVE-027** | A successful invocation MUST have completed the direct write of exactly one final YAML file and MUST NOT replace an existing path. It MUST NOT use staging, temporary files, rename-based publication, or a cross-file transaction. | Defines the single-file direct-write boundary. | SC-SAVE-001, 006, 008 |
+| **FR-SAVE-028** | Success MUST emit exactly one identity-bearing outcome line to stdout and nothing else. Text mode MUST use `saved <Kind> <project>/<natural-key>`; an ID-selected unmarked Workflow MUST append ` (adoption required on apply)`. JSON mode MUST emit one compact object containing exactly `action: "saved"`, `kind`, `project`, and the applicable `slug`, `name`, or `repo_name`; the ID-selected unmarked Workflow object MUST additionally contain `adoptionRequired: true`. `adoptionRequired` MUST be absent for every other success. Failures MUST leave stdout empty and emit exactly one safe diagnostic line to stderr. | Preserves the existing structured per-entity output contract and makes the saved identity unambiguous. | All |
+| **FR-SAVE-029** | `save` MUST NOT emit YAML or content to stdout, and MUST NOT include target URL, output path, server ID, response content, user identity, timestamp, Git/CI provenance, adoption UUID, or any field beyond FR-SAVE-028 in the successful outcome. The explicit project and natural selector required by FR-SAVE-028 are approved non-sensitive identity fields. | Avoids content leakage while preserving the current per-entity identity and provenance boundary. | All |
 | **FR-SAVE-030** | `save` MUST apply the compatibility and response-budget rules in IR-SAVE-001–006 before local publication. | Fails closed against drift and resource abuse. | SC-SAVE-007 |
+| **FR-SAVE-031** | Save MUST validate only the one generated declaration. It MUST NOT walk or scan a repository, discover or validate a repository closure, or require referenced declarations to exist locally. `--repo-root` and `--follow-symlinks` MUST be rejected as unknown options. | Aligns output with the parent single-file processing boundary. | SC-SAVE-001–008 |
+| **FR-SAVE-032** | Skill main content MUST be emitted inline as `spec.content`; save MUST produce no generated sidecar. | Ensures every save has one declaration output. | SC-SAVE-001 |
+| **FR-SAVE-033** | After all server reads, reverse projection, confidentiality checks, and single-declaration validation pass, save MUST write directly to the requested final YAML path. It MUST NOT use a staging file, temporary file, rename-based publication, or atomic/multi-file publication protocol. It MUST refuse a target that is already present and MUST NOT offer force/replace. A write failure MAY leave an incomplete new final file; the command MUST exit 2, leave stdout empty, emit `E_OUTPUT_WRITE`, and MUST NOT report `saved`. | Defines the intentionally simple one-file output behavior and its observable failure mode. | SC-SAVE-001, 006, 008 |
+
+**v3 supersession rule:** FR-SAVE-031–033 supersede the repository/config,
+prospective-closure, Skill-sidecar, staging, atomicity, publication ordering,
+rollback, and temporary-file clauses retained in historical FR-SAVE-005/006,
+FR-SAVE-013/016/018–020, FR-SAVE-024–027, DR-SAVE-006/007/009,
+QR-SAVE-001/002/004/007, BR-SAVE-006, and their earlier acceptance text.
+Those historical clauses are not approved behavior.
 
 ### 14.1 Approved command surface
 
 ```text
 codemie-gitops save --kind Assistant --slug <slug> --file <yaml-path>
-                     [--project <project>] [--repo-root <path>] [--url <url>]
-                     [--follow-symlinks] [--output text|json]
+                     --project <project> [--url <url>] [--output text|json]
 
 codemie-gitops save --kind Workflow --slug <slug> --file <yaml-path>
                      [--id <canonical-uuid>]
-                     [--project <project>] [--repo-root <path>] [--url <url>]
-                     [--follow-symlinks] [--output text|json]
+                     --project <project> [--url <url>] [--output text|json]
 
 codemie-gitops save --kind Skill --name <name> --file <yaml-path>
-                     [--project <project>] [--repo-root <path>] [--url <url>]
-                     [--follow-symlinks] [--output text|json]
+                     --project <project> [--url <url>] [--output text|json]
 
 codemie-gitops save --kind Datasource --repo-name <repo-name>
                      --file <yaml-path>
-                     [--project <project>] [--repo-root <path>] [--url <url>]
-                     [--follow-symlinks] [--output text|json]
+                     --project <project> [--url <url>] [--output text|json]
 ```
 
 Rules:
@@ -534,10 +558,7 @@ Rules:
 - `--file` names a new YAML destination. It never means an input declaration
   on this command.
 - `--output` controls only the outcome/diagnostic format, not the saved YAML.
-- `--follow-symlinks` applies to existing repository discovery and existing
-  sidecar reads under the inherited policy. It never permits the new YAML or
-  generated Skill sidecar target itself to be a symlink or to escape the
-  repository.
+- `--repo-root` and `--follow-symlinks` are not part of the command surface.
 - Unknown flags and secret-bearing flags fail as `E_USAGE`, exit 2, before
   network access.
 
@@ -694,25 +715,24 @@ provided these observable guarantees and byte-stability goldens are met.
   settings as declaration input.
 - SharePoint may be saved only when every declaration-required non-secret field
   is reconstructable without its stored token material.
-- File is non-exportable because `spec.files` requires repository source files
-  while the pinned detail read exposes only filenames/processing state, not the
-  original source bytes.
+- File is non-exportable because parent v33.3 requires paths to original local
+  source files, while the pinned detail read exposes only filenames/processing
+  state, not the original source bytes from which to create those files.
 - Provider-defined and Bedrock rows are non-exportable because no matching
   current declaration branch exists.
 
 ### DR-SAVE-009 — Local path and retention
 
-- The repository root resolves as existing `--repo-root` behavior; otherwise
-  the nearest applicable Git repository is used.
+- Save does not resolve or inspect a repository root.
 - The YAML parent directory MUST already exist.
-- Every final output path MUST be a non-existing path inside the repository.
+- The final output path MUST be non-existing.
 - New final output paths MUST NOT be symlinks, traverse a symlinked output path,
   or alias another target.
 - `save` MUST NOT retain a response cache, ID map, adoption map, backup,
-  intermediate declaration, or secret-bearing temporary file after the
+  intermediate declaration, staging file, or secret-bearing temporary file after the
   invocation.
-- The requested YAML and intentional Skill sidecar are the only retained
-  artifacts.
+- The requested YAML is the only intentional retained artifact. A failed
+  direct write may leave that final path incomplete under FR-SAVE-033.
 
 ## 16. Integration requirements
 
@@ -777,13 +797,13 @@ never enter diagnostics or non-target persistence.
 
 | ID | Requirement |
 |---|---|
-| **QR-SAVE-001 — Determinism** | Given the same normalized server state, same target basename, same current schema, and same existing dependency declarations, saved artifacts MUST be byte-identical across repeated runs and supported platforms. |
-| **QR-SAVE-002 — Offline validity** | Immediately after success, `codemie-gitops lint --file <saved-yaml>` against the same repository and config MUST exit 0 without network access or file modification. |
+| **QR-SAVE-001 — Determinism** | Given the same normalized server state, same target basename, and same current schema, saved YAML MUST be byte-identical across repeated runs and supported platforms. |
+| **QR-SAVE-002 — Offline validity** | Immediately after success, `codemie-gitops lint --file <saved-yaml>` MUST exit 0 without network access, neighboring-file reads, or file modification. |
 | **QR-SAVE-003 — Read-only server safety** | Instrumented acceptance evidence MUST show zero POST, PUT, PATCH, and DELETE requests for success and every failure path. |
-| **QR-SAVE-004 — Publication integrity** | Each published final file MUST be complete. Publication MUST never replace an existing path. Skill YAML MUST become visible only after its complete sidecar is visible. A crash may leave only a complete orphan sidecar without YAML; save does not attempt rollback. |
+| **QR-SAVE-004 — Direct-write integrity** | Success MUST mean the one final YAML write completed. Save MUST refuse an existing target. A write failure or crash MAY leave an incomplete newly created YAML path and MUST never be reported as success. |
 | **QR-SAVE-005 — Confidentiality** | Known credentials, secret-classified fields, masked substitutes, auth headers, cookies, raw bodies, managed-entity IDs, and source content outside the intentional declaration fields MUST NOT be printed, logged, cached, or retained. There is no debug/verbose exception. |
 | **QR-SAVE-006 — Bounded operation** | The inherited 300-second invocation deadline, 60-second per-request timeout, response limits, pagination limits, and single-invocation concurrency limit apply. |
-| **QR-SAVE-007 — Portability** | YAML and Skill sidecar paths MUST be repository-relative/contained and usable by existing lint/apply behavior on every supported platform. |
+| **QR-SAVE-007 — Portability** | The YAML output MUST be usable as the sole `--file` input to lint/apply on every supported platform. |
 | **QR-SAVE-008 — Audit separation** | The tool MUST NOT add timestamps, source environment, server UUID, current user, Git author, commit, CI-run identity, or replacement provenance to declaration or outcome. Git, CI, and platform systems retain their own audit records. |
 | **QR-SAVE-009 — Maintainability** | Any backend or declaration-schema change that affects reverse projection MUST update a reviewed save-read/reverse-projection contract and positive/negative goldens before the target is accepted. |
 
@@ -799,8 +819,9 @@ never enter diagnostics or non-target persistence.
 - **BR-SAVE-004:** An unmarked Workflow remains unmarked after save and must be
   explicitly adopted once under the existing runbook.
 - **BR-SAVE-005:** Workflow identity metadata is not an ownership marker.
-- **BR-SAVE-006:** Dependencies are saved before dependants. `save` never
-  creates a knowingly broken repository reference.
+- **BR-SAVE-006:** Save does not enforce local dependency ordering or inspect
+  other declarations. It must still recover every emitted natural reference
+  exactly from server evidence.
 - **BR-SAVE-007:** A duplicate server natural identity is an operator
   remediation condition, not a selector choice.
 - **BR-SAVE-008:** A value that cannot be distinguished from a mask or secret
@@ -1101,6 +1122,11 @@ And an ID-selected unmarked Workflow uses one line equivalent to
 When output mode is json
 Then stdout is exactly one compact object with action, kind, project, and name
 And neither form contains a path, URL, ID, content, timestamp, or user
+
+Given an ID-selected unmarked Workflow save succeeds for project "demo" and slug "flow"
+When output mode is json
+Then stdout is exactly one compact object with action "saved", kind "Workflow", project "demo", slug "flow", and adoptionRequired true
+And adoptionRequired is absent from every other save success outcome
 ```
 
 ### AC-SAVE-024 — Failure stream and diagnostic safety
@@ -1138,6 +1164,40 @@ Then it exits 2 with E_API_INCOMPATIBLE
 And no final output path is created
 And stdout is empty
 And the diagnostic does not contain the invalid value or raw response
+```
+
+### AC-SAVE-031 — Save does not inspect a repository
+
+```gherkin
+Given save can resolve and reverse-project one server entity
+And directories around the requested output contain declarations, invalid YAML, and symlinks
+When save is invoked
+Then it does not enumerate or open those surrounding files
+And it validates only the generated declaration
+And --repo-root or --follow-symlinks would instead fail as E_USAGE before network access
+```
+
+### AC-SAVE-032 — Skill output is one YAML file
+
+```gherkin
+Given a representable Skill with main content
+When save succeeds
+Then exactly one new YAML file is retained
+And its spec.content contains the main content inline
+And no Markdown sidecar is created
+```
+
+### AC-SAVE-033 — Direct write failure is visible
+
+```gherkin
+Given all reads and generated-declaration validation have succeeded
+And the requested final path did not exist at the preflight check
+When the direct final-file write fails after creating the path
+Then save exits code 2
+And stdout is empty
+And stderr contains the safe E_OUTPUT_WRITE diagnostic
+And an incomplete final file may remain
+And save does not use a temporary file, rename, rollback, or cleanup of that final path
 ```
 
 ## 22. Edge cases and failure scenarios
@@ -1184,16 +1244,13 @@ And the diagnostic does not contain the invalid value or raw response
   fields.
 - Datasource response contains an unclassified authoring-relevant field:
   incompatible, exit 2, rather than silent omission.
-- Output parent absent, outside repository, unsafe, unreadable, or unwritable:
-  local output failure, exit 2 before publication.
+- Output parent absent, unsafe, unreadable, or unwritable: local output failure,
+  exit 2 before the direct write when detectable.
 - Existing output path is a directory, special file, hard-link alias, or
   symlink: reject; no network when detectable locally.
-- Disk-full or permission failure before a final rename: exit 2; remove staging
-  entries only. A failure after Skill sidecar publication may leave that
-  complete orphan sidecar; save never removes a final path.
-- Cancellation/timeout before publication: no final artifact.
-- Cancellation during publication: publication integrity remains governed by
-  QR-SAVE-004; architecture must not expose a truncated final file.
+- Disk-full, permission failure, cancellation, or timeout during the direct
+  write: exit 2 with `E_OUTPUT_WRITE`; an incomplete newly created final YAML
+  may remain and is not automatically removed.
 
 ## 23. Dependencies
 
@@ -1232,7 +1289,7 @@ And the diagnostic does not contain the invalid value or raw response
 |---|---|---|---|---|
 | **A-SAVE-001** | The pinned detail and companion-content reads can reconstruct every current authorable field for Assistant, marked/unmarked Workflow, Skill, and the non-File authorable Datasource branches except explicitly non-exportable cases. | Direct reference-source inspection and current adapter manifest, but no save-specific reverse contract yet. | Additional entity states or entire branches may need to fail as non-exportable; scope cannot silently widen. | Solution architect + verification engineer |
 | **A-SAVE-002** | Assistant context names are scoped to the Assistant's exact project in the pinned runtime model. | Reference server lookups use the Assistant/request project with context name. | Cross-project context would be ambiguous because persisted context lacks project; save must fail rather than infer. | CodeMie platform owner |
-| **A-SAVE-003** | Existing repository closure validation can evaluate a prospective in-memory YAML and Skill sidecar without first publishing them. | This is an expected capability, not current evidence. | Architecture may need a reusable validation boundary; product behavior does not change. | Solution architect |
+| **A-SAVE-003** | The existing validator can validate one generated in-memory declaration without reading neighboring files. | Parent v33.3 requires this boundary; save emits inline Skill content and no File Datasource output. | If false, architecture must isolate the one-file validation behavior before save can conform. | Solution architect |
 | **A-SAVE-004** | The repository's existing governance can keep UI/API writers controlled after onboarding. | Parent specification already requires governed writers for identity safety. | Saved state may drift immediately; continuous sync remains out of scope. | Adopting team |
 
 ## 26. Conflicts and inconsistencies
@@ -1259,8 +1316,8 @@ adoption ceremony, which `save` does not execute.
 ### C-SAVE-003 — All four kinds versus non-exportable Datasource states
 
 - The requested feature should cover all supported kinds.
-- File Datasource requires original local file bytes that the pinned ordinary
-  detail read does not expose; provider and Bedrock lack an approved
+- File Datasource requires original local source files for its explicit path
+  inputs, but the pinned ordinary detail read does not expose their bytes; provider and Bedrock lack an approved
   declaration branch.
 
 **Resolution:** Datasource is an in-scope entity kind. Known non-reconstructable
@@ -1330,12 +1387,11 @@ placeholder, secret export, or partial declaration.
 | Parent four-kind scope and declaration schema | SC-SAVE-001–005 | FR-SAVE-003, 013, 022 | AC-SAVE-001, 007, 013–014 |
 | Parent natural identity/ref decisions | SC-SAVE-002–004 | FR-SAVE-007–012, 016–018, 021 | AC-SAVE-002–006, 010–011 |
 | Parent Workflow adoption decision | SC-SAVE-003 | FR-SAVE-008–010, 021 | AC-SAVE-003–005 |
-| Parent Skill contentFrom decision | SC-SAVE-001 | FR-SAVE-019–020 | AC-SAVE-007–009 |
+| User decision 2026-08-13: one YAML output, direct write | SC-SAVE-001/006/008 | FR-SAVE-031–033 | AC-SAVE-031–033 |
 | Parent Datasource security/schema boundary | SC-SAVE-005 | FR-SAVE-012, 022–023; DR-SAVE-008; VR-SAVE-013 | AC-SAVE-013–015, 025–026 |
 | Parent compatibility identity | SC-SAVE-007 | FR-SAVE-030; IR-SAVE-005/006 | AC-SAVE-020–021 |
 | Parent output/diagnostic boundary | All | FR-SAVE-028–029 | AC-SAVE-023–024 |
-| Derived no-overwrite/publication safety | SC-SAVE-006, 008 | FR-SAVE-025–027 | AC-SAVE-009, 016–018 |
-| Existing complete repository lint | SC-SAVE-004 | FR-SAVE-018 | AC-SAVE-011–012 |
+| Retained visible no-overwrite policy | SC-SAVE-006, 008 | FR-SAVE-025, 033 | AC-SAVE-033 |
 | Reference-only CodeMie 2.42.0 reads | SC-SAVE-001–007 | FR-SAVE-007–023; DR-SAVE-008; IR-SAVE-001–006 | AC-SAVE-001–015, 020–022, 025–026 |
 
 ## 29. Handoff to solution architect
@@ -1398,11 +1454,13 @@ placeholder, secret export, or partial declaration.
   `E_ENTITY_NOT_FOUND` and `E_ENTITY_NOT_EXPORTABLE` as exit-1 reconciliation
   errors, and `E_OUTPUT_EXISTS`, `E_OUTPUT_PATH`, and `E_OUTPUT_WRITE` as exit-2
   local-output errors.
-- Choose the publication design that satisfies no-overwrite, safe paths,
-  complete-file atomicity, Skill YAML-last visibility, no final-path rollback,
-  and cleanup of sensitive staging data.
+- Define direct final-path creation and write behavior that preserves the
+  existing-target refusal, reports partial-file write failures as specified,
+  and introduces no staging, temporary-file, rename, or atomic publication
+  mechanism.
 - Define canonical YAML scalar representation and cross-platform goldens.
-- Reuse one validation engine for current lint and prospective-save validation.
+- Reuse the single-declaration validation behavior for generated save output;
+  do not construct a prospective repository view.
 - Define companion-content consistency and bounded-read evidence.
 
 ### Decisions the architect must not reinterpret
@@ -1431,7 +1489,7 @@ placeholder, secret export, or partial declaration.
 2. Verification independently checks this specification against those
    artifacts before implementation.
 3. Security review approves response-field allowlists, secret/mask handling,
-   filesystem publication, temporary-data cleanup, and diagnostics.
+   direct-output failure handling, and diagnostics.
 4. Implementation proceeds only after those reviews converge.
 
 ## 30. Readiness assessment
@@ -1443,8 +1501,9 @@ Specification status: READY FOR ARCHITECTURE PLANNING
 The product decisions that materially affect architecture are resolved: exact
 command name and selectors, all-four-kind boundary, read-only server behavior,
 effective project, unmarked Workflow handling, natural-reference reversal,
-dependency-first offline validity, Skill sidecar behavior, Datasource
-non-exportability and secret rules, canonical output, no-overwrite publication,
-exit/output behavior, and compatibility gating. The remaining questions are
+single-generated-declaration validation, inline Skill content, Datasource
+non-exportability and secret rules, canonical output, direct single-file write
+with visible partial-file failure behavior, exit/output behavior, and
+compatibility gating. The remaining questions are
 architecture and verification questions about satisfying these approved
 observable requirements, not unresolved product scope.

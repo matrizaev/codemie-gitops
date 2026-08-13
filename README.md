@@ -24,22 +24,15 @@ exact tested artifact.
 
 ## Configuration and offline lint
 
-Non-secret repository defaults live in `.codemie/config.yaml`. Effective
-configuration precedence is exact and fail-closed:
-
-- target: `--url` > `CODEMIE_URL` > `.codemie/config.yaml` `url`;
-- authentication endpoint: `--auth-url` > `CODEMIE_AUTH_URL` > config
-  `auth_url`; and
-- project: declaration `metadata.project` > config `project`.
-
-An invalid higher-precedence value is an error; lower values are not fallback.
-Credentialed CI must inject its protected HTTPS endpoints at higher precedence.
-Repository configuration is non-secret.
+Runtime configuration comes only from flags and environment variables. The
+target uses `--url` or `CODEMIE_URL`, the authentication endpoint uses
+`--auth-url` or `CODEMIE_AUTH_URL`, and every declaration contains its explicit
+`metadata.project`. No repository configuration file is loaded.
 
 Lint is offline and should run before credentials are made available:
 
 ```sh
-codemie-gitops lint --file skills/example-skill.yaml --repo-root .
+codemie-gitops lint --file skills/example-skill.yaml
 ```
 
 ## Login and token reuse
@@ -65,7 +58,7 @@ and reuse the token in the same shell boundary:
 set +x
 CODEMIE_TOKEN="$(codemie-gitops login)"
 export CODEMIE_TOKEN
-codemie-gitops apply --file skills/example-skill.yaml --repo-root .
+codemie-gitops apply --file skills/example-skill.yaml
 unset CODEMIE_TOKEN CODEMIE_CLIENT_SECRET CODEMIE_PASSWORD
 ```
 
@@ -92,13 +85,12 @@ configuration, authentication/authorization, compatibility, connectivity, or
 internal failure. `--output json` selects the closed JSON form.
 
 See [the portable examples](examples/README.md) for all four declaration kinds
-and inert GitHub/GitLab samples. Before production adoption, read the
-[O-002 operator index](ops/o002/README.md), including
-[Git revert/new apply](ops/o002/GIT_REVERT_RECOVERY.md),
-[Workflow adoption](ops/o002/WORKFLOW_ADOPTION.md), and
-[uncertain-write recovery](ops/o002/UNCERTAIN_WRITE.md).
+and inert GitHub/GitLab samples.
 
-Enterprise create/update smoke is a separate, explicitly authorized activity.
-Local examples and qualification tests do not authorize a target write. Its
-closed scope is exactly Assistant, Workflow, and Skill; Datasource live smoke
-is excluded and cannot be enabled by a selector or exception.
+## Save
+
+`save` requires `--project` and writes one new YAML file. Skill content is
+inline. The command validates the generated declaration before directly
+creating the requested final path; it never overwrites, stages, renames, or
+creates a sidecar. A failed write can leave an incomplete new path, reported as
+`E_OUTPUT_WRITE`; inspect and remove that path manually before retrying.
