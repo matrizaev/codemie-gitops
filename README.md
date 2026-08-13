@@ -4,6 +4,10 @@
 The repository is the desired-state record; the CLI has no local state database,
 `plan`, `delete`, batch, or automatic rollback command.
 
+## License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
+
 ## Build or install
 
 For a source build, use the locked dependency graph, run the checks, and retain
