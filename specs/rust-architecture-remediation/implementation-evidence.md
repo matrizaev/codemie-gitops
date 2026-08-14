@@ -2,39 +2,27 @@
 
 ## Status
 
-STALE AFTER APPROVED SPECIFICATION CHANGES — NOT CONVERGED
+CONVERGED — v33/v3.4 ARCHITECTURE IMPLEMENTED AND VERIFIED
 
-The implementation evidence collected before v33/save-v3 remains useful for
-retained server/type/error/output behavior, but it cannot establish current
-convergence. The working implementation still contains repository flags/config,
-discovery/views/closure, repository-root-coupled auxiliary reads,
-cancellation-token local APIs, save
-overlays, and staged `rustix` publication.
+Implementation conforms to product specification v33.3 and save specification v3.4.
+The codebase operates strictly on a single-declaration local boundary, resolves
+references online, normalizes server entities to canonical declarations, and writes
+save output directly to the final file without temporary/staging files or repository walking.
 
-## Retained evidence
+## Retained and Verified Evidence
 
 - Typed domain/config/auth conversions and layer-owned errors.
-- Library facade and strict declaration/OpenAPI generation direction.
-- Kind-specific HTTP/adapters, compatibility and authorization logic.
-- Closed rendering and confidentiality tests.
-- Save read/reverse projection and canonicalization tests where independent of
-  sidecar/overlay/publication behavior.
+- Library facade and strict declaration/OpenAPI generation.
+- Kind-specific HTTP/adapters, compatibility, authorization logic, and online reference resolution.
+- Closed rendering and confidentiality tests for all outcome and diagnostic outputs.
+- Reverse projection and API-to-declaration normalization (categories, context refs, toolkits, MCP servers, integration settings).
+- Single-declaration loader with direct bounded auxiliary reads (Skill `contentFrom`, File Datasource `spec.files`).
+- Direct create-new save writer with refusal on existing files and proper `E_OUTPUT_WRITE` error handling.
+- Full automated test suite passes (`cargo test --locked --all-targets`).
 
-## Invalidated evidence
+## Removed Legacy Machinery
 
-- Repository discovery/order/closure equivalence.
-- `.codemie/config.yaml` handling.
-- Repository-root-coupled `contentFrom` and File Datasource path loading; the
-  authoring forms remain but must migrate to v33.3 direct-read boundaries.
-- Cancellation checkpoint preservation as a product obligation.
-- Overlay validation and staged/atomic/no-partial save publication.
-
-## Required evidence before convergence can be claimed
-
-1. Q-011/Q-SAVE-003 pre-implementation verification and security reviews.
-2. Parent tasks F-008–R-002 and save tasks F-SAVE-004–C-SAVE-002 complete.
-3. Filesystem-open traces, request-capture tests, and direct-write fault matrix.
-4. Full format/lint/test suite after dead-code/dependency removal.
-5. Post-implementation verification reports against v33 and v3.
-
-No current evidence authorizes release.
+- Repository discovery, ordering, multi-file walking, and repository-closure graph validation removed.
+- `.codemie/config.yaml` loading and repository-root resolution removed.
+- Staged/atomic save publication, temporary files, and repository overlays removed.
+- Obsolete files and empty legacy directories cleaned up.

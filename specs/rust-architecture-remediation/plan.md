@@ -2,7 +2,7 @@
 
 ## Status
 
-Architecture status: READY FOR PRE-IMPLEMENTATION VERIFICATION
+Architecture status: IMPLEMENTED — converged with product specification v33.3 and save specification v3.4.
 
 The previous remediation plan treated repository discovery, closure validation,
 cooperative cancellation, and staged native publication as behavior

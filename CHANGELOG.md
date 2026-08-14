@@ -16,18 +16,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - (upcoming fixes)
 
-### Deprecated
-- (upcoming deprecations)
+---
 
-### Removed
-- (upcoming removals)
+## [0.1.3] - 2026-08-14
 
-### Security
-- (upcoming security updates)
+### Added
+- **Reverse-projection normalization**: Implemented specification v3.4 normalization for `save` in `src/save/reverse.rs`, converting server API responses into canonical `codemie.epam.com/v1alpha1` declarations:
+  - Context references normalized to same-project Datasource references.
+  - Enriched category objects normalized to string names.
+  - MCP servers, toolkits, tools, and integration settings stripped of internal/credential metadata.
+  - Materialization of OpenAPI-declared defaults for schema-required fields.
+- **Release workflow enhancements**: Updated GitHub Actions release workflow for musl Linux targets and `musl-tools`.
+
+### Changed
+- **Architecture alignment**: Aligned internal module structure and removed obsolete repository-discovery and multi-file walking code in favor of single-file boundaries.
 
 ---
 
-## [0.1.1] - 2026-08-13
+## [0.1.2] - 2026-08-13
+
+### Added
+- **Open source documentation**: Added comprehensive documentation suite including `ARCHITECTURE.md`, `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `AGENTS.md`, and `examples/README.md`.
+
+### Changed
+- **Version bump**: Bumped version to 0.1.2 for OSS documentation release.
 
 ### Fixed
 - **Release workflow**: Fixed GitHub Actions `publish` job by adding checkout action to provide repository context (`.git` directory) for `gh release` commands.
@@ -140,6 +152,6 @@ Thanks to all contributors who have helped improve this project!
 
 ---
 
-**Latest Release**: [v0.1.1](https://github.com/matrizaev/codemie-gitops/releases/tag/v0.1.1)
+**Latest Release**: [v0.1.3](https://github.com/matrizaev/codemie-gitops/releases/tag/v0.1.3)
 
 For detailed commit history, see [Git Commits](https://github.com/matrizaev/codemie-gitops/commits/main).
