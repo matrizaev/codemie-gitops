@@ -1,4 +1,4 @@
-# Data model: save server entity v3
+# Data model: save server entity v3.4
 
 ## 1. Ownership and lifetime
 
@@ -35,6 +35,21 @@ Existing strict snapshot types remain. Response members are classified as
 authorable, managed reference, read-only, secret/non-exportable, or unknown.
 Unknown authoring-relevant, secret, masked, inconsistent, or unstable evidence
 fails closed. Managed IDs are recovered to natural references before rendering.
+
+OpenAPI response objects are not declaration objects. Reverse projection
+normalizes API representations before validation:
+
+- Assistant context `{context_type, name}` becomes `{context_type, ref}` with
+  the explicit Assistant project and the datasource `repo_name`.
+- Enriched Assistant category objects become category-name strings.
+- Toolkit and tool objects retain only declaration fields; API-only metadata
+  and integration settings metadata are excluded, while settings retain only
+  `id` and `alias`.
+- MCP server objects retain declaration fields, omit nested `config` and
+  credential-bearing values, and materialize only defaults declared by the
+  pinned API contract when required by the declaration schema.
+
+The same normalization rules apply to Assistant and Skill toolkit/MCP fields.
 
 Skill main content is part of the stable snapshot and maps directly to
 `spec.content`. Companion payloads admitted by the schema remain inline

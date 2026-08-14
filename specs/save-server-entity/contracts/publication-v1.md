@@ -1,6 +1,6 @@
 # Direct final-file write contract v1
 
-Status: NORMATIVE ARCHITECTURE CONTRACT, revised by specification v3 and
+Status: NORMATIVE ARCHITECTURE CONTRACT, revised by specification v3.4 and
 ADR-018. The historical staged publication protocol is superseded.
 
 ## 1. Input

@@ -2,7 +2,7 @@
 
 ## 1. Document status
 
-- **Status:** APPROVED — v3.3; downstream artifact refresh required
+- **Status:** APPROVED — v3.4; downstream artifact refresh required
 - **Specification owner:** Product Specification Owner (named owner pending)
 - **Source request:** User request, 2026-08-11: add a command that saves an
   entity YAML from the CodeMie server locally so resources created through the
@@ -13,7 +13,7 @@
   [`../codemie-cicd-tool.md`](../codemie-cicd-tool.md), v33.3.
 - **Pinned target baseline:** CodeMie backend tag `2.42.0`, commit
   `2a481c290c99bf30ef80aadafa03d876a7f5f732`.
-- **Last reviewed:** 2026-08-13.
+- **Last reviewed:** 2026-08-14.
 
 This specification approves the bounded server-to-declaration capability that
 the parent specification deferred under OQ-14 and “bidirectional sync.” It does
@@ -43,6 +43,17 @@ per-entity outcome contract. Save reports `action`, `kind`, `project`, and the
 kind's natural selector in both output modes; ID-selected unmarked Workflow
 save additionally reports `adoptionRequired: true`. It continues to exclude
 paths, URLs, server IDs, content, timestamps, users, and external provenance.
+
+Version 3.4 clarifies the API-to-declaration boundary. OpenAPI response
+objects are not emitted verbatim: reverse projection normalizes API aliases
+and enriched objects into the closed declaration schema. Assistant and Skill
+toolkit, tool, MCP, and integration-settings objects retain only fields
+declared by the GitOps schema; API-only metadata and credential-bearing fields
+are excluded. Assistant context entries convert API `name` values to
+same-project Datasource references, and enriched Assistant category objects
+convert to their non-empty `name` strings. Where the pinned OpenAPI response
+declares defaults for fields required by the declaration schema, reverse
+projection materializes those declared defaults before prospective validation.
 
 ## 2. Executive summary
 
@@ -500,7 +511,7 @@ and remain in the declaration.
 | **FR-SAVE-011** | Skill MUST be selected by exhaustive, complete-visibility, exact effective project+`--name` resolution. More than one exact result MUST fail; current creator, newest, first, and ID MUST NOT break the tie. | Server uniqueness is creator-scoped. | SC-SAVE-001 |
 | **FR-SAVE-012** | Datasource MUST be selected by exhaustive, complete-visibility, exact effective project+`--repo-name` resolution. More than one exact result MUST fail, including rows with different persisted discriminator values under the same approved natural key. Discriminator fields MUST NOT participate in natural-key filtering or break a tie. The unique row's source-pinned discriminator combination selects the reverse projection under DR-SAVE-008. | Prevents arbitrary adoption of duplicate Datasources and preserves the backend's separate VCS/strategy meanings. | SC-SAVE-005 |
 | **FR-SAVE-013** | The command MUST reverse-project every selected entity into exactly one `codemie.epam.com/v1alpha1` declaration using the current closed schema. It MUST emit the explicit `--project` value as `metadata.project`. | Makes saved output self-contained and portable. | SC-SAVE-001–005 |
-| **FR-SAVE-014** | The reverse projection MUST include every current authorable value required to reproduce the selected entity's declarative state, including concrete server-selected defaults and explicit nulls. It MUST NOT guess, invent, or substitute a value. | Avoids incomplete or misleading ownership. | SC-SAVE-005, 007 |
+| **FR-SAVE-014** | The reverse projection MUST include every current authorable value required to reproduce the selected entity's declarative state, including concrete server-selected defaults and explicit nulls. A default may be materialized only when it is explicitly declared by the pinned API response contract; the projector MUST NOT guess, invent, or substitute a value. | Avoids incomplete or misleading ownership. | SC-SAVE-005, 007 |
 | **FR-SAVE-015** | The tool MUST exclude every field classified as server-owned, audit, usage, reaction, status, processing, history, transport-only, or otherwise prohibited by the declaration contract. | Keeps declarations focused on authored desired state. | All |
 | **FR-SAVE-016** | Every managed-entity server ID MUST either be converted to the exact approved natural-reference position or excluded. No managed-entity server ID may appear in YAML, Skill sidecars, persistent client state, success output, warnings, or diagnostics. Workflow-local graph IDs and schema-approved opaque configuration IDs are not managed-entity IDs and MUST retain their existing semantics. | Preserves portability without corrupting local graph/configuration identifiers. | SC-SAVE-002–004 |
 | **FR-SAVE-017** | Assistant, Workflow, and inline Workflow resource references MUST be converted to the natural-key forms already defined by DR-003 and FR-035 of the parent specification. Every referenced target MUST resolve exactly and expose the fields needed for a valid natural key. Missing, inaccessible, null-key, or ambiguous targets MUST fail without guessing. | Reverses the apply-time transformation safely. | SC-SAVE-002, 004 |
@@ -606,7 +617,9 @@ request and not the server's declaration of defaults. Therefore:
 - required current empty lists/maps are emitted explicitly;
 - create-only fields are emitted when required by the declaration and
   available from the read contract, even though a later update omits them;
-- absence is not replaced by a default or placeholder; and
+- an explicit default declared by the pinned API response contract may be
+  materialized when the declaration schema requires that field and the API
+  omits it; arbitrary placeholders and inferred defaults remain forbidden; and
 - lossless reconstruction is evaluated before target existence can influence a
   later apply operation.
 

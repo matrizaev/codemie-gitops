@@ -18,6 +18,17 @@ The detailed findings below preserve the original review evidence for audit.
 They are historical unless explicitly marked CURRENT in the status table that
 follows.
 
+### Current implementation addendum — 2026-08-14
+
+The implementation has since converged on the v3.4 artifacts. The reverse
+projector now normalizes OpenAPI response objects into declaration fields for
+Assistant and Skill context, categories, toolkits, MCP servers, and integration
+settings. Automated evidence includes 210 Rust unit tests, 6 CLI tests, 4
+OpenAPI contract tests, `cargo check --workspace --all-targets --locked`,
+`make format`, and `make lint`. Live-server qualification remains a release
+readiness activity and is not claimed by this historical pre-implementation
+report.
+
 ## Current gate summary
 
 | Gate | Status | Evidence |
