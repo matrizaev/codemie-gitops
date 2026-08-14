@@ -15,9 +15,9 @@
 | Command | Purpose |
 |---------|---------|
 | `lint` | Validate declaration against schema; produces schema-validation errors |
-| `apply` | POST/PATCH valid declaration to CodeMie; produces server response errors |
-| `save` | READ entity from CodeMie; produce declaration in `codemie.epam.com/v1alpha1` format |
-| `login` | Exchange OAuth credentials for access token |
+| `apply` | POST (create) or PUT (update) valid declaration to CodeMie; produces server response errors |
+| `save` | READ entity from CodeMie; write canonical declaration in `codemie.epam.com/v1alpha1` format |
+| `login` | Exchange OAuth or local credentials for access token |
 
 ## Entity Types
 
@@ -34,17 +34,37 @@ The tool handles four CodeMie entity kinds:
 
 ```
 src/
-├── cli/              # Command-line parsing and invocation
-├── config/           # Configuration loading and validation
-├── parse/            # Schema validation and YAML/JSON parsing
-├── http/             # CodeMie API client and request/response handling
-├── adapters/         # Entity-specific API adapters (Assistant, Workflow, Skill, Datasource)
-├── projection/       # Convert domain types → server API requests
-├── save/             # Read server entities → declaration format
-├── render/           # Output formatting (text, JSON, YAML)
-├── validate/         # Post-parse semantic validation
-├── output/           # Result serialization
-└── error.rs          # Error types and diagnostics
+├── adapters/                 # Entity adapters (Assistant, Workflow, Skill, Datasource)
+│   ├── assistant.rs
+│   ├── datasource.rs
+│   ├── mod.rs
+│   ├── skill.rs
+│   └── workflow.rs
+├── save/                     # Read server entities → normalized declaration format
+│   ├── mod.rs
+│   ├── publication.rs
+│   ├── reverse.rs
+│   └── snapshot.rs
+├── auth.rs                   # Keycloak OAuth (client_credentials, ROPC) and local-auth login
+├── cli.rs                    # Command-line parsing, DTOs, and command dispatch
+├── config.rs                 # URL/auth-URL configuration resolution
+├── coordinator.rs            # Orchestration of apply, identity checks, and mutations
+├── declaration_schema.rs     # Generated type definitions for declarations
+├── domain.rs                 # Validated domain types (ProjectName, Slug, NaturalIdentity, etc.)
+├── error.rs                  # Layer-owned error types and exit code mapping
+├── http.rs                   # CodeMie API client, TLS transport, and strict DTOs
+├── input.rs                  # Bounded single-file loader and auxiliary input reader
+├── lib.rs                    # Library facade and entry point
+├── lint.rs                   # Offline lint command execution
+├── main.rs                   # Minimal binary CLI driver
+├── output.rs                 # Result formatting and CLI stdout/stderr writing
+├── pagination.rs             # Paginated list retrieval helpers
+├── parse.rs                  # YAML parsing and JSON Schema validation
+├── projection.rs             # Convert domain types → server API requests
+├── render.rs                 # Diagnostic and outcome rendering
+├── schema.rs                 # Embedded declaration schema and validation helpers
+├── strict_json.rs            # Strict JSON decoding with duplicate key rejection
+└── validate.rs               # Semantic validation and reference shape checks
 ```
 
 ## Data Flow
@@ -52,43 +72,51 @@ src/
 ### Lint
 
 ```
-YAML/JSON File
+YAML File
+    ↓
+[input] → Bounded single-file read (plus explicit auxiliary sidecar if Skill contentFrom)
     ↓
 [parse] → Validate against JSON Schema
     ↓
-[validate] → Semantic validation
+[validate] → Semantic validation & reference-shape checks
     ↓
-Text/JSON Error Report or Success
+Text/JSON Error Report (stderr) or Outcome (stdout)
 ```
 
 ### Apply
 
 ```
-YAML/JSON File
+YAML File
+    ↓
+[input] → Bounded single-file read (plus explicit auxiliary inputs)
     ↓
 [parse] → Validate against JSON Schema
     ↓
 [validate] → Semantic validation
     ↓
-[projection] → Convert to server API request
+[coordinator] → Identity resolution & online reference lookup via adapters
     ↓
-[http] → POST/PATCH to CodeMie
+[projection] → Convert domain types to server API payload
     ↓
-Text/JSON Response
+[http] → POST (create) or PUT (update) to CodeMie
+    ↓
+Text/JSON Outcome (stdout)
 ```
 
 ### Save
 
 ```
-CLI Selectors (--kind, --project, --slug, etc.)
+CLI Selectors (--kind, --project, --file, etc.)
     ↓
 [http] → GET from CodeMie by identity
     ↓
-[save] → Convert server entity → Declaration snapshot
+[save] → Reverse-project & normalize server entity → Declaration snapshot
     ↓
-[render] → Serialize to YAML/JSON
+[validate] → In-memory validation of generated declaration
     ↓
-Declaration File or stdout
+[save::publication] → Direct create-new write to target --file
+    ↓
+Text/JSON Outcome (stdout)
 ```
 
 ## Key Design Decisions
@@ -98,9 +126,10 @@ Each invocation is independent. Authentication via `--url` and bearer token in `
 
 ### 2. **Snapshot-Based Save**
 The `save` command reads a server entity and produces a snapshot containing:
-- Resolved references (nested Assistant/Workflow by ID → slug-based declaration references)
-- Declared-form selectors (identity fields in `metadata`)
-- Rendered content (YAML/JSON serialization)
+- Reverse-projected and normalized fields according to OpenAPI contract (stripping internal metadata, credentials, and reconciling API aliases)
+- Inline Skill content (`spec.content`) with companion files
+- Direct write with create-new semantics (refuses to overwrite existing files, no temporary/staging rename)
+- Rendered canonical YAML output validated in-memory before writing
 
 ### 3. **Schema Validation First**
 `parse/mod.rs` validates incoming declarations against JSON Schema before any domain logic runs. This separates transport-level validation from semantic validation.
@@ -115,15 +144,17 @@ Each entity kind has an adapter module:
 Each adapter encapsulates:
 - Server API routes
 - Request/response DTO mapping
-- Identity resolution
-- Natural update route detection (e.g., is this an existing datasource update or a create?)
+- Online identity resolution
+- Natural update route detection and write planning (POST for create, PUT for update)
 
 ### 5. **Type-Driven Identity**
 Identity is modeled with strong types:
-- `ProjectName(String)` — validated project identifier
-- `Slug(String)` — URL-safe slug
-- `ServerId(Uuid)` — server-assigned entity ID
-- `RepoName(String)` — datasource repository identifier
+- `ProjectName` — validated project identifier
+- `Slug` — URL-safe slug
+- `SkillName` — skill name identifier
+- `RepositoryName` — datasource repository identifier (`repo_name`)
+- `WorkflowId` — canonical UUID
+- `ServerId` — server-assigned entity ID
 
 ### 6. **Error Handling**
 Errors are structured using `thiserror`:
@@ -152,6 +183,7 @@ This ensures invariants are enforced at boundaries and domain logic operates onl
 
 - **Unit tests**: Domain logic, conversions, error handling
 - **Integration tests**: CLI parsing, schema validation, end-to-end scenarios
+- **Contract tests**: OpenAPI contract validation against pinned backend schemas
 - **Live tests** (manual): Against local dev server instances
 
 Run tests with:
@@ -163,19 +195,19 @@ make test
 
 - **Tokio**: Async runtime
 - **Reqwest + Rustls**: HTTP client with TLS
-- **Serde/serde_json**: Serialization
+- **Serde/serde_json/serde_yaml**: Serialization
 - **Clap**: CLI parsing
 - **Tracing**: Structured logging
 - **Thiserror**: Error types
 - **Typify + Schemars**: JSON Schema generation and type generation
 
-## Future Considerations
+## Explicit Scope Non-Goals
 
+Per the product specification, the following are deliberate non-goals:
 - Batch operations (multiple entities per invocation)
-- Plan/preview mode (show changes without applying)
-- State tracking and rollback
-- Local entity caching for performance
-- Additional output formats (Kustomize, Helm, Terraform)
+- Plan/preview mode (declarative always-write model)
+- Local state tracking, cache database, or automatic rollback
+- Repository discovery, walking, or multi-file declaration graphs
 
 ---
 

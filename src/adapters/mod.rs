@@ -488,7 +488,7 @@ mod tests {
 
     #[test]
     fn production_http_api_exposes_only_the_prepared_modifying_boundary() {
-        let http_source = include_str!("../http/mod.rs");
+        let http_source = include_str!("../http.rs");
         for raw_entry in [
             "pub async fn post<",
             "pub async fn put<",

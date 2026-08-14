@@ -1,6 +1,6 @@
 # Implementation task breakdown: v33 single-file processing
 
-Status: READY FOR PRE-IMPLEMENTATION VERIFICATION
+Status: IMPLEMENTED — automated verification and unit/integration tests pass.
 
 All tasks are derived from `../codemie-cicd-tool.md` v33 and ADR-019. They do
 not authorize changes in reference-only `codemie/` or `codemie-ui/`.

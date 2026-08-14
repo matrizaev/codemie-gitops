@@ -38,11 +38,9 @@ This project adheres to the Contributor Covenant Code of Conduct. By participati
 
 4. **(Optional) Start a local CodeMie dev server:**
    ```sh
-   cd ../codemie
-   docker-compose up -d
-   # Wait for services to be ready
-   cd ../codemie-gitops
+   make dev-server
    ```
+   This starts the local PostgreSQL, Elasticsearch, and CodeMie backend services using Podman Compose and `ops/dev/podman-compose.yml`.
 
 ### Running Tests Locally
 
@@ -57,7 +55,7 @@ make lint
 make test
 
 # Build release
-make build-release
+cargo build --locked --release
 ```
 
 ## Development Workflow
@@ -114,9 +112,9 @@ RUST_LOG=debug cargo test --workspace -- --nocapture
 For live testing against a local server:
 ```bash
 ./scripts/wait-for-dev-dependencies.sh
-cargo run -- lint --file examples/assistant.yaml
-cargo run -- apply --file examples/assistant.yaml
-cargo run -- save --kind Assistant --project my-project --slug my-assistant
+cargo run -- lint --file examples/repository/assistants/example-assistant.yaml
+cargo run -- apply --file examples/repository/assistants/example-assistant.yaml
+cargo run -- save --kind Assistant --project demo --slug example-assistant --file saved-assistant.yaml
 ```
 
 ### 4. Run the Full CI Suite Before Pushing
@@ -272,7 +270,7 @@ Fixes #42
 
 This project follows [Semantic Versioning](https://semver.org/):
 
-- `MAJOR.MINOR.PATCH` (e.g., `0.1.2`)
+- `MAJOR.MINOR.PATCH` (e.g., `0.1.3`)
 - `MAJOR` for breaking changes
 - `MINOR` for backward-compatible features
 - `PATCH` for bug fixes
@@ -284,7 +282,7 @@ Version is managed in `Cargo.toml` and enforced by the CI version-bump gate.
 Releases are automated:
 
 1. Merge a PR with a version bump
-2. Create and push a tag (`git tag v0.1.2 && git push origin v0.1.2`)
+2. Create and push a tag (`git tag v0.1.3 && git push origin v0.1.3`)
 3. GitHub Actions automatically:
    - Builds binaries for four platforms (Windows x86_64, macOS aarch64, Linux x86_64, Linux aarch64)
    - Generates checksums
