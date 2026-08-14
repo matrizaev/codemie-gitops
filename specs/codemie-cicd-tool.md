@@ -2,7 +2,9 @@
 
   ## 1. Document status
 
-  * **Status:** DRAFT — v33.3 — **READY FOR ARCHITECTURE PLANNING; DOWNSTREAM ARTIFACT REFRESH REQUIRED**
+  * **Status:** IMPLEMENTED — v33.3. Current reconstruction guidance:
+    `../docs/implementation-reference.md`. Closed declaration and adapter
+    contracts remain authoritative.
   * **Tool name:** `codemie-gitops`
   * **Owner:** Product Specification Owner (pending assignment to a named product owner)
   * **Source request:** User-provided request on 2026-08-06: "create a CI/CD tool for the CodeMie platform that will be able to store assistants, workflows, datasources, and skills in YAML files, lint them, and create/update on the server side."
@@ -13,6 +15,12 @@
     * `https://github.com/codemie-ai/codemie-ui` — UI (out of scope for this tool)
     * `https://github.com/codemie-ai/codemie-code` — **different, existing** local-agent CLI; not to be confused with `codemie-gitops`
   * **Last reviewed:** 2026-08-13 (v33.3)
+  * **Reading rule:** this consolidated document preserves revision history and
+    superseded clauses for traceability. Where an older clause mentions
+    repository discovery/configuration, project defaults, inline File bytes, or
+    earlier identity/authorization rules, v33–v33.3 and the active closed
+    contracts supersede it. Do not reconstruct the executable by combining
+    mutually superseded historical clauses.
   * **Revision history:**
     * v1 (2026-08-06 15:27 UTC+3) — initial DRAFT, based on public docs only.
     * v2 (2026-08-06 15:53 UTC+3) — post-repo-analysis: schema, identity, cross-entity refs, auth resolved or narrowed.
@@ -76,7 +84,7 @@
   * **Provider-safe CI token delivery:** first-class CI examples use only a token path that their provider can keep masked without persistence. GitHub may capture one fresh `login` token and immediately register it with the native runtime masking control before any later command or output. GitLab consumes a pre-supplied, environment-scoped protected+masked `CODEMIE_TOKEN` directly in the protected job and does not invoke `login`. No example may emulate a missing masking capability or fall back to an unmasked fresh token. (IR-006, QR-012)
   * **No deletes** in phase 1. (FR-008)
 
-  **Status:** `READY FOR ARCHITECTURE PLANNING`. The member-creation boundary, exact-entity write gate, Assistant identity, creator-scoped Skill identity, creator-scoped Workflow identity, and authoritative Datasource collision behavior are product-approved. Workflow's lack of atomic uniqueness remains an explicit residual race handled by serialization and post-write verification, not an unresolved product choice. Downstream architecture, contracts, tasks, reviews, and implementation remain stale and are not changed by this product-spec revision.
+  **Status:** `IMPLEMENTED`. The member-creation boundary, exact-entity write gate, Assistant identity, creator-scoped Skill identity, creator-scoped Workflow identity, and authoritative Datasource collision behavior are implemented. Workflow's lack of atomic uniqueness remains an explicit residual race handled by serialization and post-write verification. See the current implementation reference and active contracts for reconstruction.
 
   ---
 
@@ -1809,10 +1817,10 @@
   ## 30. Readiness assessment
 
   ```
-  Specification status: READY FOR ARCHITECTURE PLANNING
+  Specification status: IMPLEMENTED — v33.3
   ```
 
-  Product behavior is bounded and testable: each lint/apply invocation reads one YAML of at most 1,048,576 bytes plus only explicitly named, bounded Skill `contentFrom` or File Datasource inputs; no repository discovery occurs; File Datasource paths are directly streamed to multipart without temporary-file materialization; exact project membership qualifies creation; exact server-reported entity `write` ability gates update; Assistant uses exact project/slug lookup; Workflow and Skill reconcile in the authenticated creator namespace; legacy Workflow v1/unmarked state requires explicit adoption; Datasource partial-list misses never prove absence and HTTP 409 is authoritative collision evidence. Strict decoding, zero unauthorized writes, post-write verification, safe diagnostics, and Assistant least privilege remain mandatory. No open product question blocks architecture planning. The solution architect must refresh all downstream artifacts for v33.3 before implementation readiness is reclaimed.
+  Product behavior is bounded and implemented: each lint/apply invocation reads one YAML of at most 1,048,576 bytes plus only explicitly named, bounded Skill `contentFrom` or File Datasource inputs; no repository discovery occurs; File Datasource paths are directly streamed to multipart without temporary-file materialization; exact project membership qualifies creation; exact server-reported entity `write` ability gates update; Assistant uses exact project/slug lookup; Workflow and Skill reconcile in the authenticated creator namespace; legacy Workflow v1/unmarked state requires explicit adoption; Datasource partial-list misses never prove absence and HTTP 409 is authoritative collision evidence. Strict decoding, zero unauthorized writes, post-write verification, safe diagnostics, and Assistant least privilege remain mandatory.
 
   ### Closed product decisions
 
@@ -1926,6 +1934,10 @@
   * None.
 
   ### Statement of readiness
-  The specification is **READY FOR ARCHITECTURE PLANNING**. The v14 identity decisions, v15 exit taxonomy, v16 safe output boundary, v17 Workflow reference decision, v20/v22 generic Datasource boundary, v21 provenance boundary, v22 always-write decision, v23 VER-012 omission/nullability rule, v24 explicit Keycloak endpoint rule, v26 Mode (c) Keycloak ROPC addition, v28 target-compatibility decision, and v29 provider-safe CI token-delivery decision require downstream convergence. Readiness does not prove operational deployment compatibility; the solution architect and platform owner must retain the independent pre-write and deployment-qualification evidence gates above. After that refresh, pre-implementation verification assesses artifact consistency and the security reviewer performs the next required review. The absence of a future security-review artifact at this stage is expected and is not a product blocker.
+  The specification is **IMPLEMENTED at v33.3**. Current code, closed contracts,
+  and reconstruction guidance have precedence over historical readiness text in
+  this revision log. Operational deployment compatibility remains separately
+  target-qualified; local implementation completeness does not activate or
+  approve a deployment.
 
   ---

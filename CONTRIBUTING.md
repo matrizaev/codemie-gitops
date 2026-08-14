@@ -208,8 +208,16 @@ mod tests {
 
 ## Documentation
 
-- **README.md**: User-facing command and configuration docs
-- **ARCHITECTURE.md**: Design, module organization, data flow
+- **README.md**: User-facing command and configuration docs.
+- **docs/README.md**: Authority map and historical-document rules.
+- **docs/yaml-reference.md**: Complete declaration authoring language. Update
+  it whenever the declaration schema changes.
+- **docs/implementation-reference.md**: Current algorithms, limits, module
+  ownership, and reconstruction guidance. Update it with behavioral or
+  architectural changes.
+- **ARCHITECTURE.md**: Short design, module organization, and data flow.
+- **Closed contracts**: Update schemas/manifests and their tests with any
+  accepted wire-format change. Prose cannot widen a closed contract.
 - **Code comments**: Explain *why*, not *what*. Let the code speak for itself.
 - **Doc comments on public APIs**: Include examples for complex behavior.
 
@@ -322,6 +330,7 @@ Error: identity mismatch: expected "prod/my-repo", got "prod/different-repo"
 ## Questions?
 
 - Check existing issues on [GitHub](https://github.com/matrizaev/codemie-gitops/issues)
+- Start with the [documentation map](docs/README.md)
 - Read the [Architecture documentation](ARCHITECTURE.md)
 - Review examples in [examples/](examples/)
 

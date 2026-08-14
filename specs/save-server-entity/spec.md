@@ -2,7 +2,8 @@
 
 ## 1. Document status
 
-- **Status:** APPROVED — v3.5
+- **Status:** IMPLEMENTED — v3.5. Current executable reconstruction guidance:
+  `../../docs/implementation-reference.md`.
 - **Specification owner:** Product Specification Owner (named owner pending)
 - **Source request:** User request, 2026-08-11: add a command that saves an
   entity YAML from the CodeMie server locally so resources created through the
@@ -146,7 +147,7 @@ No Confluence content was provided or available locally.
   resolution.
 - [`../codemie-cicd-tool/adr/008-workflow-meta-config-identity-and-adoption.md`](../codemie-cicd-tool/adr/008-workflow-meta-config-identity-and-adoption.md)
   and
-  [`../../ops/o002/WORKFLOW_ADOPTION.md`](../../ops/o002/WORKFLOW_ADOPTION.md)
+  [`../../README.md#apply-and-output`](../../README.md#apply-and-output)
   — reserved Workflow identity, exact-ID adoption, metadata preservation, and
   the prohibition on persisting or reporting the adoption UUID.
 - [`../codemie-cicd-tool/adr/009-datasource-ordinary-crud-boundary.md`](../codemie-cicd-tool/adr/009-datasource-ordinary-crud-boundary.md)
@@ -159,7 +160,7 @@ No Confluence content was provided or available locally.
   [`../codemie-cicd-tool/contracts/diagnostic.schema.json`](../codemie-cicd-tool/contracts/diagnostic.schema.json)
   — current closed success and safe-diagnostic formats, which this feature
   requires architecture to extend without weakening their boundaries.
-- [`../../src/cli/mod.rs`](../../src/cli/mod.rs) and
+- [`../../src/cli.rs`](../../src/cli.rs) and
   [`../../README.md`](../../README.md) — implemented command naming and current
   user-visible behavior.
 
@@ -1520,7 +1521,7 @@ placeholder, secret export, or partial declaration.
 ## 30. Readiness assessment
 
 ```text
-Specification status: READY FOR ARCHITECTURE PLANNING
+Specification status: IMPLEMENTED — v3.5
 ```
 
 The product decisions that materially affect architecture are resolved: exact

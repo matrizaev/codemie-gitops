@@ -27,11 +27,12 @@ fields are not copied verbatim into YAML.
 
 ## 3. Sources consulted
 
-- Product specification: `spec.md` v3.4.
+- Product specification: `spec.md` v3.5.
 - Parent product specification: `../codemie-cicd-tool.md` v33.
 - Parent CLI/declaration/adapter/output contracts.
 - Existing save ADRs/contracts/data model/tasks and current `src/save/**`,
-  `src/repository.rs`, `src/cli`, `src/config` implementation.
+  historical repository implementation and current `src/cli.rs`,
+  `src/config.rs`, `src/input.rs`, and `src/save/` implementation.
 - Pinned reference-only CodeMie source and save-read/reverse manifest for server
   evidence only; reference directories are not product components.
 

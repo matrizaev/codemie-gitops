@@ -1,6 +1,7 @@
 # CLI contract
 
-Source: `specs/codemie-cicd-tool.md` v33.
+Source: `specs/codemie-cicd-tool.md` v33.3 plus the approved Save v3.5
+contract at `../../save-server-entity/contracts/cli-save-v1.md`.
 
 Status: NORMATIVE ARCHITECTURE CONTRACT.
 
@@ -10,8 +11,12 @@ Status: NORMATIVE ARCHITECTURE CONTRACT.
 codemie-gitops lint --file <path> [--output text|json]
 codemie-gitops apply --file <path> [--url <url>]
                      [--adopt-workflow-id <uuid>] [--output text|json]
+codemie-gitops save --kind <kind> --project <project> --file <path>
+                    [--slug <slug> | --name <name> | --repo-name <name>]
+                    [--id <workflow-uuid>] [--url <url>]
+                    [--output text|json]
 codemie-gitops login [--url <url>] [--auth-url <url>]
-                     [--client-id <id> | --email <email>]
+                     [--client-id <id>] [--email <email>]
 ```
 
 `--file` is required and names exactly one declaration. `--repo-root` and
@@ -78,10 +83,13 @@ The tool never looks for a referenced local declaration. Workflow
 
 ## 6. `login`
 
-The three approved modes remain: Keycloak client credentials, Keycloak ROPC,
-and loopback local auth. Keycloak requires explicit `auth_url`; it is never
-derived. Authentication POST redirects remain disabled. Success writes only the
-token to stdout; every failure leaves stdout empty.
+The implemented modes are bearer-token reuse, Keycloak client credentials,
+Keycloak ROPC, and loopback local auth. Bearer token has highest priority and
+performs no authentication request. Keycloak requires explicit `auth_url`; it
+is never derived. Client-credentials mode requires `CODEMIE_CLIENT_SECRET` and
+may omit client ID. ROPC requires email/password and defaults client ID to
+`codemie-sdk`. Authentication POST redirects remain disabled. Success writes
+only the token to stdout; every failure leaves stdout empty.
 
 ## 7. Output and diagnostics
 

@@ -1,8 +1,11 @@
-# Implementation task breakdown: v33 single-file processing
+# Completed implementation task breakdown: v33.3 single-file processing
 
 Status: IMPLEMENTED — automated verification and unit/integration tests pass.
 
-All tasks are derived from `../codemie-cicd-tool.md` v33 and ADR-019. They do
+This file is completion history, not the current source/module inventory. Use
+`../../docs/implementation-reference.md` to reconstruct the implementation.
+
+All tasks were derived from `../codemie-cicd-tool.md` v33–v33.3 and ADR-019. They do
 not authorize changes in reference-only `codemie/` or `codemie-ui/`.
 
 ## Q-011 — Verify v33 architecture convergence
@@ -64,8 +67,9 @@ not authorize changes in reference-only `codemie/` or `codemie-ui/`.
 - Scope: retain exactly-one-of Skill `content`/`contentFrom`; delete production
   walking/repository-view/graph-closure paths; retain reference-shape and
   Workflow-local semantic checks.
-- Expected components: declaration schema/build embedding, `src/discovery`,
-  `src/repository.rs`, `src/validate`, `src/domain`, tests.
+- Migration components: declaration schema/build embedding, removed
+  `src/discovery` and `src/repository.rs`, retained `src/validate` and
+  `src/domain`, plus tests.
 - Evidence: schema/path goldens accept safe `contentFrom`; missing neighboring
   declarations do not fail lint; wrong-shaped references do fail.
 - Completion: lint reads exactly one file and performs zero network access.

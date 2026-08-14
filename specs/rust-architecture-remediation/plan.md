@@ -2,7 +2,9 @@
 
 ## Status
 
-Architecture status: IMPLEMENTED — converged with product specification v33.3 and save specification v3.4.
+Architecture status: IMPLEMENTED — converged with product specification v33.3
+and save specification v3.5. Current source behavior is summarized in
+`../../docs/implementation-reference.md`.
 
 The previous remediation plan treated repository discovery, closure validation,
 cooperative cancellation, and staged native publication as behavior

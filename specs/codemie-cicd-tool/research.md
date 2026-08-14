@@ -2,7 +2,8 @@
 
 ## Status
 
-Current as of 2026-08-13. This document records evidence, not product scope.
+Historical migration evidence captured on 2026-08-13. This document records
+the pre-v33 implementation inspected during planning, not current source.
 
 ## Approved evidence
 
@@ -14,7 +15,7 @@ Current as of 2026-08-13. This document records evidence, not product scope.
   validation of only that declaration, and a direct no-overwrite final-path
   write whose failure may leave a partial file.
 
-## Current implementation evidence
+## Pre-migration implementation evidence
 
 - `src/cli/mod.rs` still exposes repository and symlink flags and resolves a
   repository root/config before lint/apply/save.
@@ -28,7 +29,9 @@ Current as of 2026-08-13. This document records evidence, not product scope.
   `rustix` no-replace rename; `src/save/mod.rs` creates a Skill sidecar and
   validates through the overlay.
 
-These are implementation facts that conflict with the newer approved specs.
+These were implementation facts that conflicted with the newer approved specs.
+The migration is complete; use `../../docs/implementation-reference.md` for
+current source structure and behavior.
 
 ## Retained server-contract evidence
 
