@@ -2,7 +2,7 @@
 
 ## 1. Document status
 
-- **Status:** APPROVED — v3.4; downstream artifact refresh required
+- **Status:** APPROVED — v3.5
 - **Specification owner:** Product Specification Owner (named owner pending)
 - **Source request:** User request, 2026-08-11: add a command that saves an
   entity YAML from the CodeMie server locally so resources created through the
@@ -32,11 +32,11 @@ it does not construct or validate a repository view. It writes the final file
 directly without a staging file, temporary file, rename-based publication, or
 cross-file transaction. Existing targets remain a visible refusal condition.
 
-Version 3.2 aligns explicit auxiliary-input terminology with parent v33.3.
-Save continues to emit inline Skill content, although lint/apply also accept
-bounded `contentFrom`. File Datasource remains non-exportable because a valid
-path-based declaration requires original local source files and the pinned
-read contract exposes filenames but not those original bytes.
+Version 3.2 aligned explicit auxiliary-input terminology with parent v33.3 and
+originally refused File Datasource export because source bytes were unavailable.
+Version 3.5 supersedes that refusal with explicit placeholders. Save continues
+to emit inline Skill content, although lint/apply also accept bounded
+`contentFrom`.
 
 Version 3.3 resolves the save-success output conflict in favor of the existing
 per-entity outcome contract. Save reports `action`, `kind`, `project`, and the
@@ -54,6 +54,16 @@ same-project Datasource references, and enriched Assistant category objects
 convert to their non-empty `name` strings. Where the pinned OpenAPI response
 declares defaults for fields required by the declaration schema, reverse
 projection materializes those declared defaults before prospective validation.
+
+Version 3.5 makes persisted `knowledge_base_file` Datasources exportable when
+the detail response exposes metadata and original filenames but not source
+bytes. Save emits `spec.index_type: file`, preserves the server filename set in
+`spec.uploaded_files`, and creates zero-byte, repository-relative placeholders
+for `spec.files`. Operators replace placeholder bytes before apply. Workflow
+save also reverses actor `assistant_id`, `skill_ids`, and `datasource_ids` into
+natural references and normalizes omitted server defaults required by the
+closed declaration schema; workflow-local state `assistant_id` values remain
+unchanged graph references.
 
 ## 2. Executive summary
 
@@ -510,8 +520,8 @@ and remain in the declaration.
 | **FR-SAVE-010** | ID-selected Workflow save MUST NOT alter or adopt the server Workflow. Its successful outcome MUST include `adoptionRequired: true`; only a later explicit `apply --adopt-workflow-id` operation may adopt it using the same reviewed UUID out of band. | Separates local conversion from server adoption. | SC-SAVE-003 |
 | **FR-SAVE-011** | Skill MUST be selected by exhaustive, complete-visibility, exact effective project+`--name` resolution. More than one exact result MUST fail; current creator, newest, first, and ID MUST NOT break the tie. | Server uniqueness is creator-scoped. | SC-SAVE-001 |
 | **FR-SAVE-012** | Datasource MUST be selected by exhaustive, complete-visibility, exact effective project+`--repo-name` resolution. More than one exact result MUST fail, including rows with different persisted discriminator values under the same approved natural key. Discriminator fields MUST NOT participate in natural-key filtering or break a tie. The unique row's source-pinned discriminator combination selects the reverse projection under DR-SAVE-008. | Prevents arbitrary adoption of duplicate Datasources and preserves the backend's separate VCS/strategy meanings. | SC-SAVE-005 |
-| **FR-SAVE-013** | The command MUST reverse-project every selected entity into exactly one `codemie.epam.com/v1alpha1` declaration using the current closed schema. It MUST emit the explicit `--project` value as `metadata.project`. | Makes saved output self-contained and portable. | SC-SAVE-001–005 |
-| **FR-SAVE-014** | The reverse projection MUST include every current authorable value required to reproduce the selected entity's declarative state, including concrete server-selected defaults and explicit nulls. A default may be materialized only when it is explicitly declared by the pinned API response contract; the projector MUST NOT guess, invent, or substitute a value. | Avoids incomplete or misleading ownership. | SC-SAVE-005, 007 |
+| **FR-SAVE-013** | The command MUST reverse-project every selected entity into exactly one `codemie.epam.com/v1alpha1` declaration using the current closed schema. It MUST emit the explicit `--project` value as `metadata.project`. A File Datasource declaration MAY reference generated auxiliary placeholder files. | Makes saved output portable while supporting explicit file inputs. | SC-SAVE-001–005 |
+| **FR-SAVE-014** | The reverse projection MUST include every current authorable value required to reproduce the selected entity's declarative state, including concrete server-selected defaults and explicit nulls. Defaults required by the declaration schema MAY be materialized from the documented CodeMie defaults when the server omits or returns null for them. Such normalization MUST be deterministic and covered by compatibility tests. | Makes sparse server snapshots importable without arbitrary per-run inference. | SC-SAVE-005, 007 |
 | **FR-SAVE-015** | The tool MUST exclude every field classified as server-owned, audit, usage, reaction, status, processing, history, transport-only, or otherwise prohibited by the declaration contract. | Keeps declarations focused on authored desired state. | All |
 | **FR-SAVE-016** | Every managed-entity server ID MUST either be converted to the exact approved natural-reference position or excluded. No managed-entity server ID may appear in YAML, Skill sidecars, persistent client state, success output, warnings, or diagnostics. Workflow-local graph IDs and schema-approved opaque configuration IDs are not managed-entity IDs and MUST retain their existing semantics. | Preserves portability without corrupting local graph/configuration identifiers. | SC-SAVE-002–004 |
 | **FR-SAVE-017** | Assistant, Workflow, and inline Workflow resource references MUST be converted to the natural-key forms already defined by DR-003 and FR-035 of the parent specification. Every referenced target MUST resolve exactly and expose the fields needed for a valid natural key. Missing, inaccessible, null-key, or ambiguous targets MUST fail without guessing. | Reverses the apply-time transformation safely. | SC-SAVE-002, 004 |
@@ -519,18 +529,18 @@ and remain in the declaration.
 | **FR-SAVE-019** | For Skill, the main server content MUST be written inline to `spec.content` in the YAML. Save MUST NOT emit or reference a sidecar. | Preserves one-file output. | SC-SAVE-001 |
 | **FR-SAVE-020** | Skill companion-file metadata and content MUST be fully read and represented in the existing `spec.companion_files` declaration form. Missing, duplicate-path, incompatible, over-budget, or inaccessible content MUST fail the whole save. | Detail alone exposes only metadata; partial Skill export is unsafe. | SC-SAVE-001 |
 | **FR-SAVE-021** | Workflow reverse projection MUST strictly decode `yaml_config` and `meta_config`, remove only the valid reserved identity member from authored `spec.meta_config`, preserve all non-reserved authorable values, and reverse the server resource-ID positions defined by the declaration contract. Malformed or conflicting metadata MUST fail and MUST NOT be rewritten. | Preserves mixed ownership and adoption safety. | SC-SAVE-002, 003 |
-| **FR-SAVE-022** | A Datasource MUST use only the current per-kind authorable fields. Secret fields, encrypted settings, server/runtime fields, and cross-kind fields MUST never be written. File, provider-defined, and Bedrock Datasources MUST fail as non-exportable in this release. | The current server cannot provide a safe complete declaration for those cases. | SC-SAVE-005 |
-| **FR-SAVE-023** | If a required authorable value is masked, redacted, encrypted, secret-classified, omitted from the pinned read contract, or otherwise not faithfully reconstructable, the command MUST fail as non-exportable. It MUST NOT write a mask token, placeholder, empty value, discovered default, or partial declaration. | Prevents silent state loss and secret export. | SC-SAVE-005 |
+| **FR-SAVE-022** | A Datasource MUST use only the current per-kind authorable fields. Secret fields, encrypted settings, server/runtime fields, and cross-kind fields MUST never be written. A persisted `knowledge_base_file` MUST reverse to `spec.index_type: file`; provider-defined and Bedrock Datasources remain non-exportable. | Supports ordinary file ownership without exporting secrets or unsupported provider state. | SC-SAVE-005 |
+| **FR-SAVE-023** | If a required authorable secret/configuration value is masked, redacted, encrypted, secret-classified, or otherwise not faithfully reconstructable, the command MUST fail as non-exportable. File Datasource source bytes are the sole approved unavailable-content exception: save MUST create explicit zero-byte placeholders, preserve original filenames in `uploaded_files`, and document that placeholder bytes require replacement before apply. | Prevents silent state loss while enabling deliberate file replacement. | SC-SAVE-005 |
 | **FR-SAVE-024** | The tool MUST render deterministic canonical YAML. Two saves of the same normalized server state to equivalent empty destinations MUST produce byte-identical YAML. | Produces stable reviewable diffs. | SC-SAVE-001–004 |
 | **FR-SAVE-025** | The command MUST reject an existing YAML target before network access and MUST NOT offer a force/replace path in this release. | Protects an already present local declaration. | SC-SAVE-006 |
 | **FR-SAVE-026** | The command MUST not begin the final-file write until server resolution, complete reverse projection, secret/non-exportable checks, compatibility checks, and generated-declaration validation all pass. | Prevents knowingly invalid output while acknowledging direct-write failures. | All |
-| **FR-SAVE-027** | A successful invocation MUST have completed the direct write of exactly one final YAML file and MUST NOT replace an existing path. It MUST NOT use staging, temporary files, rename-based publication, or a cross-file transaction. | Defines the single-file direct-write boundary. | SC-SAVE-001, 006, 008 |
+| **FR-SAVE-027** | A successful invocation MUST have completed the direct write of the final YAML and, for File Datasource, every declared zero-byte placeholder. It MUST NOT replace an existing path or use staging, temporary files, or rename-based publication. Placeholder files are created first and YAML last; a failure may leave an orphan placeholder directory for manual removal. | Defines the direct-write artifact boundary. | SC-SAVE-001, 006, 008 |
 | **FR-SAVE-028** | Success MUST emit exactly one identity-bearing outcome line to stdout and nothing else. Text mode MUST use `saved <Kind> <project>/<natural-key>`; an ID-selected unmarked Workflow MUST append ` (adoption required on apply)`. JSON mode MUST emit one compact object containing exactly `action: "saved"`, `kind`, `project`, and the applicable `slug`, `name`, or `repo_name`; the ID-selected unmarked Workflow object MUST additionally contain `adoptionRequired: true`. `adoptionRequired` MUST be absent for every other success. Failures MUST leave stdout empty and emit exactly one safe diagnostic line to stderr. | Preserves the existing structured per-entity output contract and makes the saved identity unambiguous. | All |
 | **FR-SAVE-029** | `save` MUST NOT emit YAML or content to stdout, and MUST NOT include target URL, output path, server ID, response content, user identity, timestamp, Git/CI provenance, adoption UUID, or any field beyond FR-SAVE-028 in the successful outcome. The explicit project and natural selector required by FR-SAVE-028 are approved non-sensitive identity fields. | Avoids content leakage while preserving the current per-entity identity and provenance boundary. | All |
 | **FR-SAVE-030** | `save` MUST apply the compatibility and response-budget rules in IR-SAVE-001–006 before local publication. | Fails closed against drift and resource abuse. | SC-SAVE-007 |
 | **FR-SAVE-031** | Save MUST validate only the one generated declaration. It MUST NOT walk or scan a repository, discover or validate a repository closure, or require referenced declarations to exist locally. `--repo-root` and `--follow-symlinks` MUST be rejected as unknown options. | Aligns output with the parent single-file processing boundary. | SC-SAVE-001–008 |
 | **FR-SAVE-032** | Skill main content MUST be emitted inline as `spec.content`; save MUST produce no generated sidecar. | Ensures every save has one declaration output. | SC-SAVE-001 |
-| **FR-SAVE-033** | After all server reads, reverse projection, confidentiality checks, and single-declaration validation pass, save MUST write directly to the requested final YAML path. It MUST NOT use a staging file, temporary file, rename-based publication, or atomic/multi-file publication protocol. It MUST refuse a target that is already present and MUST NOT offer force/replace. A write failure MAY leave an incomplete new final file; the command MUST exit 2, leave stdout empty, emit `E_OUTPUT_WRITE`, and MUST NOT report `saved`. | Defines the intentionally simple one-file output behavior and its observable failure mode. | SC-SAVE-001, 006, 008 |
+| **FR-SAVE-033** | After all server reads, reverse projection, confidentiality checks, and generated-declaration validation pass, save MUST directly create its final artifacts. Ordinary kinds write only the requested YAML. File Datasource creates a deterministic adjacent `<yaml-name>.files/` directory, zero-byte placeholders using safe basenames, then YAML. It MUST refuse collisions and MUST NOT offer force/replace. Failure MAY leave incomplete newly-created artifacts; the command MUST exit 2, leave stdout empty, emit a safe output diagnostic, and MUST NOT report `saved`. | Defines direct publication and observable partial failure for both output shapes. | SC-SAVE-001, 006, 008 |
 
 **v3 supersession rule:** FR-SAVE-031–033 supersede the repository/config,
 prospective-closure, Skill-sidecar, staging, atomicity, publication ordering,
@@ -1018,16 +1028,17 @@ Then lint exits 0 without network access
 And lint does not modify the saved artifacts
 ```
 
-### AC-SAVE-013 — File Datasource is refused
+### AC-SAVE-013 — File Datasource emits editable placeholders
 
 ```gherkin
 Given the unique selected Datasource has persisted index_type "knowledge_base_file"
 When save reads its detail
 Then it classifies the declaration branch as spec.index_type "file"
-And it does not treat uploaded or processed filenames as source file content
-And exits 1 with E_ENTITY_NOT_EXPORTABLE
-And no final file is written
-And no content or filename value appears in the diagnostic
+And preserves original filenames in spec.uploaded_files
+And writes one zero-byte placeholder per safe original filename, up to the schema limit
+And references those relative paths from spec.files
+And validates the generated declaration with those files present
+And reports saved only after placeholders and YAML are complete
 ```
 
 ### AC-SAVE-014 — Secret Datasource fields never leave the server response boundary
@@ -1400,7 +1411,8 @@ placeholder, secret export, or partial declaration.
 | Parent four-kind scope and declaration schema | SC-SAVE-001–005 | FR-SAVE-003, 013, 022 | AC-SAVE-001, 007, 013–014 |
 | Parent natural identity/ref decisions | SC-SAVE-002–004 | FR-SAVE-007–012, 016–018, 021 | AC-SAVE-002–006, 010–011 |
 | Parent Workflow adoption decision | SC-SAVE-003 | FR-SAVE-008–010, 021 | AC-SAVE-003–005 |
-| User decision 2026-08-13: one YAML output, direct write | SC-SAVE-001/006/008 | FR-SAVE-031–033 | AC-SAVE-031–033 |
+| User decision 2026-08-13: direct YAML write for ordinary kinds | SC-SAVE-001/006/008 | FR-SAVE-031–033 | AC-SAVE-031–033 |
+| User decision 2026-08-14: File Datasource placeholders | SC-SAVE-005/006/008 | FR-SAVE-013/022/023/027/033 | AC-SAVE-013 |
 | Parent Datasource security/schema boundary | SC-SAVE-005 | FR-SAVE-012, 022–023; DR-SAVE-008; VR-SAVE-013 | AC-SAVE-013–015, 025–026 |
 | Parent compatibility identity | SC-SAVE-007 | FR-SAVE-030; IR-SAVE-005/006 | AC-SAVE-020–021 |
 | Parent output/diagnostic boundary | All | FR-SAVE-028–029 | AC-SAVE-023–024 |

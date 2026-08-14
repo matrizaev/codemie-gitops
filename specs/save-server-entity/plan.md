@@ -1,10 +1,10 @@
-# Architecture plan: Save a server entity as one local declaration
+# Architecture plan: Save a server entity as a local declaration
 
 ## 1. Status
 
-Architecture status: IMPLEMENTED — v3.4 documentation alignment
+Architecture status: IMPLEMENTED — v3.5 documentation alignment
 
-Based on `spec.md` v3.4 and parent specification v33. ADR-018 supersedes the
+Based on `spec.md` v3.5 and parent specification v33. ADR-020 supersedes the
 prospective-repository overlay and staged/atomic multi-artifact publication
 designs in ADR-014 and ADR-017.
 
@@ -16,7 +16,9 @@ one generated declaration. It then directly creates/writes the requested final
 path without overwrite. It uses no repository root, config file, sidecar,
 staging file, temporary file, rename, `rustix`, or atomic-publication protocol.
 A write failure may leave an incomplete new final file; the command reports
-`E_OUTPUT_WRITE`, emits no success, and does not remove the path.
+`E_OUTPUT_WRITE`, emits no success, and does not remove the path. File
+Datasource additionally emits zero-byte explicit input placeholders before
+publishing YAML last.
 
 The implemented reverse projector also normalizes OpenAPI response objects
 into the closed declaration schema. API-only metadata, nested MCP config,
@@ -41,8 +43,8 @@ Save must select one server Assistant, Workflow, Skill, or Datasource by the
 approved natural selector, prove it exportable from strict bounded reads, and
 write one canonical declaration usable directly as lint/apply `--file` input.
 
-Excluded: mutations, secret export, inferred values, repository inspection,
-local dependency existence, Skill sidecars, multiple artifacts, force/replace,
+Excluded: mutations, secret export, repository inspection,
+local dependency existence, Skill sidecars, arbitrary artifacts, force/replace,
 staging, rename publication, rollback/cleanup of a partially written final
 path, persistence of server IDs, and server export API changes.
 
@@ -66,7 +68,7 @@ path, persistence of server IDs, and server export API changes.
 | FR-SAVE-025/033 | Preflight absence check plus direct create-new final-path open; never replace. |
 | FR-SAVE-026/031 | Validate only the generated declaration in memory before beginning the final write. |
 | FR-SAVE-032 | Skill `spec.content` is inline; no generated sidecar. |
-| Parent FR-041/DR-014 | File Datasource declarations use explicit paths, but the current pinned read contract cannot recover original local path/source bytes; save therefore remains non-exportable for this kind. |
+| Parent FR-041/DR-014 | File Datasource reverse projection preserves server filenames and emits explicit zero-byte local paths that operators populate before apply. |
 | FR-SAVE-028/029 | Success only after complete write; failures have empty stdout and one safe diagnostic. |
 | QR-SAVE-004 | Partial final file is an acknowledged failure state, never success. |
 | v3.4 reverse normalization | OpenAPI response fields are explicitly projected into the declaration schema; API-only fields and secrets are excluded. |
@@ -101,10 +103,10 @@ the single-declaration validator with generated in-memory YAML/value.
 | Save CLI boundary | Modified | Exact selector, required project/file, no repository/symlink flags. |
 | Read adapters | Retained | Bounded exact server selection and snapshot stability. |
 | Reverse projector | Modified | Produce one declaration; Skill content inline. |
-| File reverse projector | Retained fail-closed | Current pinned read contract fails File Datasource as non-exportable; no path or placeholder is emitted. |
+| File reverse projector | Modified | Map `knowledge_base_file` to `file`, preserve `uploaded_files`, and derive safe placeholder paths. |
 | Canonical serializer | Retained | Deterministic YAML bytes. |
 | Single-declaration validator | Shared/modified | Validate only generated output in memory. |
-| Direct output writer | New/replacement | Preflight absence; direct create-new/write final path; classify partial failure. |
+| Direct output writer | Modified | Preflight YAML absence; create File Datasource placeholders first and YAML last; classify partial failure without cleanup. |
 | Staging/overlay publisher | Removed | No production responsibility. |
 
 ## 10. Data and consistency
@@ -113,7 +115,7 @@ the single-declaration validator with generated in-memory YAML/value.
 target URL, and output mode. `GeneratedDeclaration` contains typed declaration
 plus canonical bytes. It has no sidecar or repository-relative identity.
 
-`OutputWriteState = NotStarted | FinalCreated | Completed | FailedPartial`.
+`OutputWriteState = NotStarted | PlaceholdersCreated | FinalCreated | Completed | FailedPartial`.
 Server reads finish before `FinalCreated`. `Completed` alone permits `saved`.
 `FailedPartial` retains the final path as operator-visible evidence; save does
 not attempt cleanup because v3 forbids rollback of the direct final path.

@@ -656,7 +656,45 @@ pub(super) fn reverse_datasource(
             );
             "google"
         }
-        "knowledge_base_file" | "provider" | "bedrock" => {
+        "knowledge_base_file" => {
+            spec.insert(
+                "description".into(),
+                required_value_field(&snapshot.description, "description")?,
+            );
+            insert_field(
+                &mut spec,
+                "project_space_visible",
+                snapshot.project_space_visible.clone(),
+            );
+            insert_field(&mut spec, "csv_separator", snapshot.csv_separator.clone());
+            insert_field(&mut spec, "csv_start_row", snapshot.csv_start_row.clone());
+            insert_field(
+                &mut spec,
+                "csv_rows_per_document",
+                snapshot.csv_rows_per_document.clone(),
+            );
+            insert_field(
+                &mut spec,
+                "embedding_model",
+                snapshot.embedding_model.clone(),
+            );
+            let uploaded_files = datasource_uploaded_files(&snapshot.uploaded_files)?;
+            let placeholder_paths = datasource_placeholder_paths(command, &uploaded_files)?;
+            spec.insert("files".into(), serde_json::Value::Array(placeholder_paths));
+            spec.insert(
+                "uploaded_files".into(),
+                serde_json::Value::Array(uploaded_files),
+            );
+            spec.insert(
+                "include_email_attachments".into(),
+                snapshot
+                    .include_email_attachments
+                    .into_option()
+                    .map_or(serde_json::Value::Bool(true), |value| value.0),
+            );
+            "file"
+        }
+        "provider" | "bedrock" => {
             return Err(AppError::EntityNotExportable);
         }
         _ => {
@@ -666,19 +704,87 @@ pub(super) fn reverse_datasource(
         }
     };
     spec.insert("index_type".into(), branch.into());
-    insert_field(&mut spec, "setting_id", snapshot.setting_id);
-    insert_field(
-        &mut spec,
-        "guardrail_assignments",
-        snapshot.guardrail_assignments,
-    );
-    insert_field(&mut spec, "cron_expression", snapshot.cron_expression);
-    insert_field(&mut spec, "timezone", snapshot.timezone);
+    if branch != "file" {
+        insert_field(&mut spec, "setting_id", snapshot.setting_id);
+        insert_field(
+            &mut spec,
+            "guardrail_assignments",
+            snapshot.guardrail_assignments,
+        );
+        insert_field(&mut spec, "cron_expression", snapshot.cron_expression);
+        insert_field(&mut spec, "timezone", snapshot.timezone);
+    }
     Ok(declaration(
         "Datasource",
         serde_json::json!({"project": project, "repo_name": repo_name}),
         serde_json::Value::Object(spec),
     ))
+}
+
+fn datasource_uploaded_files(
+    field: &ResponseField<OpenResponseValue>,
+) -> Result<Vec<serde_json::Value>, AppError> {
+    let Some(value) = field.as_ref() else {
+        return Ok(Vec::new());
+    };
+    value
+        .0
+        .as_array()
+        .ok_or_else(|| {
+            AppError::ApiIncompatible("Datasource uploaded_files must be an array".into())
+        })?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|name| !name.is_empty())
+                .map(|name| serde_json::Value::String(name.to_owned()))
+                .ok_or(AppError::EntityNotExportable)
+        })
+        .collect()
+}
+
+fn datasource_placeholder_paths(
+    command: &SaveCommand,
+    uploaded_files: &[serde_json::Value],
+) -> Result<Vec<serde_json::Value>, AppError> {
+    let yaml_name = command
+        .file
+        .as_path()
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .ok_or(AppError::EntityNotExportable)?;
+    let directory = format!("{yaml_name}.files");
+    let source_names: Vec<&str> = uploaded_files
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .take(10)
+        .collect();
+    let names = if source_names.is_empty() {
+        vec!["replace-content.txt"]
+    } else {
+        source_names
+    };
+    let mut seen = std::collections::BTreeSet::new();
+    names
+        .into_iter()
+        .enumerate()
+        .map(|(index, name)| {
+            let safe = std::path::Path::new(name)
+                .file_name()
+                .and_then(std::ffi::OsStr::to_str)
+                .filter(|base| *base == name && !base.is_empty() && *base != ".")
+                .filter(|base| !base.chars().any(char::is_control));
+            let mut base = safe
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("replace-content-{}.txt", index + 1));
+            if !seen.insert(base.clone()) {
+                base = format!("replace-content-{}.txt", index + 1);
+                seen.insert(base.clone());
+            }
+            Ok(serde_json::Value::String(format!("{directory}/{base}")))
+        })
+        .collect()
 }
 
 fn reverse_nested_branch(
@@ -842,10 +948,141 @@ fn reverse_workflow_yaml_config(value: &serde_json::Value) -> Result<serde_json:
             "Workflow yaml_config must decode to an object".into(),
         ));
     }
-    let execution: serde_json::Value =
+    let mut execution: serde_json::Value =
         serde_json::to_value(decoded).map_err(SaveError::SnapshotJson)?;
+    normalize_workflow_execution(&mut execution)?;
     reject_workflow_managed_ids(&execution)?;
     Ok(execution)
+}
+
+fn normalize_workflow_execution(execution: &mut serde_json::Value) -> Result<(), AppError> {
+    let execution = execution.as_object_mut().ok_or_else(|| {
+        AppError::ApiIncompatible("Workflow yaml_config must decode to an object".into())
+    })?;
+    execution.remove("meta_states");
+    insert_default(execution, "type", serde_json::json!("generic"));
+    insert_default(execution, "verbose", serde_json::json!(false));
+    insert_default(
+        execution,
+        "max_iteration_key_output_limit",
+        serde_json::json!(100),
+    );
+    insert_default(execution, "tools", serde_json::json!([]));
+    normalize_retry_policy(
+        execution
+            .entry("retry_policy")
+            .or_insert_with(default_retry_policy),
+    )?;
+
+    let actors = execution
+        .get_mut("assistants")
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or_else(|| {
+            AppError::ApiIncompatible("Workflow yaml_config assistants must be an array".into())
+        })?;
+    for actor in actors {
+        let actor = actor.as_object_mut().ok_or(AppError::EntityNotExportable)?;
+        let local_id = actor
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or(AppError::EntityNotExportable)?
+            .to_owned();
+        if actor.get("name").is_none_or(serde_json::Value::is_null) {
+            actor.insert("name".into(), local_id.into());
+        }
+        insert_default(actor, "model", serde_json::json!(""));
+        insert_default(actor, "limit_tool_output_tokens", serde_json::json!(8000));
+        insert_default(actor, "tools", serde_json::json!([]));
+        insert_default(
+            actor,
+            "exclude_extra_context_tools",
+            serde_json::json!(false),
+        );
+        insert_default(actor, "mcp_servers", serde_json::json!([]));
+        if let Some(mcp_servers) = actor.get_mut("mcp_servers") {
+            *mcp_servers = normalize_mcp_servers(mcp_servers)?;
+        }
+    }
+
+    let custom_nodes = execution
+        .get_mut("custom_nodes")
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or_else(|| {
+            AppError::ApiIncompatible("Workflow yaml_config custom_nodes must be an array".into())
+        })?;
+    for node in custom_nodes {
+        let node = node.as_object_mut().ok_or(AppError::EntityNotExportable)?;
+        insert_default(node, "name", serde_json::json!(""));
+        insert_default(node, "model", serde_json::json!(""));
+        insert_default(node, "system_prompt", serde_json::json!(""));
+    }
+
+    let states = execution
+        .get_mut("states")
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or_else(|| {
+            AppError::ApiIncompatible("Workflow yaml_config states must be an array".into())
+        })?;
+    for state in states {
+        let state = state.as_object_mut().ok_or(AppError::EntityNotExportable)?;
+        insert_default(state, "task", serde_json::json!(""));
+        insert_default(state, "finish_iteration", serde_json::json!(false));
+        insert_default(state, "interrupt_before", serde_json::json!(false));
+        insert_default(
+            state,
+            "resolve_dynamic_values_in_prompt",
+            serde_json::json!(false),
+        );
+        insert_default(state, "result_as_human_message", serde_json::json!(false));
+        normalize_retry_policy(
+            state
+                .entry("retry_policy")
+                .or_insert_with(default_retry_policy),
+        )?;
+        let next = state
+            .get_mut("next")
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or_else(|| AppError::ApiIncompatible("Workflow state next is missing".into()))?;
+        insert_default(next, "override_task", serde_json::json!(false));
+        insert_default(next, "store_in_context", serde_json::json!(false));
+        insert_default(next, "include_in_llm_history", serde_json::json!(false));
+        insert_default(next, "clear_prior_messages", serde_json::json!(false));
+        insert_default(next, "clear_context_store", serde_json::json!(false));
+        insert_default(next, "include_in_iterator_context", serde_json::json!([]));
+        insert_default(next, "append_to_context", serde_json::json!(false));
+    }
+    Ok(())
+}
+
+fn insert_default(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    field: &str,
+    default: serde_json::Value,
+) {
+    if object.get(field).is_none_or(serde_json::Value::is_null) {
+        object.insert(field.into(), default);
+    }
+}
+
+fn default_retry_policy() -> serde_json::Value {
+    serde_json::json!({
+        "initial_interval": 1000,
+        "backoff_factor": 2,
+        "max_interval": 60000,
+        "max_attempts": 3
+    })
+}
+
+fn normalize_retry_policy(value: &mut serde_json::Value) -> Result<(), AppError> {
+    let policy = value.as_object_mut().ok_or_else(|| {
+        AppError::ApiIncompatible("Workflow retry_policy must be an object".into())
+    })?;
+    insert_default(policy, "initial_interval", serde_json::json!(1000));
+    insert_default(policy, "backoff_factor", serde_json::json!(2));
+    insert_default(policy, "max_interval", serde_json::json!(60000));
+    insert_default(policy, "max_attempts", serde_json::json!(3));
+    Ok(())
 }
 
 fn reject_workflow_managed_ids(value: &serde_json::Value) -> Result<(), AppError> {
@@ -880,6 +1117,37 @@ pub(super) fn canonical_yaml(value: &serde_json::Value) -> Result<String, AppErr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalizes_sparse_workflow_execution_without_changing_graph_ids() {
+        let mut execution = serde_json::json!({
+            "messages_limit_before_summarization": 10,
+            "tokens_limit_before_summarization": 1000,
+            "enable_summarization_node": false,
+            "recursion_limit": 10,
+            "max_concurrency": 1,
+            "assistants": [{
+                "id": "actor-1",
+                "assistantRef": {"project": "p", "slug": "assistant-a"}
+            }],
+            "custom_nodes": [],
+            "states": [{
+                "id": "state-1",
+                "assistant_id": "actor-1",
+                "next": {"state_id": "end"}
+            }],
+            "meta_states": [{"id": "ui-only"}]
+        });
+
+        normalize_workflow_execution(&mut execution).expect("execution should normalize");
+
+        assert!(execution.get("meta_states").is_none());
+        assert_eq!(execution["assistants"][0]["name"], "actor-1");
+        assert_eq!(execution["assistants"][0]["tools"], serde_json::json!([]));
+        assert_eq!(execution["states"][0]["assistant_id"], "actor-1");
+        assert_eq!(execution["states"][0]["retry_policy"]["max_attempts"], 3);
+        assert_eq!(execution["states"][0]["next"]["override_task"], false);
+    }
 
     #[test]
     fn normalizes_api_toolkit_and_settings_shape() {

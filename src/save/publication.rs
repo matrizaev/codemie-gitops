@@ -130,6 +130,56 @@ pub(super) fn publish(path: &OutputPath, bytes: &[u8]) -> Result<(), AppError> {
     write_created(file, bytes)
 }
 
+/// Create empty file-datasource placeholders next to the declaration.
+pub(super) fn publish_empty_files(
+    declaration_path: &OutputPath,
+    relative_paths: &[&str],
+) -> Result<(), AppError> {
+    let parent = declaration_path
+        .as_path()
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut created_directory: Option<PathBuf> = None;
+    for relative in relative_paths {
+        let relative = Path::new(relative);
+        if relative.is_absolute()
+            || relative.components().any(|component| {
+                matches!(
+                    component,
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                )
+            })
+        {
+            return Err(SaveError::OutputPath.into());
+        }
+        let target = parent.join(relative);
+        let directory = target.parent().ok_or(SaveError::OutputPath)?;
+        if created_directory.as_deref() != Some(directory) {
+            std::fs::create_dir(directory).map_err(|source| {
+                if source.kind() == std::io::ErrorKind::AlreadyExists {
+                    SaveError::OutputExists
+                } else {
+                    SaveError::OutputWrite(source)
+                }
+            })?;
+            created_directory = Some(directory.to_owned());
+        }
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(target)
+            .map_err(|source| {
+                if source.kind() == std::io::ErrorKind::AlreadyExists {
+                    SaveError::OutputExists
+                } else {
+                    SaveError::OutputWrite(source)
+                }
+            })?;
+    }
+    Ok(())
+}
+
 fn write_created(mut writer: impl Write, bytes: &[u8]) -> Result<(), AppError> {
     writer.write_all(bytes).map_err(SaveError::OutputWrite)?;
     writer.flush().map_err(SaveError::OutputWrite)?;
@@ -149,6 +199,29 @@ mod tests {
 
         assert_eq!(std::fs::read(&target).unwrap(), b"kind: Skill\n");
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn file_datasource_export_creates_empty_relative_placeholders() {
+        let directory = tempfile::tempdir().unwrap();
+        let declaration = directory.path().join("saved.yaml");
+        let output = validate_output_path(&declaration).unwrap();
+
+        publish_empty_files(
+            &output,
+            &["saved.yaml.files/first.txt", "saved.yaml.files/second.xlsx"],
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read(directory.path().join("saved.yaml.files/first.txt")).unwrap(),
+            b""
+        );
+        assert_eq!(
+            std::fs::read(directory.path().join("saved.yaml.files/second.xlsx")).unwrap(),
+            b""
+        );
+        assert!(!declaration.exists());
     }
 
     #[test]

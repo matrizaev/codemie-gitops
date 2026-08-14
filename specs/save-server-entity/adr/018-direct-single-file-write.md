@@ -3,6 +3,7 @@
 ## Status
 
 Accepted by the explicit product decision in specification v3 (2026-08-13).
+Superseded only for File Datasource placeholder publication by ADR-020.
 
 ## Context
 

@@ -8,10 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- (upcoming features)
+- File Datasource save now emits canonical YAML with editable zero-byte local
+  placeholders when CodeMie exposes filenames but not source bytes.
 
 ### Changed
-- (upcoming changes)
+- Workflow save reverses managed Assistant, Skill, and Datasource IDs into
+  portable natural references while preserving graph-local state IDs.
+- Save documentation and architecture now define File Datasource YAML-last
+  multi-artifact publication and orphan-placeholder recovery.
 
 ### Fixed
 - (upcoming fixes)

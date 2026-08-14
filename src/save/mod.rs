@@ -4,7 +4,7 @@ pub(crate) mod publication;
 mod reverse;
 mod snapshot;
 
-use publication::{publish, validate_output_path};
+use publication::{publish, publish_empty_files, validate_output_path};
 use reverse::{canonical_yaml, project_response};
 use snapshot::{read_assistant, read_datasource, read_skill_snapshot, read_workflow};
 
@@ -255,6 +255,26 @@ async fn save_inner(command: SaveCommand) -> Result<Outcome, AppError> {
     let (declaration, adoption_required) = project_response(&command, project, response)?;
     let yaml = canonical_yaml(&declaration)?;
     crate::input::validate_generated(&yaml)?;
+    if command.selector.kind() == SaveKind::Datasource
+        && declaration
+            .pointer("/spec/index_type")
+            .and_then(serde_json::Value::as_str)
+            == Some("file")
+    {
+        let files = declaration
+            .pointer("/spec/files")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| AppError::Internal("file Datasource export omitted files".into()))?;
+        let files: Vec<&str> = files
+            .iter()
+            .map(|value| {
+                value.as_str().ok_or_else(|| {
+                    AppError::Internal("file Datasource export path was not a string".into())
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        publish_empty_files(&output_path, &files)?;
+    }
     publish(&output_path, yaml.as_bytes())?;
     outcome(&command, project, adoption_required)
 }
