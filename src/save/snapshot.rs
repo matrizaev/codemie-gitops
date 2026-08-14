@@ -211,6 +211,18 @@ pub(super) struct DatasourceSnapshot {
     #[serde(default)]
     pub(super) embeddings_model: ResponseField<OpenResponseValue>,
     #[serde(default)]
+    pub(super) embedding_model: ResponseField<OpenResponseValue>,
+    #[serde(default)]
+    pub(super) uploaded_files: ResponseField<OpenResponseValue>,
+    #[serde(default)]
+    pub(super) csv_separator: ResponseField<OpenResponseValue>,
+    #[serde(default)]
+    pub(super) csv_start_row: ResponseField<OpenResponseValue>,
+    #[serde(default)]
+    pub(super) csv_rows_per_document: ResponseField<OpenResponseValue>,
+    #[serde(default)]
+    pub(super) include_email_attachments: ResponseField<OpenResponseValue>,
+    #[serde(default)]
     pub(super) summarization_model: ResponseField<OpenResponseValue>,
     #[serde(default)]
     pub(super) prompt: ResponseField<OpenResponseValue>,
@@ -253,10 +265,161 @@ pub(super) async fn read_workflow(
     slug: &str,
     workflow_id: Option<&str>,
 ) -> Result<EntitySnapshot, AppError> {
-    let snapshot =
+    let mut snapshot =
         crate::adapters::workflow::resolve_snapshot(client, url, project, slug, workflow_id)
             .await?;
+    reverse_workflow_managed_references(client, &mut snapshot).await?;
     Ok(EntitySnapshot::Workflow(snapshot))
+}
+
+async fn reverse_workflow_managed_references(
+    client: &ApiClient,
+    snapshot: &mut WorkflowSnapshot,
+) -> Result<(), AppError> {
+    let ResponseField::Present(yaml_config) = &mut snapshot.yaml_config else {
+        return Ok(());
+    };
+    let raw = yaml_config.0.as_str().ok_or_else(|| {
+        AppError::ApiIncompatible("Workflow yaml_config must be a YAML string".into())
+    })?;
+    let decoded: serde_yaml::Value = serde_yaml::from_str(raw).map_err(SaveError::SnapshotYaml)?;
+    let mut execution: serde_json::Value =
+        serde_json::to_value(decoded).map_err(SaveError::SnapshotJson)?;
+    let execution_object = execution.as_object_mut().ok_or_else(|| {
+        AppError::ApiIncompatible("Workflow yaml_config must decode to an object".into())
+    })?;
+    for field in [
+        "type",
+        "verbose",
+        "max_iteration_key_output_limit",
+        "tools",
+        "retry_policy",
+    ] {
+        if !execution_object.contains_key(field)
+            && let Some(value) = snapshot.extensions.0.get(field)
+        {
+            execution_object.insert(field.into(), value.0.clone());
+        }
+    }
+    let actors = execution
+        .get_mut("assistants")
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or_else(|| {
+            AppError::ApiIncompatible("Workflow yaml_config assistants must be an array".into())
+        })?;
+
+    for actor in actors {
+        let actor = actor.as_object_mut().ok_or(AppError::EntityNotExportable)?;
+        if let Some(assistant_id) = actor.remove("assistant_id") {
+            if actor.contains_key("skill_ids") || actor.contains_key("datasource_ids") {
+                return Err(AppError::EntityNotExportable);
+            }
+            let assistant_id = required_reference_id(assistant_id)?;
+            actor.insert(
+                "assistantRef".into(),
+                read_reference_by_id(
+                    client,
+                    &format!("/v1/assistants/id/{}", encode_query_value(&assistant_id)),
+                    &assistant_id,
+                    "project",
+                    "slug",
+                )
+                .await?,
+            );
+        } else {
+            let skill_ids = take_reference_ids(actor, "skill_ids")?;
+            let datasource_ids = take_reference_ids(actor, "datasource_ids")?;
+            let mut skill_refs = Vec::with_capacity(skill_ids.len());
+            for id in skill_ids {
+                skill_refs.push(
+                    read_reference_by_id(
+                        client,
+                        &format!("/v1/skills/{}", encode_query_value(&id)),
+                        &id,
+                        "project",
+                        "name",
+                    )
+                    .await?,
+                );
+            }
+            let mut datasource_refs = Vec::with_capacity(datasource_ids.len());
+            for id in datasource_ids {
+                datasource_refs.push(
+                    read_reference_by_id(
+                        client,
+                        &format!("/v1/index/{}", encode_query_value(&id)),
+                        &id,
+                        "project_name",
+                        "repo_name",
+                    )
+                    .await?,
+                );
+            }
+            actor.insert("skillRefs".into(), serde_json::Value::Array(skill_refs));
+            actor.insert(
+                "datasourceRefs".into(),
+                serde_json::Value::Array(datasource_refs),
+            );
+        }
+    }
+
+    yaml_config.0 = serde_json::Value::String(
+        serde_yaml::to_string(&execution).map_err(SaveError::Serialization)?,
+    );
+    Ok(())
+}
+
+fn take_reference_ids(
+    actor: &mut serde_json::Map<String, serde_json::Value>,
+    field: &str,
+) -> Result<Vec<String>, AppError> {
+    let Some(value) = actor.remove(field) else {
+        return Ok(Vec::new());
+    };
+    value
+        .as_array()
+        .ok_or(AppError::EntityNotExportable)?
+        .iter()
+        .cloned()
+        .map(required_reference_id)
+        .collect()
+}
+
+fn required_reference_id(value: serde_json::Value) -> Result<String, AppError> {
+    value
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+        .ok_or(AppError::EntityNotExportable)
+}
+
+async fn read_reference_by_id(
+    client: &ApiClient,
+    path: &str,
+    expected_id: &str,
+    project_field: &str,
+    selector_field: &str,
+) -> Result<serde_json::Value, AppError> {
+    let value: serde_json::Value = client.get(path).await?;
+    let object = value.as_object().ok_or_else(|| {
+        AppError::ApiIncompatible("Workflow reference response must be an object".into())
+    })?;
+    if object.get("id").and_then(serde_json::Value::as_str) != Some(expected_id) {
+        return Err(AppError::Reconciliation(
+            "Workflow reference detail returned a conflicting id".into(),
+        ));
+    }
+    let project = object
+        .get(project_field)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or(AppError::EntityNotExportable)?;
+    let selector = object
+        .get(selector_field)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or(AppError::EntityNotExportable)?;
+    Ok(serde_json::json!({"project": project, selector_field: selector}))
 }
 
 pub(super) async fn read_assistant(

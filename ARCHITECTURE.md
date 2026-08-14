@@ -114,7 +114,7 @@ CLI Selectors (--kind, --project, --file, etc.)
     ↓
 [validate] → In-memory validation of generated declaration
     ↓
-[save::publication] → Direct create-new write to target --file
+[save::publication] → File Datasource placeholders, then direct YAML write
     ↓
 Text/JSON Outcome (stdout)
 ```
@@ -128,6 +128,8 @@ Each invocation is independent. Authentication via `--url` and bearer token in `
 The `save` command reads a server entity and produces a snapshot containing:
 - Reverse-projected and normalized fields according to OpenAPI contract (stripping internal metadata, credentials, and reconciling API aliases)
 - Inline Skill content (`spec.content`) with companion files
+- File Datasource `uploaded_files` plus adjacent zero-byte explicit inputs when
+  server source bytes are unavailable
 - Direct write with create-new semantics (refuses to overwrite existing files, no temporary/staging rename)
 - Rendered canonical YAML output validated in-memory before writing
 

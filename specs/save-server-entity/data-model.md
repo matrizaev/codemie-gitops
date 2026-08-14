@@ -1,4 +1,4 @@
-# Data model: save server entity v3.4
+# Data model: save server entity v3.5
 
 ## 1. Ownership and lifetime
 
@@ -9,9 +9,12 @@
 | Recovered natural references | Reverse projector | Invocation |
 | Canonical YAML bytes | Serializer | Until direct write completes/fails |
 | Final YAML path | Operator/Git workspace | Persistent, including partial failure |
+| File Datasource placeholder paths | Reverse projector/publisher | Invocation, then operator workspace |
+| Zero-byte placeholder files | Operator/Git workspace | Persistent until populated or removed |
 
-No repository view, sidecar artifact, staging entry, temporary file, or
-publication transaction exists.
+No repository view, staging entry, temporary file, or atomic publication
+transaction exists. File Datasource placeholders are explicit declaration
+inputs, not hidden content sidecars.
 
 ## 2. Validated command
 
@@ -55,9 +58,11 @@ Skill main content is part of the stable snapshot and maps directly to
 `spec.content`. Companion payloads admitted by the schema remain inline
 declaration values; no filesystem companion is generated.
 
-The current pinned read contract cannot recover the original local File
-Datasource path/source bytes, so that branch remains non-exportable. Save never
-invents a path, inline encoding, or placeholder.
+For `knowledge_base_file`, the server exposes metadata and `uploaded_files` but
+not source bytes. Reverse projection preserves `uploaded_files`, maps the kind
+to `spec.index_type: file`, and derives up to ten safe relative paths beneath
+`<yaml-name>.files/`. Each path receives a zero-byte placeholder. Unsafe or
+duplicate basenames receive deterministic `replace-content-N.txt` names.
 
 ## 4. Generated declaration
 
@@ -77,23 +82,24 @@ reference-existence check.
 ```text
 OutputWriteState =
   | NotStarted
+  | PlaceholdersCreated
   | FinalCreated
   | Completed
   | FailedPartial
 ```
 
-The writer transitions `NotStarted -> FinalCreated` only after all remote and
-validation gates pass. `FinalCreated -> Completed` after all canonical bytes
-are written and the file handle is successfully finalized. Any failure in
-between becomes `FailedPartial`, returns `E_OUTPUT_WRITE`, and leaves the path
-untouched by cleanup. No atomicity or durability beyond the ordinary file API
-is claimed.
+Ordinary kinds transition directly from `NotStarted` to `FinalCreated`. File
+Datasource transitions through `PlaceholdersCreated`, then creates YAML last.
+Any failure becomes `FailedPartial` and performs no cleanup. An orphan
+placeholder directory may therefore remain without YAML. No atomicity or
+durability beyond ordinary file APIs is claimed.
 
 ## 6. Invariants
 
 1. Save sends no modifying HTTP request.
 2. An existing target is never replaced or truncated.
-3. Exactly one YAML file is the intentional output.
+3. Exactly one YAML is emitted; File Datasource may additionally emit only the
+   placeholder files referenced by that YAML.
 4. Success implies `Completed`; `FailedPartial` can never render `saved`.
 5. All server reads/projection/confidentiality/validation precede final create.
 6. No output path/content/server ID/raw error is emitted.

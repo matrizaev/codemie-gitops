@@ -1,4 +1,4 @@
-# Implementation task breakdown: save server entity v3.4
+# Implementation task breakdown: save server entity v3.5
 
 Status: IMPLEMENTED — automated verification passed; live-server qualification remains.
 
@@ -46,6 +46,16 @@ Status: IMPLEMENTED — automated verification passed; live-server qualification
 - Evidence: four-kind goldens, repeated-run byte equality, no sidecar creation.
 - Completion: reverse projection returns one canonical YAML byte sequence.
 
+## F-SAVE-005 — Export File Datasource placeholders
+
+- References: FR-SAVE-013/022/023/027/033; ADR-020.
+- Scope: map `knowledge_base_file` to `file`, preserve `uploaded_files`, derive
+  safe adjacent paths, and create zero-byte placeholders before YAML.
+- Evidence: production qualification for all selected File Datasources,
+  immediate lint success, path/collision tests, and zero-byte assertions.
+- Completion: implemented; eleven production declarations and nineteen
+  placeholders exported and linted successfully.
+
 ## V-SAVE-003 — Validate only generated declaration
 
 - References: FR-SAVE-026/031; parent ADR-019.
@@ -56,13 +66,13 @@ Status: IMPLEMENTED — automated verification passed; live-server qualification
   references do not block valid generated output.
 - Completion: validated bytes are the sole writer input.
 
-## P-SAVE-002 — Implement direct final-path writer
+## P-SAVE-002 — Implement direct artifact writer
 
 - References: FR-SAVE-025/027/033; ADR-018; publication contract.
 - Dependencies: V-SAVE-003.
 - Scope: preflight absence/path checks; after all gates, direct create-new and
-  write final path; no temp/staging/rename/rustix/atomic protocol; no cleanup of
-  partial final file.
+  write final path; File Datasource writes placeholders then YAML; no
+  temp/staging/rename/rustix/atomic protocol or cleanup of partial artifacts.
 - Evidence: existing target before/racing create remains byte-identical;
   injected short-write/disk/flush failures produce exit 2, empty stdout,
   `E_OUTPUT_WRITE`, and may leave incomplete final YAML.
@@ -97,8 +107,9 @@ Status: IMPLEMENTED — automated verification passed; live-server qualification
 ## DOC-SAVE-002 — Refresh user-facing save documentation
 
 - Scope: README/help/examples/runbooks/recovery guidance.
-- Evidence: one YAML output, inline Skill content, required project, removed
-  flags, and possible partial final file are accurately documented.
+- Evidence: one declaration YAML, inline Skill content, File Datasource
+  placeholders, required project, removed flags, and possible partial artifacts
+  are accurately documented.
 - Completion: no sidecar, staging, atomic/no-partial, repo-root, config-file, or
   prospective-repository instruction remains.
 

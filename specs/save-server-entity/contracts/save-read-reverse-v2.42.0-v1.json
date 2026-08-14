@@ -1700,7 +1700,9 @@
         },
         {
           "path": "uploaded_files",
-          "class": "safe-excluded"
+          "class": "direct-authorable",
+          "target": "spec.uploaded_files",
+          "condition": "knowledge_base_file; preserve filenames only"
         },
         {
           "path": "error",
@@ -1774,8 +1776,9 @@
         },
         {
           "path": "index_type=knowledge_base_file",
-          "class": "required-non-exportable",
-          "condition": "original repository source bytes are unavailable"
+          "class": "bounded-transform",
+          "target": "spec.index_type=file plus spec.files",
+          "transform": "preserve uploaded_files; derive safe relative zero-byte placeholders because source bytes are unavailable"
         }
       ],
       "referenceRules": [],
@@ -1788,6 +1791,7 @@
           "knowledge_base_azure_devops_wiki",
           "knowledge_base_azure_devops_work_item",
           "knowledge_base_sharepoint when non-secret required fields are complete",
+          "knowledge_base_file with metadata plus generated zero-byte placeholders",
           "llm_routing_google"
         ],
         "incompatible": [
@@ -1798,7 +1802,6 @@
           "unknown contracted detail field"
         ],
         "nonExportable": [
-          "knowledge_base_file",
           "provider",
           "bedrock",
           "required secret/encrypted/masked state"
@@ -1813,7 +1816,7 @@
         "knowledge_base_azure_devops_wiki -> spec.index_type=azure_devops_wiki",
         "knowledge_base_azure_devops_work_item -> spec.index_type=azure_devops_work_item",
         "knowledge_base_sharepoint -> spec.index_type=sharepoint",
-        "knowledge_base_file -> non-exportable file",
+        "knowledge_base_file -> spec.index_type=file; preserve uploaded_files; generate up to 10 safe zero-byte paths under <yaml-name>.files/",
         "llm_routing_google -> spec.index_type=google",
         "all other combinations fail closed; never infer from URL or default"
       ]

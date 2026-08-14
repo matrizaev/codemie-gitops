@@ -410,7 +410,9 @@
           "additionalProperties": false,
           "properties": {
             "documents_filter": {"type": "string"},
-            "documents_filtering_pattern": {"type": "string"}
+            "documents_filtering_pattern": {"type": "string"},
+            "states_status_filter": {"type": "array", "items": {"type": "string"}},
+            "output_template": {"type": "string"}
           },
           "not": {"required": ["documents_filter", "documents_filtering_pattern"]}
         }

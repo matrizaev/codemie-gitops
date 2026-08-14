@@ -146,11 +146,21 @@ Skill main content is emitted inline as `spec.content`; companion metadata and
 content are emitted in `spec.companion_files`. No sidecar is created. The
 generated declaration is validated against the closed schema before writing.
 
+For a server `knowledge_base_file` Datasource, source bytes are unavailable.
+Save emits a valid `index_type: file` declaration, preserves original names in
+`uploaded_files`, and creates zero-byte files beneath
+`<yaml-name>.files/`. Replace those bytes before `apply`; paths in `spec.files`
+are the exact multipart inputs apply reads.
+
 The output path must not already exist, and its parent directories must already
 exist. Save writes directly with create-new semantics and never overwrites,
 stages, renames, or replaces a file. A failed write can leave an incomplete new
 path, reported as `E_OUTPUT_WRITE`; inspect and remove that path manually before
 retrying.
+
+File Datasource publication writes placeholders first and YAML last. A failure
+can leave an orphan `<yaml-name>.files/` directory; remove it manually before
+retrying. Existing placeholder paths are never replaced.
 
 Examples:
 

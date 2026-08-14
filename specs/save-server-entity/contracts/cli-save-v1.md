@@ -1,4 +1,4 @@
-# Save CLI and output contract v1 (revised for specification v3.4)
+# Save CLI and output contract v1 (revised for specification v3.5)
 
 Status: NORMATIVE ARCHITECTURE CONTRACT.
 
@@ -32,9 +32,10 @@ parse/validate command
 -> validate output form, parent, and detectable absence
 -> bounded read-only compatibility and entity resolution
 -> strict reverse projection and confidentiality checks
--> canonical one-file YAML rendering
+-> canonical YAML rendering and File Datasource placeholder planning
 -> validate only generated declaration in memory
--> direct create-new/write requested final path
+-> for File Datasource, create zero-byte placeholders
+-> direct create-new/write requested final path last
 -> emit saved only after complete write
 ```
 
@@ -54,6 +55,11 @@ diagnostic.
 `E_OUTPUT_WRITE` is exit 2 for any failure after direct final creation; an
 incomplete final path may remain and is not removed. No such failure emits
 `saved`.
+
+File Datasource success may create `<yaml-name>.files/` with the relative
+zero-byte paths named by `spec.files`. A failure may leave that directory
+without YAML. Operators must populate placeholders before apply and manually
+remove orphan output before retry.
 
 ## 4. Compatibility and server safety
 
