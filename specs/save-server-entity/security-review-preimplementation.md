@@ -11,6 +11,15 @@ contract. It does not approve implementation or release. Implementation may
 start after Q-SAVE-001/Q-SAVE-002 evidence is refreshed against the updated
 manifest.
 
+### Current implementation addendum — 2026-08-14
+
+The implementation now applies the reviewed API-to-declaration boundary:
+toolkit, tool, MCP, and integration-settings responses are allowlisted into
+declaration fields, while nested API config and credential-bearing values are
+excluded. This addendum records implementation alignment only; it does not
+replace the historical pre-implementation security decision or constitute a
+release approval.
+
 ## Scope and evidence
 
 Reviewed:

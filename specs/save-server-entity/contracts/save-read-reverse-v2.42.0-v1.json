@@ -610,7 +610,7 @@
           "path": "categories",
           "class": "bounded-transform",
           "target": "spec.categories",
-          "transform": "enriched category object id only; reject missing/duplicate id",
+          "transform": "project each enriched category object's non-empty name; accept an already-canonical string; reject missing names",
           "ordering": "preserve server order"
         },
         {

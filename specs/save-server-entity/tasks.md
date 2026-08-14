@@ -1,14 +1,25 @@
-# Implementation task breakdown: save server entity v3
+# Implementation task breakdown: save server entity v3.4
 
-Status: READY FOR PRE-IMPLEMENTATION VERIFICATION
+Status: IMPLEMENTED — automated verification passed; live-server qualification remains.
 
-## Q-SAVE-003 — Verify v3 architecture convergence
+## Q-SAVE-003 — Verify v3.4 architecture convergence
 
 - References: spec v3 FR-SAVE-031–033; parent v33; ADR-018.
 - Scope: independently check plan/data/contracts/schema/tasks/traceability.
 - Evidence: no normative artifact requires repository discovery/config,
   closure, sidecars, staging/temp/rename/atomicity, or cancellation tokens.
-- Completion: verification approves implementation or reports exact conflicts.
+- Completion: implementation and contract artifacts are aligned; automated
+  checks pass, with live-server qualification remaining.
+
+## R-SAVE-001 — Normalize OpenAPI responses into declarations
+
+- References: spec v3.4 DR-SAVE-002–004; ADR-013; reverse manifest.
+- Scope: project API context, categories, toolkits, tools, MCP servers, and
+  integration settings into the closed declaration schema. Exclude API-only
+  metadata and credential-bearing values; materialize only pinned API defaults
+  required by the declaration schema.
+- Evidence: reverse-projection regression tests and OpenAPI contract tests.
+- Completion: implemented in `src/save/reverse.rs`; focused tests pass.
 
 ## S-SAVE-SEC-003 — Review direct-output security
 

@@ -2,9 +2,9 @@
 
 ## 1. Status
 
-Architecture status: READY FOR PRE-IMPLEMENTATION VERIFICATION
+Architecture status: IMPLEMENTED — v3.4 documentation alignment
 
-Based on `spec.md` v3 and parent specification v33. ADR-018 supersedes the
+Based on `spec.md` v3.4 and parent specification v33. ADR-018 supersedes the
 prospective-repository overlay and staged/atomic multi-artifact publication
 designs in ADR-014 and ADR-017.
 
@@ -18,13 +18,14 @@ staging file, temporary file, rename, `rustix`, or atomic-publication protocol.
 A write failure may leave an incomplete new final file; the command reports
 `E_OUTPUT_WRITE`, emits no success, and does not remove the path.
 
-The current implementation is non-conforming because it resolves a repository,
-renders Skill `contentFrom`, validates a repository overlay, stages with
-`tempfile`, and renames with `rustix`. Server read/reverse logic remains useful.
+The implemented reverse projector also normalizes OpenAPI response objects
+into the closed declaration schema. API-only metadata, nested MCP config,
+credential-bearing settings, enriched category objects, and server-owned
+fields are not copied verbatim into YAML.
 
 ## 3. Sources consulted
 
-- Product specification: `spec.md` v3.
+- Product specification: `spec.md` v3.4.
 - Parent product specification: `../codemie-cicd-tool.md` v33.
 - Parent CLI/declaration/adapter/output contracts.
 - Existing save ADRs/contracts/data model/tasks and current `src/save/**`,
@@ -47,15 +48,14 @@ path, persistence of server IDs, and server export API changes.
 
 ## 5. Current architecture
 
-- `save` already has typed selectors, bounded HTTP reads, strict reverse DTOs,
-  managed-reference recovery, canonical YAML, compatibility checks, and safe
+- `save` has typed selectors, bounded HTTP reads, strict reverse DTOs,
+  managed-reference recovery, API-to-declaration normalization, canonical YAML,
+  compatibility checks, in-memory declaration validation, and safe
   outcome/diagnostic integration.
-- It currently derives an output and Skill companion path inside a repository,
-  builds an `OverlayRepositoryView`, validates the merged repository closure,
-  stages one/two artifacts, and uses native no-replace rename.
-- The parent CLI currently supplies repository/config context.
-
-Only the local construction/validation/write boundary is replaced.
+- Skill content and companion files are represented in the single declaration;
+  no repository overlay or generated sidecar is used.
+- The direct writer validates the target and creates it with create-new
+  semantics after all remote and local gates pass.
 
 ## 6. Requirements and quality attributes
 
@@ -69,6 +69,7 @@ Only the local construction/validation/write boundary is replaced.
 | Parent FR-041/DR-014 | File Datasource declarations use explicit paths, but the current pinned read contract cannot recover original local path/source bytes; save therefore remains non-exportable for this kind. |
 | FR-SAVE-028/029 | Success only after complete write; failures have empty stdout and one safe diagnostic. |
 | QR-SAVE-004 | Partial final file is an acknowledged failure state, never success. |
+| v3.4 reverse normalization | OpenAPI response fields are explicitly projected into the declaration schema; API-only fields and secrets are excluded. |
 
 ## 7. Facts, constraints, and assumptions
 
@@ -87,7 +88,7 @@ No blocking product question remains.
 
 1. Retain staged native no-replace publication: rejected by v3.
 2. Write a temporary file then rename: rejected by v3.
-3. Directly create-new and write the final YAML: selected. It is simplest and
+3. Directly create-new and write the final YAML: selected and implemented. It is simplest and
    intentionally exposes partial-file failure.
 
 For validation, a repository overlay is rejected; the selected approach calls
@@ -137,13 +138,13 @@ and ordinary write/flush semantics; no durability/atomicity guarantee is made.
 
 ## 13. Migration
 
-1. Align CLI/schema/contracts and add direct-write failure tests.
-2. Change reverse Skill projection to inline content and one artifact.
-3. Replace overlay validation with single-declaration in-memory validation.
-4. Replace staged publisher with direct final-path writer.
-5. Remove overlay/sidecar/staging call sites and unused `tempfile`/`rustix`
-   dependencies after the parent v33 migration also stops using them.
-6. Refresh user docs and execute independent security/convergence review.
+1. Align CLI/schema/contracts to the single-file save boundary.
+2. Emit Skill main content inline and retain companion files in the declaration.
+3. Validate only the generated declaration in memory.
+4. Use the direct final-path writer with create-new semantics.
+5. Normalize Assistant and Skill context, categories, toolkits, MCP servers,
+  and integration settings from OpenAPI responses into declaration fields.
+6. Verify with automated unit, CLI, OpenAPI contract, format, lint, and compile checks.
 
 Rollback before release is a source rollback. Do not mix the v3 CLI with an
 older embedded declaration schema.
@@ -167,7 +168,8 @@ sequenceDiagram
 
 ## 15. ADRs and tasks
 
-- ADR-013, ADR-015, ADR-016 remain applicable.
+- ADR-013, ADR-015, ADR-016 remain applicable; ADR-013 also governs the
+  API-to-declaration normalization rules.
 - ADR-014 and ADR-017 are superseded.
 - ADR-018 is accepted from the explicit v3 product decision.
 - Ordered bounded implementation tasks are in `tasks.md`.
@@ -184,9 +186,8 @@ sequenceDiagram
 
 ## 17. Handoff
 
-Verification must prove all server interactions are read-only, generated Skill
-content is inline, only one declaration is validated, no temp/staging/rename
-operation occurs, existing targets are untouched, and partial writes are
-diagnosed exactly. Security review must focus on direct-path races, symlinks,
-partial-file confidentiality, and diagnostics. Implementation follows
-`tasks.md` and does not modify reference-only directories.
+Verification evidence includes 210 Rust unit tests, 6 CLI tests, 4 OpenAPI
+contract tests, `cargo check --workspace --all-targets --locked`, `make format`,
+and `make lint`. Remaining release work is live-server matrix qualification.
+Implementation follows `tasks.md` and does not modify reference-only
+directories.

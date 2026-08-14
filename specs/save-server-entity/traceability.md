@@ -1,6 +1,6 @@
-# Architecture traceability: save server entity v3
+# Architecture traceability: save server entity v3.4
 
-Status: READY FOR PRE-IMPLEMENTATION VERIFICATION
+Status: IMPLEMENTED — automated verification passed; live-server qualification remains.
 
 | Requirement | Architecture | Contract/ADR | Task | Evidence |
 |---|---|---|---|---|
@@ -18,6 +18,7 @@ Status: READY FOR PRE-IMPLEMENTATION VERIFICATION
 | QR-SAVE-003/005 | Read-only and confidentiality | HTTP/reverse/output contracts | C-SAVE-002, SEC-003 | Request capture/canary review |
 | QR-SAVE-004 | Direct-write integrity | publication-v1 | P-SAVE-002 | Complete vs partial state tests |
 | QR-SAVE-006/007 | Bounded and portable one-file output | CLI/validation contracts | C-SAVE-002 | Cross-platform suite |
+| v3.4 API/declaration boundary | OpenAPI response normalization and secret-safe field projection | ADR-013, reverse manifest, data model | R-SAVE-001 | Reverse-projection tests; OpenAPI contract tests |
 
 Acceptance criteria AC-SAVE-031–033 are owned by V-SAVE-003, Y-SAVE-002, and
 P-SAVE-002 respectively. Earlier acceptance evidence for sidecars, repository

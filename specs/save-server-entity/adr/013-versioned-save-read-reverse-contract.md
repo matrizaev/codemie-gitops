@@ -69,6 +69,25 @@ The write manifest remains normative for declaration-to-server apply. The two
 manifests may share source evidence and natural-key definitions, but neither is
 generated from the other.
 
+### API-to-declaration normalization
+
+The reverse projector MUST treat OpenAPI response DTOs and GitOps declarations
+as separate representations. It MUST explicitly normalize, rather than copy
+verbatim:
+
+- Assistant context `{context_type, name}` to declaration datasource
+  references `{context_type, ref: {project, repo_name}}`;
+- enriched Assistant category objects to non-empty category-name strings;
+- toolkit and tool objects to the closed declaration toolkit schema;
+- MCP server objects to the closed declaration MCP schema, excluding nested
+  API `config` and credential-bearing fields; and
+- API integration settings to `{id, alias}` selections only.
+
+Defaults may be materialized only when declared by the pinned OpenAPI response
+contract and required by the declaration schema. Arbitrary defaults,
+placeholders, and API-only metadata are forbidden. Regression fixtures must
+prove both normalized output and absence of credential-bearing fields.
+
 ### Pinned-baseline corrections
 
 The manifest incorporates the following facts verified against the pinned

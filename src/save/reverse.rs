@@ -68,6 +68,233 @@ fn insert_field(
     }
 }
 
+fn insert_assistant_context(
+    target: &mut serde_json::Map<String, serde_json::Value>,
+    field: ResponseField<OpenResponseValue>,
+    project: &str,
+) -> Result<(), AppError> {
+    let Some(value) = field.into_option() else {
+        return Ok(());
+    };
+    let contexts = value.0.as_array().ok_or_else(|| {
+        AppError::ApiIncompatible("Assistant context response must be an array".into())
+    })?;
+    let mut declaration_context = Vec::with_capacity(contexts.len());
+    for context in contexts {
+        let object = context.as_object().ok_or_else(|| {
+            AppError::ApiIncompatible("Assistant context entry must be an object".into())
+        })?;
+        let context_type = object
+            .get("context_type")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| AppError::ApiIncompatible("Assistant context type is missing".into()))?;
+        let name = object
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| AppError::ApiIncompatible("Assistant context name is missing".into()))?;
+        declaration_context.push(serde_json::json!({
+            "context_type": context_type,
+            "ref": {"project": project, "repo_name": name},
+        }));
+    }
+    target.insert(
+        "context".into(),
+        serde_json::Value::Array(declaration_context),
+    );
+    Ok(())
+}
+
+fn insert_assistant_categories(
+    target: &mut serde_json::Map<String, serde_json::Value>,
+    field: ResponseField<OpenResponseValue>,
+) -> Result<(), AppError> {
+    let Some(value) = field.into_option() else {
+        return Ok(());
+    };
+    let categories = value.0.as_array().ok_or_else(|| {
+        AppError::ApiIncompatible("Assistant categories response must be an array".into())
+    })?;
+    let mut declaration_categories = Vec::with_capacity(categories.len());
+    for category in categories {
+        let name = category
+            .as_object()
+            .and_then(|object| object.get("name"))
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| category.as_str())
+            .ok_or_else(|| {
+                AppError::ApiIncompatible("Assistant category name is missing".into())
+            })?;
+        declaration_categories.push(serde_json::Value::String(name.into()));
+    }
+    target.insert(
+        "categories".into(),
+        serde_json::Value::Array(declaration_categories),
+    );
+    Ok(())
+}
+
+fn declaration_settings(value: Option<&serde_json::Value>) -> Option<serde_json::Value> {
+    let object = value?.as_object()?;
+    let id = object.get("id")?.as_str()?.to_owned();
+    let mut selection = serde_json::Map::new();
+    selection.insert("id".into(), id.into());
+    if let Some(alias) = object.get("alias").and_then(serde_json::Value::as_str) {
+        selection.insert("alias".into(), alias.into());
+    }
+    Some(serde_json::Value::Object(selection))
+}
+
+fn normalize_toolkits(value: &serde_json::Value) -> Result<serde_json::Value, AppError> {
+    let toolkits = value
+        .as_array()
+        .ok_or_else(|| AppError::ApiIncompatible("toolkits response must be an array".into()))?;
+    let mut normalized = Vec::with_capacity(toolkits.len());
+    for toolkit in toolkits {
+        let object = toolkit.as_object().ok_or_else(|| {
+            AppError::ApiIncompatible("toolkit response entry must be an object".into())
+        })?;
+        let name = object
+            .get("toolkit")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| AppError::ApiIncompatible("toolkit name is missing".into()))?;
+        let tools = object
+            .get("tools")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| AppError::ApiIncompatible("toolkit tools are missing".into()))?;
+        let mut normalized_tools = Vec::with_capacity(tools.len());
+        for tool in tools {
+            let tool_object = tool.as_object().ok_or_else(|| {
+                AppError::ApiIncompatible("tool response entry must be an object".into())
+            })?;
+            let tool_name = tool_object
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| AppError::ApiIncompatible("tool name is missing".into()))?;
+            let mut normalized_tool = serde_json::Map::new();
+            normalized_tool.insert("name".into(), tool_name.into());
+            normalized_tool.insert(
+                "settings_config".into(),
+                tool_object
+                    .get("settings_config")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+                    .into(),
+            );
+            for key in ["label", "description", "user_description"] {
+                if let Some(value) = tool_object.get(key) {
+                    normalized_tool.insert(key.into(), value.clone());
+                }
+            }
+            if let Some(settings) = declaration_settings(tool_object.get("settings")) {
+                normalized_tool.insert("settings".into(), settings);
+            }
+            normalized_tools.push(serde_json::Value::Object(normalized_tool));
+        }
+        let mut normalized_toolkit = serde_json::Map::new();
+        normalized_toolkit.insert("toolkit".into(), name.into());
+        normalized_toolkit.insert("tools".into(), normalized_tools.into());
+        normalized_toolkit.insert(
+            "label".into(),
+            object
+                .get("label")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .into(),
+        );
+        normalized_toolkit.insert(
+            "settings_config".into(),
+            object
+                .get("settings_config")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+                .into(),
+        );
+        for key in ["is_external"] {
+            if let Some(value) = object.get(key) {
+                normalized_toolkit.insert(key.into(), value.clone());
+            }
+        }
+        if let Some(settings) = declaration_settings(object.get("settings")) {
+            normalized_toolkit.insert("settings".into(), settings);
+        }
+        normalized.push(serde_json::Value::Object(normalized_toolkit));
+    }
+    Ok(serde_json::Value::Array(normalized))
+}
+
+fn normalize_mcp_servers(value: &serde_json::Value) -> Result<serde_json::Value, AppError> {
+    let servers = value
+        .as_array()
+        .ok_or_else(|| AppError::ApiIncompatible("mcp_servers response must be an array".into()))?;
+    let mut normalized = Vec::with_capacity(servers.len());
+    for server in servers {
+        let object = server.as_object().ok_or_else(|| {
+            AppError::ApiIncompatible("MCP server response entry must be an object".into())
+        })?;
+        let name = object
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| AppError::ApiIncompatible("MCP server name is missing".into()))?;
+        let mut normalized_server = serde_json::Map::new();
+        normalized_server.insert("name".into(), name.into());
+        for key in [
+            "description",
+            "mcp_config_id",
+            "mcp_connect_url",
+            "tools_tokens_size_limit",
+            "command",
+            "arguments",
+            "integration_alias",
+            "tools",
+        ] {
+            if let Some(value) = object.get(key) {
+                normalized_server.insert(key.into(), value.clone());
+            }
+        }
+        normalized_server.insert(
+            "enabled".into(),
+            object
+                .get("enabled")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(true)
+                .into(),
+        );
+        normalized_server.insert(
+            "use_custom_config".into(),
+            object
+                .get("use_custom_config")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+                .into(),
+        );
+        normalized_server.insert(
+            "resolve_dynamic_values_in_arguments".into(),
+            object
+                .get("resolve_dynamic_values_in_arguments")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+                .into(),
+        );
+        if let Some(settings) = declaration_settings(object.get("settings")) {
+            normalized_server.insert("settings".into(), settings);
+        }
+        normalized.push(serde_json::Value::Object(normalized_server));
+    }
+    Ok(serde_json::Value::Array(normalized))
+}
+
+fn insert_normalized_field(
+    target: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    field: ResponseField<OpenResponseValue>,
+    normalizer: fn(&serde_json::Value) -> Result<serde_json::Value, AppError>,
+) -> Result<(), AppError> {
+    if let Some(value) = field.into_option() {
+        target.insert(key.into(), normalizer(&value.0)?);
+    }
+    Ok(())
+}
+
 fn forbidden_extension(
     extensions: &super::snapshot::ResponseExtensions,
     key: &str,
@@ -101,8 +328,8 @@ fn reverse_assistant(
     insert_field(&mut spec, "description", snapshot.description);
     insert_field(&mut spec, "system_prompt", snapshot.system_prompt);
     insert_field(&mut spec, "type", snapshot.type_);
-    insert_field(&mut spec, "context", snapshot.context);
-    insert_field(&mut spec, "toolkits", snapshot.toolkits);
+    insert_assistant_context(&mut spec, snapshot.context, project)?;
+    insert_normalized_field(&mut spec, "toolkits", snapshot.toolkits, normalize_toolkits)?;
     insert_field(&mut spec, "icon_url", snapshot.icon_url);
     insert_field(&mut spec, "llm_model_type", snapshot.llm_model_type);
     insert_field(
@@ -142,13 +369,18 @@ fn reverse_assistant(
         "interactive_features",
         snapshot.interactive_features,
     );
-    insert_field(&mut spec, "mcp_servers", snapshot.mcp_servers);
+    insert_normalized_field(
+        &mut spec,
+        "mcp_servers",
+        snapshot.mcp_servers,
+        normalize_mcp_servers,
+    )?;
     insert_field(
         &mut spec,
         "enabled_builtin_subagents",
         snapshot.enabled_builtin_subagents,
     );
-    insert_field(&mut spec, "categories", snapshot.categories);
+    insert_assistant_categories(&mut spec, snapshot.categories)?;
     insert_field(&mut spec, "prompt_variables", snapshot.prompt_variables);
     insert_field(&mut spec, "custom_metadata", snapshot.custom_metadata);
     insert_field(
@@ -263,11 +495,17 @@ fn reverse_skill(
     );
     spec.insert(
         "toolkits".into(),
-        serde_json::to_value(snapshot.detail.toolkits).map_err(SaveError::JsonSerialization)?,
+        normalize_toolkits(
+            &serde_json::to_value(snapshot.detail.toolkits)
+                .map_err(SaveError::JsonSerialization)?,
+        )?,
     );
     spec.insert(
         "mcp_servers".into(),
-        serde_json::to_value(snapshot.detail.mcp_servers).map_err(SaveError::JsonSerialization)?,
+        normalize_mcp_servers(
+            &serde_json::to_value(snapshot.detail.mcp_servers)
+                .map_err(SaveError::JsonSerialization)?,
+        )?,
     );
     spec.insert(
         "companion_files".into(),
@@ -637,4 +875,104 @@ pub(super) fn canonical_yaml(value: &serde_json::Value) -> Result<String, AppErr
         yaml.push('\n');
     }
     Ok(yaml.replace("\r\n", "\n"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_api_toolkit_and_settings_shape() {
+        let value = serde_json::json!([{
+            "toolkit": "github",
+            "tools": [{
+                "name": "search",
+                "label": "Search",
+                "settings_config": true,
+                "settings": {
+                    "id": "setting-1",
+                    "alias": "github-prod",
+                    "credential_values": ["must not leak"]
+                }
+            }],
+            "config_class": "internal",
+            "settings": {"id": "toolkit-setting", "project_name": "p"}
+        }]);
+
+        let normalized = normalize_toolkits(&value).expect("toolkit should normalize");
+        assert_eq!(
+            normalized,
+            serde_json::json!([{
+                "toolkit": "github",
+                "tools": [{
+                    "name": "search",
+                    "label": "Search",
+                    "settings_config": true,
+                    "settings": {"id": "setting-1", "alias": "github-prod"}
+                }],
+                "label": "",
+                "settings_config": false,
+                "settings": {"id": "toolkit-setting"}
+            }])
+        );
+    }
+
+    #[test]
+    fn normalizes_api_mcp_server_shape_and_defaults_required_flag() {
+        let value = serde_json::json!([{
+            "name": "interviews",
+            "enabled": true,
+            "use_custom_config": false,
+            "config": {"auth_token": "must not leak"},
+            "settings": {"id": "setting-2", "credential_values": ["secret"]}
+        }]);
+
+        let normalized = normalize_mcp_servers(&value).expect("MCP server should normalize");
+        assert_eq!(
+            normalized,
+            serde_json::json!([{
+                "name": "interviews",
+                "enabled": true,
+                "use_custom_config": false,
+                "resolve_dynamic_values_in_arguments": false,
+                "settings": {"id": "setting-2"}
+            }])
+        );
+    }
+
+    #[test]
+    fn normalizes_api_context_and_categories() {
+        let mut spec = serde_json::Map::new();
+        insert_assistant_context(
+            &mut spec,
+            ResponseField::Present(OpenResponseValue(serde_json::json!([{
+                "context_type": "knowledge_base",
+                "name": "egi-interviews"
+            }]))),
+            "employees-gaps-identification",
+        )
+        .expect("context should normalize");
+        insert_assistant_categories(
+            &mut spec,
+            ResponseField::Present(OpenResponseValue(serde_json::json!([
+                {"id": "data-analytics", "name": "Data Analytics"},
+                "Talent Acquisition"
+            ]))),
+        )
+        .expect("categories should normalize");
+
+        assert_eq!(
+            serde_json::Value::Object(spec),
+            serde_json::json!({
+                "context": [{
+                    "context_type": "knowledge_base",
+                    "ref": {
+                        "project": "employees-gaps-identification",
+                        "repo_name": "egi-interviews"
+                    }
+                }],
+                "categories": ["Data Analytics", "Talent Acquisition"]
+            })
+        );
+    }
 }
