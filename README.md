@@ -4,6 +4,12 @@
 invocation. The CLI has no local state database, `plan`, `delete`, batch, or
 automatic rollback command.
 
+Documentation: [documentation map](docs/README.md),
+[current implementation reference](docs/implementation-reference.md),
+[architecture](ARCHITECTURE.md), and [portable examples](examples/README.md).
+The declaration JSON Schema is the closed machine authority for YAML; the
+human YAML reference is linked from the documentation map.
+
 ## License
 
 Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
@@ -82,8 +88,9 @@ an argument.
 
 The three login modes are:
 
-1. Client credentials: `CODEMIE_CLIENT_ID` plus `CODEMIE_CLIENT_SECRET`, with
-   an explicit HTTPS `CODEMIE_AUTH_URL`.
+1. Client credentials: `CODEMIE_CLIENT_SECRET` with an explicit HTTPS
+   `CODEMIE_AUTH_URL`; `CODEMIE_CLIENT_ID` is optional and omitted from the
+   form when unset.
 2. Keycloak user credentials: `CODEMIE_EMAIL` plus `CODEMIE_PASSWORD`, with an
    explicit HTTPS `CODEMIE_AUTH_URL`; client ID defaults to `codemie-sdk`.
 3. Local-auth development: `CODEMIE_EMAIL` plus `CODEMIE_PASSWORD`, without an
@@ -127,7 +134,9 @@ entity. Workflow adoption is explicit: `apply --adopt-workflow-id <uuid>` is
 required only for an unmarked Workflow saved by exact ID. The UUID is never
 read from or written to YAML.
 
-See [the portable examples](examples/README.md) for all four declaration kinds
+See the [YAML declaration reference](docs/yaml-reference.md) for every field,
+constraint, nested structure, and Datasource variant. See
+[the portable examples](examples/README.md) for all four declaration kinds
 and inert GitHub/GitLab samples. Validate a declaration before applying it:
 
 ```sh

@@ -2,9 +2,9 @@
 
 ## Status
 
-CONVERGED — v33/v3.4 ARCHITECTURE IMPLEMENTED AND VERIFIED
+CONVERGED — v33/v3.5 ARCHITECTURE IMPLEMENTED AND VERIFIED
 
-Implementation conforms to product specification v33.3 and save specification v3.4.
+Implementation conforms to product specification v33.3 and save specification v3.5.
 The codebase operates strictly on a single-declaration local boundary, resolves
 references online, normalizes server entities to canonical declarations, and writes
 save output directly to the final file without temporary/staging files or repository walking.

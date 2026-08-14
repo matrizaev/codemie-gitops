@@ -1,10 +1,11 @@
-# Architecture plan: CodeMie declarative CI/CD CLI v33
+# Implemented architecture: CodeMie declarative CI/CD CLI v33.3
 
 ## 1. Status
 
-Architecture status: READY FOR PRE-IMPLEMENTATION VERIFICATION
+Architecture status: IMPLEMENTED. Current executable detail is maintained in
+`../../docs/implementation-reference.md`; this file retains decision rationale.
 
-This revision implements the approved v33 single-file boundary. It supersedes
+This revision implements the approved v33.3 single-file boundary. It supersedes
 all earlier architecture for repository discovery, repository closure,
 repository configuration, local declaration ordering, symlink-following
 options, and mandatory cooperative cancellation APIs. Explicit Skill
@@ -21,10 +22,10 @@ server adapters before any write. `login` and target configuration use only
 flags and environment variables. The server reconciliation, authorization,
 compatibility, confidentiality, and always-write decisions remain unchanged.
 
-The existing implementation does not yet conform: it exposes repository flags,
-loads `.codemie/config.yaml`, walks the repository, couples sidecars to a root,
-a graph closure, and threads `CancellationToken` through blocking local work.
-Those paths require removal or narrowing; they are not compatibility behavior.
+The implemented CLI now uses the bounded single-declaration loader, exposes no
+repository-root or symlink-following flags, loads no repository configuration,
+and performs no repository walk or graph closure. Explicit Skill `contentFrom`
+and File Datasource paths are the only auxiliary reads.
 
 ## 3. Sources consulted
 
@@ -54,21 +55,21 @@ The invocation deadline and local input-size/depth/alias budgets remain. A
 timeout may be enforced around the command future and bounded blocking reads;
 no particular cancellation primitive is mandated.
 
-## 5. Current architecture
+## 5. Superseded pre-migration architecture
 
-- `cli` currently resolves a Git/repository root and repository config before
+- Before v33 implementation, `cli` resolved a Git/repository root and repository config before
   dispatching lint/apply/save.
-- `repository` composes `discovery`, bounded YAML/sidecar reads, parse,
+- The removed `repository` layer composed `discovery`, bounded YAML/sidecar reads, parse,
   effective-project materialization, natural validation, and graph validation
   over `DiskRepositoryView`/`OverlayRepositoryView`.
-- `lint` and `coordinator` consume that repository-oriented loader.
-- `parse` accepts Skill `contentFrom`; `discovery` owns walking and symlink
+- `lint` and `coordinator` consumed that repository-oriented loader.
+- `parse` accepted Skill `contentFrom`; `discovery` owned walking and symlink
   policy; `cancellation` is threaded through local loops.
-- Adapters already own server target/reference resolution, authorization,
+- Adapters already owned server target/reference resolution, authorization,
   compatibility evidence, and create/update projection.
 
-The repository layer is therefore an implementation fact to migrate, not a
-target component.
+This section records migration context only. Current modules are listed in
+`../../ARCHITECTURE.md` and `../../docs/implementation-reference.md`.
 
 ## 6. Requirements and quality attributes
 

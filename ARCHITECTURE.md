@@ -213,4 +213,7 @@ Per the product specification, the following are deliberate non-goals:
 
 ---
 
-For more information, see [README.md](README.md) for commands and [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines.
+For exact implementation algorithms, resource limits, reconstruction order,
+and test ownership, see [the current implementation reference](docs/implementation-reference.md).
+See [the documentation map](docs/README.md) for authority and historical-artifact rules,
+[README.md](README.md) for commands, and [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines.
