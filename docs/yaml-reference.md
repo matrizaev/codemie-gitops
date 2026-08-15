@@ -52,7 +52,7 @@ These objects are reused below.
 | `sub_assistants` | Required array of Assistant references. |
 | `enabled_builtin_subagents` | Required unique array; its only admitted item is `GENERAL_PURPOSE_SUBAGENT`. |
 | `skills` | Required array of Skill references. |
-| `categories` | Required array of strings, at most 3 items. |
+| `categories` | Required array of category ID slugs (e.g. `data-analytics`), at most 3 items. Categories must already exist on the server. |
 | `prompt_variables` | Required array of Prompt variable. |
 | `description`, `icon_url`, `image_generation_model`, `plan_prompt` | Optional nullable strings. |
 | `enable_image_generation`, `is_global`, `smart_tool_selection_enabled` | Optional nullable booleans. |
@@ -97,7 +97,7 @@ spec:
 | `description` | Required string, 10–1000 characters. |
 | `content` / `contentFrom` | Exactly one is required. `content` is 100–30000 characters. `contentFrom` is a non-empty relative path ending `.md`; absolute POSIX and Windows drive paths are rejected. Runtime path rules are described below. |
 | `visibility` | Required: `private`, `project`, or `public`. |
-| `categories` | Required array of strings, at most 3 items. |
+| `categories` | Required array of category ID slugs (e.g. `data-analytics`), at most 3 items. Categories must already exist on the server. |
 | `toolkits` | Required array of Toolkit. |
 | `mcp_servers` | Required array of MCP server. |
 | `companion_files` | Required array of companion files. Each requires non-empty `path`, non-empty `mime_type`, `encoding` (`text` or `base64`), integer `size_bytes` ≥0, and string `content`. |
