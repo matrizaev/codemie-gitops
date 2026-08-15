@@ -99,8 +99,8 @@
         "enabled": {"type": "boolean"},
         "mcp_config_id": {"type": ["string", "null"]},
         "use_custom_config": {"type": "boolean"},
-        "mcp_connect_url": {"type": ["string", "null"], "pattern": "^https?://[^@#\\x00-\\x1f\\x7f\\s]+$"},
-        "tools_tokens_size_limit": {"type": ["integer", "null"], "minimum": 1},
+        "mcp_connect_url": {"type": ["string", "null"], "pattern": "^(https?://[^@#\\x00-\\x1f\\x7f\\s]+)?$"},
+        "tools_tokens_size_limit": {"type": ["integer", "null"], "minimum": 0},
         "command": {"type": ["string", "null"]},
         "arguments": {"type": ["string", "null"]},
         "settings": {"anyOf": [{"$ref": "#/$defs/integrationSelection"}, {"type": "null"}]},
@@ -421,12 +421,11 @@
     "workflowRetryPolicy": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["initial_interval", "backoff_factor", "max_interval", "max_attempts"],
       "properties": {
-        "initial_interval": {"type": "number", "minimum": 0, "maximum": 3600000},
-        "backoff_factor": {"type": "number", "minimum": 1, "maximum": 10},
-        "max_interval": {"type": "number", "minimum": 0, "maximum": 3600000},
-        "max_attempts": {"type": "integer", "minimum": 1, "maximum": 100}
+        "initial_interval": {"type": ["number", "null"], "minimum": 0, "maximum": 3600000},
+        "backoff_factor": {"type": ["number", "null"], "minimum": 1, "maximum": 10},
+        "max_interval": {"type": ["number", "null"], "minimum": 0, "maximum": 3600000},
+        "max_attempts": {"type": ["integer", "null"], "minimum": 1, "maximum": 100}
       }
     },
     "workflowNext": {
@@ -493,7 +492,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "id", "task", "finish_iteration", "next", "retry_policy",
+        "id", "task", "finish_iteration", "next",
         "interrupt_before", "resolve_dynamic_values_in_prompt", "result_as_human_message"
       ],
       "properties": {
@@ -524,7 +523,7 @@
         "messages_limit_before_summarization", "tokens_limit_before_summarization",
         "type", "enable_summarization_node", "recursion_limit", "max_concurrency",
         "verbose", "max_iteration_key_output_limit", "assistants", "tools",
-        "custom_nodes", "states", "retry_policy"
+        "custom_nodes", "states"
       ],
       "properties": {
         "messages_limit_before_summarization": {"type": "integer", "minimum": 1, "maximum": 10000},
