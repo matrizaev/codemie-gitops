@@ -121,9 +121,7 @@ fn insert_assistant_categories(
             .and_then(|object| object.get("id"))
             .and_then(serde_json::Value::as_str)
             .or_else(|| category.as_str())
-            .ok_or_else(|| {
-                AppError::ApiIncompatible("Assistant category id is missing".into())
-            })?;
+            .ok_or_else(|| AppError::ApiIncompatible("Assistant category id is missing".into()))?;
         declaration_categories.push(serde_json::Value::String(id.into()));
     }
     target.insert(
