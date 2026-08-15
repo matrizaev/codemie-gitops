@@ -903,8 +903,17 @@ pub fn diagnostic_from_app_error(error: &crate::error::AppError) -> DiagnosticIn
 
 /// Emit a diagnostic from an `AppError` to real stderr with no stdout output.
 ///
-/// Used by `output::write_failure`.
+/// The closed `errorCode`/`category`/`exitCode` diagnostic is always written
+/// to stderr (SEC-005: no raw server text, credentials, or user input enters
+/// the machine-readable output contract on stdout).
+///
+/// The full internal error chain is additionally emitted at `DEBUG` level via
+/// the `tracing` subscriber. This does not weaken SEC-005: tracing output is
+/// opt-in (`RUST_LOG=debug`), goes only to stderr, and is never part of the
+/// machine-readable contract. It is safe to enable in development and CI
+/// pipelines that do not parse stderr.
 pub fn write_app_error_to_stderr(error: &crate::error::AppError, mode: OutputMode) {
+    tracing::debug!(error = %error, "diagnostic detail");
     let diag = diagnostic_from_app_error(error);
     let mut renderer = Renderer::new(io::stdout(), io::stderr(), mode);
     // Ignore I/O error on stderr write: there is nothing meaningful to do if

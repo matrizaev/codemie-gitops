@@ -51,7 +51,7 @@ construction installs the Rustls ring provider.
 | `pagination` | Require consistent zero-based pagination with page size 100, at most 1,000 pages and 100,000 items; reject drift and cycles. |
 | `strict_json` | Reject duplicate JSON object keys recursively while allowing unknown unconsumed response fields at typed boundaries that explicitly permit them. |
 | `save` | Read one selected server entity, reject unsafe/unrepresentable state, reverse-project canonical YAML, validate it in memory, and publish with create-new semantics. |
-| `output` / `render` | Serialize the closed success/warning/error forms. Success uses stdout. Every failure uses stderr and leaves stdout empty. |
+| `output` / `render` | Serialize the closed success/warning/error forms. Success uses stdout. Every failure uses stderr and leaves stdout empty. Before emitting the closed diagnostic, emit the full internal error chain at `DEBUG` level via `tracing` (opt-in via `RUST_LOG=debug`; stderr only; not part of the machine-readable contract). |
 | `error` | Preserve typed layer errors and map reconciliation/server write failures to exit 1; usage, local, auth, connectivity, compatibility, timeout, and internal failures to exit 2. |
 
 ## Command behavior
@@ -177,6 +177,14 @@ identity fields defined by the output contract. JSON success follows
 `contracts/outcome.schema.json`. Warnings and diagnostics follow their closed
 schemas. Raw payloads, response bodies, credentials, headers, cookies, secret
 values, and sidecar/file bytes are prohibited from output.
+
+The closed diagnostic written to stderr contains only the `errorCode`,
+`category`, and `exitCode` from a fixed enum (SEC-005). The full internal error
+chain is additionally emitted at `DEBUG` level via `tracing` immediately before
+the closed diagnostic line. Enable it with `RUST_LOG=debug`. This does not
+weaken SEC-005: tracing output is opt-in, goes only to stderr, and is never
+part of the machine-readable stdout contract. It is safe to enable in
+development and in CI pipelines that do not parse stderr.
 
 Exit 0 means success. Exit 1 means valid local input reached reconciliation or
 a server modifying-request failure. Exit 2 means CLI usage, local input,
