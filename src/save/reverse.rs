@@ -116,15 +116,13 @@ fn insert_assistant_categories(
     })?;
     let mut declaration_categories = Vec::with_capacity(categories.len());
     for category in categories {
-        let name = category
+        let id = category
             .as_object()
-            .and_then(|object| object.get("name"))
+            .and_then(|object| object.get("id"))
             .and_then(serde_json::Value::as_str)
             .or_else(|| category.as_str())
-            .ok_or_else(|| {
-                AppError::ApiIncompatible("Assistant category name is missing".into())
-            })?;
-        declaration_categories.push(serde_json::Value::String(name.into()));
+            .ok_or_else(|| AppError::ApiIncompatible("Assistant category id is missing".into()))?;
+        declaration_categories.push(serde_json::Value::String(id.into()));
     }
     target.insert(
         "categories".into(),
@@ -1239,7 +1237,7 @@ mod tests {
                         "repo_name": "egi-interviews"
                     }
                 }],
-                "categories": ["Data Analytics", "Talent Acquisition"]
+                "categories": ["data-analytics", "Talent Acquisition"]
             })
         );
     }
