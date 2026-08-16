@@ -34,7 +34,7 @@ use std::path::Path;
 #[cfg(test)]
 use std::path::PathBuf;
 
-use crate::declaration_schema::{ExecutionConfigAssistantsItem, WorkflowState};
+use crate::declaration_schema::{ExecutionConfigAssistantsItem, WorkflowNext, WorkflowState};
 use crate::error::AppError;
 use crate::parse::{EntityKind, ParsedDeclaration, ParsedDeclarationRef};
 
@@ -113,6 +113,14 @@ fn validate_workflow_local(decl: &ParsedDeclaration) -> Result<(), AppError> {
         decl.source_path(),
     )?;
 
+    // State ids must be unique, and every transition target must name an
+    // existing state (FR-035: workflow-local actor/state reference integrity).
+    let state_ids = collect_unique(
+        exec.states.iter().map(workflow_state_id),
+        "states",
+        decl.source_path(),
+    )?;
+
     for (i, state) in exec.states.iter().enumerate() {
         let (field, id, valid) = match state {
             WorkflowState::Variant0 { assistant_id, .. } => {
@@ -130,8 +138,62 @@ fn validate_workflow_local(decl: &ParsedDeclaration) -> Result<(), AppError> {
                 id,
             )));
         }
+        validate_transition_targets(i, state, &state_ids, decl.source_path())?;
     }
 
+    Ok(())
+}
+
+/// The `id` of any `WorkflowState` variant.
+fn workflow_state_id(state: &WorkflowState) -> &str {
+    match state {
+        WorkflowState::Variant0 { id, .. } => id.as_str(),
+        WorkflowState::Variant1 { id, .. } => id.as_str(),
+        WorkflowState::Variant2 { id, .. } => id.as_str(),
+    }
+}
+
+/// Validate every state-transition target (`next.state_id`,
+/// `next.state_ids`, condition branches, and switch cases/default)
+/// names an existing state id.
+fn validate_transition_targets(
+    index: usize,
+    state: &WorkflowState,
+    state_ids: &HashSet<String>,
+    source_path: &Path,
+) -> Result<(), AppError> {
+    let next: &WorkflowNext = match state {
+        WorkflowState::Variant0 { next, .. }
+        | WorkflowState::Variant1 { next, .. }
+        | WorkflowState::Variant2 { next, .. } => next,
+    };
+    let mut targets: Vec<&str> = Vec::new();
+    if let Some(target) = next.state_id.as_deref() {
+        targets.push(target);
+    }
+    targets.extend(next.state_ids.iter().map(String::as_str));
+    if let Some(condition) = &next.condition {
+        targets.push(condition.otherwise.as_str());
+        if let Some(then) = condition.then.as_str() {
+            targets.push(then);
+        }
+    }
+    if let Some(switch) = &next.switch {
+        targets.push(switch.default.as_str());
+        targets.extend(switch.cases.iter().map(|case| case.state_id.as_str()));
+    }
+    for target in targets {
+        // The schema admits empty targets; they are not state references.
+        if target.is_empty() {
+            continue;
+        }
+        if !state_ids.contains(target) {
+            return Err(AppError::Schema(format!(
+                "'{}': workflow state[{index}] next targets unknown state '{target}'",
+                source_path.display(),
+            )));
+        }
+    }
     Ok(())
 }
 
@@ -147,7 +209,7 @@ fn collect_unique<'a>(
     for id in ids {
         if !seen.insert(id.to_owned()) {
             return Err(AppError::Schema(format!(
-                "'{}': duplicate actor id '{}' in execution_config.{field}; \
+                "'{}': duplicate id '{}' in execution_config.{field}; \
                  ids must be unique within the workflow (FR-035)",
                 source_path.display(),
                 id,
@@ -175,6 +237,7 @@ fn validate_workflow_local_fixture(
     let actor_ids = collect_unique(ids("assistants"), "assistants", source_path)?;
     let tool_ids = collect_unique(ids("tools"), "tools", source_path)?;
     let node_ids = collect_unique(ids("custom_nodes"), "custom_nodes", source_path)?;
+    let state_ids = collect_unique(ids("states"), "states", source_path)?;
     for (index, state) in exec
         .get("states")
         .and_then(serde_json::Value::as_array)
@@ -194,6 +257,45 @@ fn validate_workflow_local_fixture(
                     "'{}': workflow state[{index}].{field} '{}' does not match any id in execution_config",
                     source_path.display(),
                     id
+                )));
+            }
+        }
+        // Transition targets must name existing states.
+        let mut targets: Vec<&str> = Vec::new();
+        if let Some(next) = state.get("next") {
+            if let Some(target) = next.get("state_id").and_then(serde_json::Value::as_str) {
+                targets.push(target);
+            }
+            if let Some(list) = next.get("state_ids").and_then(serde_json::Value::as_array) {
+                targets.extend(list.iter().filter_map(serde_json::Value::as_str));
+            }
+            if let Some(condition) = next.get("condition") {
+                if let Some(target) = condition.get("then").and_then(serde_json::Value::as_str) {
+                    targets.push(target);
+                }
+                if let Some(target) = condition
+                    .get("otherwise")
+                    .and_then(serde_json::Value::as_str)
+                {
+                    targets.push(target);
+                }
+            }
+            if let Some(switch) = next.get("switch") {
+                if let Some(target) = switch.get("default").and_then(serde_json::Value::as_str) {
+                    targets.push(target);
+                }
+                if let Some(cases) = switch.get("cases").and_then(serde_json::Value::as_array) {
+                    targets.extend(cases.iter().filter_map(|case| {
+                        case.get("state_id").and_then(serde_json::Value::as_str)
+                    }));
+                }
+            }
+        }
+        for target in targets {
+            if !target.is_empty() && !state_ids.contains(target) {
+                return Err(AppError::Schema(format!(
+                    "'{}': workflow state[{index}] next targets unknown state '{target}'",
+                    source_path.display()
                 )));
             }
         }
@@ -939,6 +1041,105 @@ mod tests {
         assert!(
             msg.contains("ghost-node") || msg.contains("custom_node_id"),
             "error must name the unresolved node id: {msg}"
+        );
+    }
+
+    /// Duplicate `states[].id` values fail offline validation.
+    #[test]
+    fn workflow_duplicate_state_ids_fail_validate_natural() {
+        let decl = ParsedDeclaration::fixture(
+            EntityKind::Workflow,
+            serde_json::json!({
+                "apiVersion": "codemie.epam.com/v1alpha1",
+                "kind": "Workflow",
+                "metadata": {"project": "p", "slug": "wf"},
+                "spec": {
+                    "execution_config": {
+                        "assistants": [{"id": "a"}],
+                        "tools": [],
+                        "custom_nodes": [],
+                        "states": [
+                            {"id": "s1", "assistant_id": "a"},
+                            {"id": "s1", "assistant_id": "a"},
+                        ],
+                    }
+                }
+            }),
+            p("workflows/wf.yaml"),
+        );
+        let err = validate_natural(&decl).expect_err("duplicate state ids must fail validation");
+        assert_eq!(err.exit_code(), 2);
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("duplicate") && msg.contains("states"),
+            "error must mention the duplicate in states: {msg}"
+        );
+    }
+
+    /// A transition `next.state_id` naming a nonexistent state fails offline.
+    #[test]
+    fn workflow_next_targeting_unknown_state_fails_validate_natural() {
+        let decl = ParsedDeclaration::fixture(
+            EntityKind::Workflow,
+            serde_json::json!({
+                "apiVersion": "codemie.epam.com/v1alpha1",
+                "kind": "Workflow",
+                "metadata": {"project": "p", "slug": "wf"},
+                "spec": {
+                    "execution_config": {
+                        "assistants": [{"id": "a"}],
+                        "tools": [],
+                        "custom_nodes": [],
+                        "states": [
+                            {"id": "s1", "assistant_id": "a",
+                             "next": {"state_id": "missing-state"}},
+                        ],
+                    }
+                }
+            }),
+            p("workflows/wf.yaml"),
+        );
+        let err = validate_natural(&decl)
+            .expect_err("unknown next.state_id must fail with AppError::Schema");
+        assert_eq!(err.exit_code(), 2);
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("missing-state"),
+            "error must name the unknown target state: {msg}"
+        );
+    }
+
+    /// A switch case naming a nonexistent state fails offline.
+    #[test]
+    fn workflow_switch_case_unknown_state_fails_validate_natural() {
+        let decl = ParsedDeclaration::fixture(
+            EntityKind::Workflow,
+            serde_json::json!({
+                "apiVersion": "codemie.epam.com/v1alpha1",
+                "kind": "Workflow",
+                "metadata": {"project": "p", "slug": "wf"},
+                "spec": {
+                    "execution_config": {
+                        "assistants": [{"id": "a"}],
+                        "tools": [],
+                        "custom_nodes": [],
+                        "states": [
+                            {"id": "s1", "assistant_id": "a",
+                             "next": {"switch": {"default": "s1",
+                                                 "cases": [{"condition": "c", "state_id": "ghost"}]}}},
+                        ],
+                    }
+                }
+            }),
+            p("workflows/wf.yaml"),
+        );
+        let err = validate_natural(&decl)
+            .expect_err("switch case with unknown state must fail validation");
+        assert_eq!(err.exit_code(), 2);
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("ghost"),
+            "error must name the unknown switch target: {msg}"
         );
     }
 

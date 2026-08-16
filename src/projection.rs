@@ -171,17 +171,13 @@ impl WorkflowReferenceMap {
 /// `existing` is `Some` when the identity resolver found a unique match and
 /// an `Update` plan should be produced; `None` produces a `Create` plan.
 ///
-/// `adopt_workflow_id` is an invocation-level adoption selector (apply
-/// `--adopt-workflow-id`). Ignored for non-Workflow kinds.
-///
 /// Fails with `AppError::Schema` when a required authored field is absent or
 /// null, or when a Workflow `meta_config` string is malformed.
 pub fn project(
     decl: &ParsedDeclaration,
     existing: Option<&ExistingEntity>,
-    _adopt_workflow_id: Option<&str>,
 ) -> Result<WritePlan, AppError> {
-    project_with_workflow_references(decl, existing, _adopt_workflow_id, None)
+    project_with_workflow_references(decl, existing, None)
 }
 
 /// Project an Assistant with every authored natural reference resolved online.
@@ -208,7 +204,6 @@ pub fn project_with_assistant_references(
 pub fn project_with_workflow_references(
     decl: &ParsedDeclaration,
     existing: Option<&ExistingEntity>,
-    _adopt_workflow_id: Option<&str>,
     workflow_references: Option<&WorkflowReferenceMap>,
 ) -> Result<WritePlan, AppError> {
     let server_id = existing.map(|e| e.server_id.clone());
@@ -732,15 +727,18 @@ fn merge_meta_config_fields(
     let mut merged: BTreeMap<String, Value> = match server_raw {
         None | Some("null") => BTreeMap::new(),
         Some(s) => {
+            // Strict decode: duplicate JSON keys are rejected, matching the
+            // identity-classification path (classify_marker). The reserved
+            // record is validated there; this merge regenerates it from
+            // authored metadata below.
             let decoded: Value =
-                serde_json::from_str(s).map_err(|source| ProjectionError::ServerJson {
+                crate::strict_json::from_str(s).map_err(|source| ProjectionError::ServerJson {
                     context: "workflow meta_config",
                     source,
                 })?;
             let obj = decoded.as_object().ok_or_else(|| {
                 AppError::Schema("meta_config: server value is not a JSON object".into())
             })?;
-            // Reject invalid reserved record upfront; the reserved key value is overwritten below
             obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
         }
     };
@@ -829,13 +827,20 @@ fn project_skill(decl_value: &Value, _is_update: bool) -> Result<RequestBody, Ap
 // Datasource projection
 // ---------------------------------------------------------------------------
 
+/// Insert an applicable optional field, materializing omission/null as an
+/// explicit JSON null per the manifest's `projectionPolicy.optionalNull`.
+/// Create-only fields use separate `if !is_update` blocks so they are
+/// absent (not null) on update.
 fn insert_optional_encoded<T: serde::Serialize>(
     body: &mut Map<String, Value>,
     key: &'static str,
     value: &Option<T>,
 ) -> Result<(), AppError> {
-    if let Some(value) = value {
-        insert_encoded(body, key, value)?;
+    match value {
+        Some(value) => insert_encoded(body, key, value)?,
+        None => {
+            body.insert(key.to_owned(), Value::Null);
+        }
     }
     Ok(())
 }
@@ -1414,5 +1419,19 @@ spec:
         );
         assert!(body.get("sub_assistants").is_none());
         assert!(body.get("skills").is_none());
+    }
+
+    /// Datasource JSON-kind optional fields materialize omission as explicit
+    /// JSON null (manifest projectionPolicy.optionalNull).
+    #[test]
+    fn optional_datasource_fields_materialize_explicit_null() {
+        let mut body = Map::new();
+        let none: Option<String> = None;
+        insert_optional_encoded(&mut body, "filesFilter", &none).unwrap();
+        assert_eq!(body.get("filesFilter"), Some(&Value::Null));
+
+        let some = Some("code".to_owned());
+        insert_optional_encoded(&mut body, "indexType", &some).unwrap();
+        assert_eq!(body.get("indexType"), Some(&Value::String("code".into())));
     }
 }

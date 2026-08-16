@@ -10,32 +10,27 @@ pub mod datasource;
 pub mod skill;
 pub mod workflow;
 
-use std::num::NonZeroUsize;
-
 use crate::domain::ServerId;
 use crate::error::AppError;
-use crate::http::{ExactProjectVisibility, encode_query_value};
-use crate::pagination::PaginationError;
+use crate::http::{ExactProjectVisibility, encode_path_segment};
 use crate::parse::EntityKind;
 use crate::projection::{RequestBody, WritePlan};
-
-fn map_pagination_error(entity: &str, error: PaginationError) -> AppError {
-    if error.is_drift() {
-        AppError::Reconciliation(format!("{entity} {error}"))
-    } else {
-        AppError::ApiIncompatible(format!("{entity} {error}"))
-    }
-}
 
 /// The identity-resolution outcome to which a projected request must be linked.
 ///
 /// This value is never constructed by the generic seal. Each adapter creates it
 /// only from a successful strict read: an absent direct lookup/full scan or one
 /// exact, writable row.
+///
+/// `Update` carries the write-ability proof in the type: an update target
+/// without evidence is unrepresentable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ResolutionTarget {
     Create,
-    Update { server_id: String },
+    Update {
+        server_id: String,
+        write_ability: WriteAbilityEvidence,
+    },
 }
 
 impl ResolutionTarget {
@@ -45,6 +40,7 @@ impl ResolutionTarget {
             (
                 Self::Update {
                     server_id: evidence_id,
+                    ..
                 },
                 WritePlan::Update { server_id, .. },
             ) => evidence_id == server_id,
@@ -53,14 +49,12 @@ impl ResolutionTarget {
     }
 }
 
-/// Concrete proof returned by strict row-ability validation.
-///
-/// The non-zero count makes this actual consumed response evidence instead of a
-/// fabricated completion marker. Construction remains private to `prove_write`.
-#[derive(Debug, Clone)]
-struct WriteAbilityEvidence {
-    _decoded_ability_count: NonZeroUsize,
-}
+/// Existence proof that exact row-level `write` ability was decoded and
+/// required for an update target. An `Update` resolution target cannot be
+/// constructed without it (type-level guarantee), and `PreparedWrite::seal`
+/// re-checks presence as defense in depth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WriteAbilityEvidence;
 
 /// Operation-specific capability evidence established before identity reads.
 #[derive(Debug)]
@@ -94,6 +88,17 @@ impl CompletedResolution {
             Self::Workflow(evidence) => evidence.effective_project(),
             Self::Skill(evidence) => evidence.effective_project(),
             Self::Datasource(evidence) => evidence.effective_project(),
+        }
+    }
+
+    /// True only when an update target carries proof of exact `write`
+    /// ability. Enforced structurally by `PreparedWrite::seal`.
+    fn write_ability_is_proven(&self) -> bool {
+        match self {
+            Self::Assistant(evidence) => evidence.write_ability_is_proven(),
+            Self::Workflow(evidence) => evidence.write_ability_is_proven(),
+            Self::Skill(evidence) => evidence.write_ability_is_proven(),
+            Self::Datasource(evidence) => evidence.write_ability_is_proven(),
         }
     }
 
@@ -271,6 +276,13 @@ impl<'a> PreparedWrite<'a> {
                 "projected request is not linked to completed resolution evidence".into(),
             ));
         }
+        if matches!(resolution.target(), ResolutionTarget::Update { .. })
+            && !resolution.write_ability_is_proven()
+        {
+            return Err(AppError::Internal(
+                "update target requires proven exact write ability evidence".into(),
+            ));
+        }
         Ok(Self {
             client,
             plan,
@@ -319,15 +331,15 @@ impl<'a> PreparedWrite<'a> {
         let path = match (&resolution, &server_id) {
             (CompletedResolution::Assistant(_), None) => "/v1/assistants".to_owned(),
             (CompletedResolution::Assistant(_), Some(id)) => {
-                format!("/v1/assistants/{}", encode_query_value(id))
+                format!("/v1/assistants/{}", encode_path_segment(id))
             }
             (CompletedResolution::Workflow(_), None) => "/v1/workflows".to_owned(),
             (CompletedResolution::Workflow(_), Some(id)) => {
-                format!("/v1/workflows/{}", encode_query_value(id))
+                format!("/v1/workflows/{}", encode_path_segment(id))
             }
             (CompletedResolution::Skill(_), None) => "/v1/skills".to_owned(),
             (CompletedResolution::Skill(_), Some(id)) => {
-                format!("/v1/skills/{}", encode_query_value(id))
+                format!("/v1/skills/{}", encode_path_segment(id))
             }
             (CompletedResolution::Datasource(evidence), None) => {
                 datasource_create_route(evidence.index_type(), &project)
@@ -386,9 +398,9 @@ impl<'a> PreparedWrite<'a> {
 
 fn datasource_create_route(kind: &str, project: &str) -> String {
     match kind {
-        "git" => format!("/v1/application/{}/index", encode_query_value(project)),
-        "svn" => format!("/v1/application/{}/index/svn", encode_query_value(project)),
-        _ => format!("/v1/index/knowledge_base/{}", encode_query_value(kind)),
+        "git" => format!("/v1/application/{}/index", encode_path_segment(project)),
+        "svn" => format!("/v1/application/{}/index/svn", encode_path_segment(project)),
+        _ => format!("/v1/index/knowledge_base/{}", encode_path_segment(kind)),
     }
 }
 
@@ -396,27 +408,22 @@ fn datasource_update_route(kind: &str, project: &str, repo_name: &str) -> String
     match kind {
         "git" => format!(
             "/v1/application/{}/index/{}",
-            encode_query_value(project),
-            encode_query_value(repo_name)
+            encode_path_segment(project),
+            encode_path_segment(repo_name)
         ),
         "svn" => format!(
             "/v1/application/{}/index/svn/{}",
-            encode_query_value(project),
-            encode_query_value(repo_name)
+            encode_path_segment(project),
+            encode_path_segment(repo_name)
         ),
-        _ => format!("/v1/index/knowledge_base/{}", encode_query_value(kind)),
+        _ => format!("/v1/index/knowledge_base/{}", encode_path_segment(kind)),
     }
 }
 
 /// Require and retain source-pinned row-level write ability evidence.
 fn prove_write(abilities: &[String], entity: &str) -> Result<WriteAbilityEvidence, AppError> {
     if abilities.iter().any(|ability| ability == "write") {
-        let decoded_ability_count = NonZeroUsize::new(abilities.len()).ok_or_else(|| {
-            AppError::Internal("write ability evidence cannot have an empty vector".into())
-        })?;
-        Ok(WriteAbilityEvidence {
-            _decoded_ability_count: decoded_ability_count,
-        })
+        Ok(WriteAbilityEvidence)
     } else {
         Err(AppError::Authorization(format!(
             "{entity} target does not expose write capability"

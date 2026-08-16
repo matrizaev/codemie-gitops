@@ -5,13 +5,13 @@ use std::time::Duration;
 
 use secrecy::SecretString;
 
-use crate::adapters::{self, ApplyAction, ApplyResult};
+use crate::adapters::{self, ApplyResult};
 use crate::config::ValidatedUrl;
 use crate::domain::{InputFile, NaturalIdentity, WorkflowId};
 use crate::error::AppError;
 use crate::http::ApiClient;
 use crate::input::FilePart;
-use crate::output::{Action, Outcome};
+use crate::output::Outcome;
 use crate::parse::{EntityKind, ParsedDeclaration};
 
 /// Whole-invocation deadline from the approved resource budget.
@@ -59,42 +59,15 @@ impl TryFrom<RawApplyCommand> for ApplyCommand {
     }
 }
 
-impl NaturalIdentity {
-    fn success_outcome(&self, action: ApplyAction) -> Outcome {
-        let action = match action {
-            ApplyAction::Created => Action::Created,
-            ApplyAction::Updated => Action::Updated,
-        };
-        match self.kind() {
-            EntityKind::Assistant => Outcome::assistant(
-                action,
-                self.project().to_owned(),
-                self.selector().to_owned(),
-            ),
-            EntityKind::Workflow => Outcome::workflow(
-                action,
-                self.project().to_owned(),
-                self.selector().to_owned(),
-            ),
-            EntityKind::Skill => Outcome::new_skill(
-                action,
-                self.project().to_owned(),
-                self.selector().to_owned(),
-            ),
-            EntityKind::Datasource => Outcome::new_datasource(
-                action,
-                self.project().to_owned(),
-                self.selector().to_owned(),
-            ),
-        }
-    }
-}
-
 /// Apply exactly one selected declaration under the five-minute deadline.
 pub async fn apply(command: ApplyCommand) -> Result<Outcome, AppError> {
     tokio::time::timeout(INVOCATION_DEADLINE, apply_inner(command))
         .await
-        .map_err(|_| AppError::Timeout("apply exceeded the 300-second deadline".into()))?
+        .map_err(|_| {
+            AppError::Timeout(
+                "apply exceeded the 300-second deadline; a write may have committed".into(),
+            )
+        })?
 }
 
 async fn apply_inner(command: ApplyCommand) -> Result<Outcome, AppError> {
@@ -112,14 +85,13 @@ async fn apply_inner(command: ApplyCommand) -> Result<Outcome, AppError> {
     let adopt_workflow_id = command.adopt_workflow_id.map(|id| id.to_string());
     let result = dispatch_adapter(
         &client,
-        &command.base_url,
         &declaration,
         &identity,
         adopt_workflow_id.as_deref(),
         loaded.file_parts,
     )
     .await?;
-    verify_written_identity(&client, &command.base_url, &identity, result.server_id())
+    verify_written_identity(&client, &identity, result.server_id())
         .await
         .map_err(classify_verification_failure)?;
     Ok(identity.success_outcome(result.action()))
@@ -139,7 +111,6 @@ fn validate_adoption_selector(
 
 async fn dispatch_adapter(
     client: &ApiClient,
-    base_url: &ValidatedUrl,
     declaration: &ParsedDeclaration,
     identity: &NaturalIdentity,
     adopt_workflow_id: Option<&str>,
@@ -147,19 +118,12 @@ async fn dispatch_adapter(
 ) -> Result<ApplyResult, AppError> {
     match identity.kind() {
         EntityKind::Assistant => {
-            adapters::assistant::apply(
-                client,
-                base_url,
-                declaration,
-                identity.project(),
-                identity.selector(),
-            )
-            .await
+            adapters::assistant::apply(client, declaration, identity.project(), identity.selector())
+                .await
         }
         EntityKind::Workflow => {
             adapters::workflow::apply(
                 client,
-                base_url,
                 adapters::workflow::ApplyRequest {
                     declaration,
                     project_name: identity.project(),
@@ -170,26 +134,20 @@ async fn dispatch_adapter(
             .await
         }
         EntityKind::Skill => {
-            adapters::skill::apply(
-                client,
-                base_url,
-                declaration,
-                identity.project(),
-                identity.selector(),
-            )
-            .await
+            adapters::skill::apply(client, declaration, identity.project(), identity.selector())
+                .await
         }
         EntityKind::Datasource => {
+            let index_type = identity.datasource_index_type().ok_or_else(|| {
+                AppError::Internal("Datasource identity is missing its validated index type".into())
+            })?;
             adapters::datasource::apply(
                 client,
-                base_url,
                 adapters::datasource::ApplyRequest {
                     declaration,
                     project_name: identity.project(),
                     repo_name: identity.selector(),
-                    index_type: identity
-                        .datasource_index_type()
-                        .expect("Datasource identity carries its validated type"),
+                    index_type,
                     file_parts,
                 },
             )
@@ -200,7 +158,6 @@ async fn dispatch_adapter(
 
 async fn verify_written_identity(
     client: &ApiClient,
-    base_url: &ValidatedUrl,
     identity: &NaturalIdentity,
     expected_server_id: &str,
 ) -> Result<(), AppError> {
@@ -208,7 +165,6 @@ async fn verify_written_identity(
         EntityKind::Assistant => {
             adapters::assistant::verify_identity(
                 client,
-                base_url,
                 identity.project(),
                 identity.selector(),
                 expected_server_id,
@@ -218,7 +174,6 @@ async fn verify_written_identity(
         EntityKind::Workflow => {
             adapters::workflow::verify_identity(
                 client,
-                base_url,
                 identity.project(),
                 identity.selector(),
                 expected_server_id,
@@ -228,7 +183,6 @@ async fn verify_written_identity(
         EntityKind::Skill => {
             adapters::skill::verify_identity(
                 client,
-                base_url,
                 identity.project(),
                 identity.selector(),
                 expected_server_id,
@@ -236,14 +190,14 @@ async fn verify_written_identity(
             .await
         }
         EntityKind::Datasource => {
+            let index_type = identity.datasource_index_type().ok_or_else(|| {
+                AppError::Internal("Datasource identity is missing its validated index type".into())
+            })?;
             adapters::datasource::verify_identity(
                 client,
-                base_url,
                 identity.project(),
                 identity.selector(),
-                identity
-                    .datasource_index_type()
-                    .expect("Datasource identity carries its validated type"),
+                index_type,
                 expected_server_id,
             )
             .await
@@ -259,9 +213,14 @@ fn classify_verification_failure(error: AppError) -> AppError {
         AppError::ApiIncompatible(_) => AppError::WriteVerificationIncompatible(
             "write may have committed; verification response was incompatible".into(),
         ),
-        AppError::Reconciliation(_) => AppError::WriteUncertain(
+        AppError::Reconciliation(_) | AppError::ResolutionUnstable(_) => AppError::WriteUncertain(
             "write may have committed; identity did not verify exactly once".into(),
         ),
-        other => other,
+        // Verification runs strictly after the write dispatched, so any
+        // failure here means the write may have committed even when the error
+        // is an unrelated class (authorization change, entity not found, etc.).
+        other => AppError::WriteVerificationUnavailable(format!(
+            "write may have committed; verification failed: {other}"
+        )),
     }
 }

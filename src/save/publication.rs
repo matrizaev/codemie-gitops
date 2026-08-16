@@ -147,7 +147,10 @@ pub(super) fn publish_empty_files(
             || relative.components().any(|component| {
                 matches!(
                     component,
-                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                    Component::ParentDir
+                        | Component::RootDir
+                        | Component::Prefix(_)
+                        | Component::CurDir
                 )
             })
         {

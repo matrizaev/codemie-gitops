@@ -200,7 +200,7 @@ fn read_bounded(path: &Path, limit: u64, kind: InputKind) -> Result<Vec<u8>, App
     if metadata.len() > limit {
         return Err(InputError::TooLarge { kind }.into());
     }
-    let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).unwrap_or(0));
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
     file.take(limit + 1)
         .read_to_end(&mut bytes)
         .map_err(|source| InputError::Read { kind, source })?;

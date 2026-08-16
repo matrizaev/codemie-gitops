@@ -1,22 +1,24 @@
 /// Datasource entity adapter — D-001.
 ///
-/// Visibility preflight (`GET /v1/user`) required before any write (ADR-012 Option A).
-/// Exhaustive `(project, repo_name, index_type)` resolution via paginated
-/// `GET /v1/index?full_response=true&page={page}&per_page=100&filters={json}`.
+/// Visibility preflight (`GET /v1/user`) required before any write.
+/// Exhaustive `(project, repo_name, index_type)` identity resolution via
+/// paginated `GET /v1/index?full_response=true&page={page}&per_page=100&filters={json}`.
+/// The persisted `index_type` participates in identity matching: a visible row
+/// selects update only when its kind equals the declaration's kind; a miss
+/// (including a same-name row of a different kind) permits one create.
 /// Pagination is zero-indexed. Cap: 1,000 pages / 100,000 items → `E_API_INCOMPATIBLE`.
 /// File Datasource: multipart transport with parts cap (10) and basename safety.
 use serde::Deserialize;
 
-use crate::config::ValidatedUrl;
 use crate::error::AppError;
 use crate::http::{ApiClient, encode_query_value, preflight_visibility};
-use crate::pagination::{Pagination, PaginationInput, SERVER_LIST_MAX_ITEMS};
+
 use crate::parse::ParsedDeclaration;
 use crate::projection::{ExistingEntity, RequestBody, project};
 
 use super::{
     ApplyAction, ApplyResult, PreparedWrite, PreparedWriteResponse, ResolutionTarget,
-    WriteAbilityEvidence, map_pagination_error, prove_write,
+    WriteAbilityEvidence, prove_write,
 };
 
 // ---------------------------------------------------------------------------
@@ -43,7 +45,7 @@ struct DatasourceItem {
     repo_name: String,
     project_name: String,
     #[serde(rename = "index_type")]
-    _index_type: String,
+    index_type: String,
     user_abilities: Vec<String>,
 }
 
@@ -77,7 +79,7 @@ pub(super) struct CompletedResolution {
     index_type: String,
     target: ResolutionTarget,
     _scan: ScanEvidence,
-    _write_ability: Option<WriteAbilityEvidence>,
+    write_ability: Option<WriteAbilityEvidence>,
 }
 
 impl CompletedResolution {
@@ -96,6 +98,10 @@ impl CompletedResolution {
     pub(super) fn target(&self) -> &ResolutionTarget {
         &self.target
     }
+
+    pub(super) fn write_ability_is_proven(&self) -> bool {
+        self.write_ability.is_some()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -111,17 +117,12 @@ pub struct ApplyRequest<'a> {
 }
 
 /// Apply one Datasource using bytes validated at the selected-input boundary.
-pub async fn apply(
-    client: &ApiClient,
-    base_url: &ValidatedUrl,
-    request: ApplyRequest<'_>,
-) -> Result<ApplyResult, AppError> {
+pub async fn apply(client: &ApiClient, request: ApplyRequest<'_>) -> Result<ApplyResult, AppError> {
     // ADR-012 Option A: exact-effective-project preflight before any write.
     let _initial_visibility = preflight_visibility(client, request.project_name).await?;
 
     let enumeration = enumerate(
         client,
-        base_url,
         request.project_name,
         request.repo_name,
         request.index_type,
@@ -139,6 +140,7 @@ pub async fn apply(
                 }),
                 ResolutionTarget::Update {
                     server_id: single.id.clone(),
+                    write_ability,
                 },
                 Some(write_ability),
             )
@@ -152,7 +154,7 @@ pub async fn apply(
         )))?,
     };
 
-    let plan = project(request.declaration, existing.as_ref(), None)?;
+    let plan = project(request.declaration, existing.as_ref())?;
     let file_parts = if matches!(
         &plan,
         crate::projection::WritePlan::Create {
@@ -178,7 +180,7 @@ pub async fn apply(
         index_type: request.index_type.to_owned(),
         target,
         _scan: enumeration.evidence,
-        _write_ability: write_ability,
+        write_ability,
     };
     let visibility = preflight_visibility(client, request.project_name).await?;
     let prepared = PreparedWrite::datasource(client, visibility, resolution, plan, file_parts)?;
@@ -188,7 +190,6 @@ pub async fn apply(
     } else {
         let post_write = enumerate(
             client,
-            base_url,
             request.project_name,
             request.repo_name,
             request.index_type,
@@ -215,12 +216,11 @@ pub async fn apply(
 /// different persisted kinds, resolution is ambiguous and no ID is selected.
 pub async fn resolve_reference(
     client: &ApiClient,
-    base_url: &ValidatedUrl,
     project_name: &str,
     repo_name: &str,
 ) -> Result<String, AppError> {
     preflight_visibility(client, project_name).await?;
-    let matches: Vec<String> = enumerate_project(client, base_url, project_name)
+    let matches: Vec<String> = enumerate_project(client, project_name)
         .await?
         .items
         .into_iter()
@@ -230,7 +230,7 @@ pub async fn resolve_reference(
 
     match matches.as_slice() {
         [single] => Ok(single.clone()),
-        [] => Err(AppError::Reconciliation(
+        [] => Err(AppError::MissingReference(
             "referenced Datasource is missing on the target server".into(),
         )),
         _ => Err(AppError::Reconciliation(
@@ -242,13 +242,12 @@ pub async fn resolve_reference(
 /// Post-write exact identity verification for the coordinator (R-001).
 pub async fn verify_identity(
     client: &ApiClient,
-    base_url: &ValidatedUrl,
     project_name: &str,
     repo_name: &str,
     index_type: &str,
     expected_server_id: &str,
 ) -> Result<(), AppError> {
-    let enumeration = enumerate(client, base_url, project_name, repo_name, index_type).await?;
+    let enumeration = enumerate(client, project_name, repo_name, index_type).await?;
     match enumeration.matches.as_slice() {
         [single] if single.id == expected_server_id => Ok(()),
         _ => Err(AppError::Reconciliation(
@@ -264,17 +263,20 @@ pub async fn verify_identity(
 
 async fn enumerate(
     client: &ApiClient,
-    base_url: &ValidatedUrl,
     project_name: &str,
     repo_name: &str,
-    _index_type: &str,
+    index_type: &str,
 ) -> Result<Enumeration, AppError> {
-    let project = enumerate_project(client, base_url, project_name).await?;
+    let project = enumerate_project(client, project_name).await?;
     Ok(Enumeration {
         matches: project
             .items
             .into_iter()
-            .filter(|item| item.repo_name == repo_name && item.project_name == project_name)
+            .filter(|item| {
+                item.repo_name == repo_name
+                    && item.project_name == project_name
+                    && item.index_type == index_type
+            })
             .collect(),
         evidence: project.evidence,
     })
@@ -282,7 +284,6 @@ async fn enumerate(
 
 async fn enumerate_project(
     client: &ApiClient,
-    _base_url: &ValidatedUrl,
     project_name: &str,
 ) -> Result<ProjectEnumeration, AppError> {
     let filter = serde_json::to_string(&serde_json::json!({ "project": project_name })).map_err(
@@ -292,79 +293,41 @@ async fn enumerate_project(
         },
     )?;
 
-    let mut all_items = Vec::new();
-    let mut page = 0u32;
-    let mut pages_requested = 0u32;
-    let mut total_seen = 0u32;
-    let mut fingerprint: Option<Pagination> = None;
-    let mut seen_ids = std::collections::HashSet::new();
-
-    loop {
+    let scan = crate::pagination::scan_pages("datasource", |page| {
         let path = format!(
             "/v1/index?full_response=true&page={}&per_page=100&filters={}",
             page,
             encode_query_value(&filter)
         );
-        let resp: DatasourcePage = client.get(&path).await?;
-        pages_requested += 1;
-        let pagination = validate_pagination(page, &resp.pagination, fingerprint)?;
-        fingerprint = Some(pagination);
-        let total_pages = pagination.pages();
-
-        for item in resp.data {
-            total_seen += 1;
-            if total_seen > SERVER_LIST_MAX_ITEMS {
-                return Err(AppError::ApiIncompatible(
-                    "datasource enumeration exceeded 100,000-item cap".into(),
-                ));
-            }
-            if !seen_ids.insert(item.id.clone()) {
-                return Err(AppError::Reconciliation(
-                    "datasource enumeration repeated an entity id".into(),
-                ));
-            }
-            all_items.push(item);
+        async move {
+            let resp: DatasourcePage = client.get(&path).await?;
+            Ok(crate::pagination::Page {
+                items: resp.data,
+                pagination: crate::pagination::PaginationInput {
+                    requested_page: page,
+                    page: resp.pagination.page,
+                    per_page: resp.pagination.per_page,
+                    total: resp.pagination.total,
+                    pages: resp.pagination.pages,
+                },
+            })
         }
-
-        // Zero-indexed: stop when we've seen all pages (pages=N means indices 0..N-1)
-        let next = page + 1;
-        if next >= total_pages {
-            break;
-        }
-        page = next;
-    }
-
-    let expected_total = fingerprint.map_or(0, Pagination::total);
-    if total_seen != expected_total {
-        return Err(AppError::Reconciliation(
-            "datasource enumeration ended before the advertised total".into(),
-        ));
-    }
-
+    })
+    .await?;
     Ok(ProjectEnumeration {
-        items: all_items,
+        items: scan.items,
         evidence: ScanEvidence {
-            _pages_requested: pages_requested,
-            _items_seen: total_seen,
-            _advertised_total: expected_total,
+            _pages_requested: scan.pages_requested,
+            _items_seen: scan.items_seen,
+            _advertised_total: scan.advertised_total,
         },
     })
 }
 
-fn validate_pagination(
-    requested_page: u32,
-    pagination: &DatasourcePagination,
-    fingerprint: Option<Pagination>,
-) -> Result<Pagination, AppError> {
-    Pagination::try_from(PaginationInput {
-        requested_page,
-        page: pagination.page,
-        per_page: pagination.per_page,
-        total: pagination.total,
-        pages: pagination.pages,
-    })
-    .and_then(|pagination| pagination.ensure_stable(fingerprint))
-    .map_err(|error| map_pagination_error("datasource", error))
+impl crate::pagination::PageItem for DatasourceItem {
+    fn page_item_id(&self) -> &str {
+        &self.id
+    }
 }
 
 // ---------------------------------------------------------------------------

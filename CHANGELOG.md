@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-08-16
+
 ### Added
 - File Datasource save now emits canonical YAML with editable zero-byte local
   placeholders when CodeMie exposes filenames but not source bytes.
@@ -22,9 +24,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   executable contracts under `contracts/`; centralized durable architecture
   rationale in `docs/adr/`; and updated `AGENTS.md` to a temporary-artifact
   lifecycle with a Git-ignored `.work/` workspace.
+- Shared exhaustive pagination scanner (`scan_pages`) now enforces the
+  traversal invariants once for every kind adapter; the Workflow adapter was
+  split into `workflow/mod.rs` (apply/adoption/verification/snapshots) and
+  `workflow/enumeration.rs` (page scan and marker codec).
+- Update resolution targets now carry the write-ability proof in the type, so
+  an update without proven `write` evidence is unrepresentable.
 
 ### Fixed
-- (upcoming fixes)
+- Response bodies are now bounded during streaming reads (8 MiB cap enforced
+  per chunk) on both the API and authentication clients; the auth token
+  response is strictly decoded (duplicate JSON keys rejected, depth bounded).
+- Datasource identity matching and post-write verification now include
+  `index_type` (kind is part of identity), and Datasource JSON-kind optional
+  fields materialize omission/null as explicit JSON null per the manifest.
+- Path segments are percent-encoded with `%20` (not `+`) for slugs, projects,
+  and server ids; the workflow `meta_config` merge decodes strictly.
+- Workflow offline validation now rejects duplicate state ids and transition
+  targets (`next.state_id`/`state_ids`, condition, switch) that name unknown
+  states.
+- `save` no longer rejects valid Skills whose MCP server sets a numeric token
+  size limit; the Skill stability fingerprint ignores audit/counter fields;
+  File Datasource save preserves `guardrail_assignments`; placeholder names
+  use sequential `replace-content-N.txt` numbering.
+- CLI parse failures emit the closed usage diagnostic instead of clap's raw
+  text; `login` no longer panics on a closed stdout; output-write failures
+  emit a closed diagnostic.
+- Reconciliation errors now map to their specific closed codes
+  (`E_ADOPTION_REQUIRED`, `E_IDENTITY_MARKER_INVALID`, `E_RESOLUTION_UNSTABLE`,
+  `E_MISSING_REFERENCE`), timeouts map to `E_TIMEOUT`, and post-write
+  verification failures are always framed as write-uncertainty.
+- Domain identity newtypes enforce the schema's length/character constraints;
+  `--id`/`--adopt-workflow-id` require a canonical hyphenated UUID; secrets
+  that are not valid UTF-8 are explicit configuration errors; `localhost`
+  HTTP is permitted only after runtime loopback resolution confirms it.
 
 ---
 

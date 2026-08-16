@@ -1,9 +1,9 @@
 /// Assistant entity adapter — A-001.
 ///
 /// Exact `(project, slug)` resolution via `GET /v1/assistants/slug/{slug}?project={project}`.
-/// Absent identity → POST/created; present identity → unconditional PUT/updated.
-/// Assistant intentionally has no `/v1/user` admin preflight. Its direct lookup
-/// and existing-row write ability are sealed with the projected request.
+/// The `/v1/user` membership preflight proves create authorization (ADR-0003);
+/// absent identity → POST/created; present identity → unconditional PUT/updated.
+/// Existing-row write ability is sealed with the projected request.
 ///
 /// ## Source traceability
 ///
@@ -13,9 +13,8 @@
 /// - Manifest: §entities.Assistant routes.resolve / create / update
 use serde::Deserialize;
 
-use crate::config::ValidatedUrl;
 use crate::error::AppError;
-use crate::http::{ApiClient, encode_query_value, preflight_visibility};
+use crate::http::{ApiClient, encode_path_segment, encode_query_value, preflight_visibility};
 use crate::parse::ParsedDeclaration;
 use crate::projection::{AssistantReferenceMap, ExistingEntity, project_with_assistant_references};
 
@@ -48,7 +47,7 @@ pub(super) struct CompletedResolution {
     effective_project: String,
     _slug: String,
     target: ResolutionTarget,
-    _write_ability: Option<WriteAbilityEvidence>,
+    write_ability: Option<WriteAbilityEvidence>,
 }
 
 impl CompletedResolution {
@@ -58,6 +57,10 @@ impl CompletedResolution {
 
     pub(super) fn target(&self) -> &ResolutionTarget {
         &self.target
+    }
+
+    pub(super) fn write_ability_is_proven(&self) -> bool {
+        self.write_ability.is_some()
     }
 }
 
@@ -74,7 +77,6 @@ impl CompletedResolution {
 ///
 pub async fn apply(
     client: &ApiClient,
-    _base_url: &ValidatedUrl,
     decl: &ParsedDeclaration,
     project_name: &str,
     slug: &str,
@@ -83,25 +85,29 @@ pub async fn apply(
     // Step 1: Resolve identity.
     let resolve_path = format!(
         "/v1/assistants/slug/{}?project={}",
-        encode_query_value(slug),
+        encode_path_segment(slug),
         encode_query_value(project_name)
     );
     let existing: Option<AssistantLookupResponse> = client.get_optional(&resolve_path).await?;
 
     let resolution = match &existing {
-        Some(existing) => CompletedResolution {
-            effective_project: project_name.to_owned(),
-            _slug: slug.to_owned(),
-            target: ResolutionTarget::Update {
-                server_id: existing.id.clone(),
-            },
-            _write_ability: Some(prove_write(&existing.user_abilities, "Assistant")?),
-        },
+        Some(existing) => {
+            let write_ability = prove_write(&existing.user_abilities, "Assistant")?;
+            CompletedResolution {
+                effective_project: project_name.to_owned(),
+                _slug: slug.to_owned(),
+                target: ResolutionTarget::Update {
+                    server_id: existing.id.clone(),
+                    write_ability,
+                },
+                write_ability: Some(write_ability),
+            }
+        }
         None => CompletedResolution {
             effective_project: project_name.to_owned(),
             _slug: slug.to_owned(),
             target: ResolutionTarget::Create,
-            _write_ability: None,
+            write_ability: None,
         },
     };
 
@@ -111,7 +117,7 @@ pub async fn apply(
     });
 
     // Step 2: Project.
-    let references = resolve_authored_references(client, _base_url, decl).await?;
+    let references = resolve_authored_references(client, decl).await?;
     let plan = project_with_assistant_references(decl, existing_entity.as_ref(), &references)?;
 
     // Step 3: seal the completed direct-lookup evidence with projection. The
@@ -122,7 +128,6 @@ pub async fn apply(
 
 async fn resolve_authored_references(
     client: &ApiClient,
-    base_url: &ValidatedUrl,
     declaration: &ParsedDeclaration,
 ) -> Result<AssistantReferenceMap, AppError> {
     let value = declaration.reference_value()?;
@@ -136,13 +141,13 @@ async fn resolve_authored_references(
         let (project, slug) = natural_pair(reference, "slug")?;
         references
             .assistant_ids
-            .push(resolve_reference(client, base_url, project, slug).await?);
+            .push(resolve_reference(client, project, slug).await?);
     }
     for reference in required_array(spec, "skills")? {
         let (project, name) = natural_pair(reference, "name")?;
         references
             .skill_ids
-            .push(super::skill::resolve_reference(client, base_url, project, name).await?);
+            .push(super::skill::resolve_reference(client, project, name).await?);
     }
     for context in required_array(spec, "context")? {
         let context = context.as_object().ok_or_else(|| {
@@ -156,7 +161,7 @@ async fn resolve_authored_references(
             AppError::Internal("validated Assistant context omitted reference".into())
         })?;
         let (project, repo_name) = natural_pair(reference, "repo_name")?;
-        super::datasource::resolve_reference(client, base_url, project, repo_name).await?;
+        super::datasource::resolve_reference(client, project, repo_name).await?;
         references.context.push(serde_json::json!({
             "context_type": context_type,
             "name": repo_name,
@@ -201,7 +206,9 @@ fn natural_pair<'a>(
 async fn dispatch(prepared: PreparedWrite<'_>) -> Result<ApplyResult, AppError> {
     let (action, resolved_update_id) = match prepared.target() {
         ResolutionTarget::Create => (ApplyAction::Created, None),
-        ResolutionTarget::Update { server_id } => (ApplyAction::Updated, Some(server_id.clone())),
+        ResolutionTarget::Update { server_id, .. } => {
+            (ApplyAction::Updated, Some(server_id.clone()))
+        }
     };
     let response = ApiClient::dispatch_prepared(prepared).await?;
     let response: AssistantWriteResponse = decode_write_response(response)?.ok_or_else(|| {
@@ -222,13 +229,12 @@ async fn dispatch(prepared: PreparedWrite<'_>) -> Result<ApplyResult, AppError> 
 /// Resolve an Assistant natural reference without writing it (DR-003/W-002).
 pub async fn resolve_reference(
     client: &ApiClient,
-    _base_url: &ValidatedUrl,
     project_name: &str,
     slug: &str,
 ) -> Result<String, AppError> {
     let path = format!(
         "/v1/assistants/slug/{}?project={}",
-        encode_query_value(slug),
+        encode_path_segment(slug),
         encode_query_value(project_name)
     );
     client
@@ -236,7 +242,9 @@ pub async fn resolve_reference(
         .await?
         .map(|item| item.id)
         .ok_or_else(|| {
-            AppError::Reconciliation("referenced Assistant is missing on the target server".into())
+            AppError::MissingReference(
+                "referenced Assistant is missing on the target server".into(),
+            )
         })
 }
 
@@ -244,12 +252,11 @@ pub async fn resolve_reference(
 /// modifying request. This is a read-only post-write check (R-001).
 pub async fn verify_identity(
     client: &ApiClient,
-    base_url: &ValidatedUrl,
     project_name: &str,
     slug: &str,
     expected_server_id: &str,
 ) -> Result<(), AppError> {
-    let actual = resolve_reference(client, base_url, project_name, slug).await?;
+    let actual = resolve_reference(client, project_name, slug).await?;
     if actual == expected_server_id {
         Ok(())
     } else {

@@ -695,7 +695,7 @@ impl<W: Write, E: Write> Renderer<W, E> {
                     map.insert("adoptionRequired".to_owned(), serde_json::Value::Bool(true));
                 }
                 let json = serde_json::to_string(&serde_json::Value::Object(map))
-                    .expect("serde_json serialization of known-safe map must not fail");
+                    .map_err(io::Error::other)?;
                 writeln!(self.stdout, "{json}")
             }
         }
@@ -723,8 +723,7 @@ impl<W: Write, E: Write> Renderer<W, E> {
                         .as_ref()
                         .map(|id| id.0.as_str()),
                 };
-                let json = serde_json::to_string(&json_struct)
-                    .expect("serde_json serialization of known-safe diagnostic must not fail");
+                let json = serde_json::to_string(&json_struct).map_err(io::Error::other)?;
                 writeln!(self.stderr, "{json}")
             }
         }
@@ -750,8 +749,7 @@ impl<W: Write, E: Write> Renderer<W, E> {
                         field_path: &warning.source.field_path.0,
                     },
                 };
-                let json = serde_json::to_string(&json_struct)
-                    .expect("serde_json serialization of known-safe warning must not fail");
+                let json = serde_json::to_string(&json_struct).map_err(io::Error::other)?;
                 writeln!(self.stderr, "{json}")
             }
         }
@@ -842,22 +840,28 @@ pub fn diagnostic_from_app_error(error: &crate::error::AppError) -> DiagnosticIn
             ErrorCode::EWriteVerificationIncompatible,
             DiagnosticCategory::Compatibility,
         ),
-        // R-001 classifies whole-invocation deadline expiry at the external
-        // boundary as E_CONNECTIVITY, while preserving a typed timeout inside
-        // the application and worker layers.
-        AppError::Timeout(_) => (ErrorCode::EConnectivity, DiagnosticCategory::Connectivity),
+        AppError::Timeout(_) => (ErrorCode::ETimeout, DiagnosticCategory::Connectivity),
         AppError::Internal(_) => (ErrorCode::EInternal, DiagnosticCategory::Internal),
-        AppError::Reconciliation(_) => {
-            // Reconciliation errors map to exit 1. The specific reconciliation
-            // sub-code (E_AMBIGUOUS_IDENTITY, E_ADOPTION_REQUIRED, etc.) is
-            // determined by the adapter tasks (W-001, S-001, D-001) which will
-            // produce richer error types. For now, AppError::Reconciliation
-            // maps to E_AMBIGUOUS_IDENTITY as the generic reconciliation code.
-            (
-                ErrorCode::EAmbiguousIdentity,
-                DiagnosticCategory::Reconciliation,
-            )
-        }
+        AppError::Reconciliation(_) => (
+            ErrorCode::EAmbiguousIdentity,
+            DiagnosticCategory::Reconciliation,
+        ),
+        AppError::AdoptionRequired(_) => (
+            ErrorCode::EAdoptionRequired,
+            DiagnosticCategory::Reconciliation,
+        ),
+        AppError::IdentityMarkerInvalid(_) => (
+            ErrorCode::EIdentityMarkerInvalid,
+            DiagnosticCategory::Reconciliation,
+        ),
+        AppError::ResolutionUnstable(_) => (
+            ErrorCode::EResolutionUnstable,
+            DiagnosticCategory::Reconciliation,
+        ),
+        AppError::MissingReference(_) => (
+            ErrorCode::EMissingReference,
+            DiagnosticCategory::Reconciliation,
+        ),
         AppError::EntityNotFound => (
             ErrorCode::EEntityNotFound,
             DiagnosticCategory::Reconciliation,
@@ -907,12 +911,15 @@ pub fn diagnostic_from_app_error(error: &crate::error::AppError) -> DiagnosticIn
 /// to stderr (SEC-005: no raw server text, credentials, or user input enters
 /// the machine-readable output contract on stdout).
 ///
-/// The full internal error chain is additionally emitted at `DEBUG` level via
-/// the `tracing` subscriber. This does not weaken SEC-005: tracing output is
-/// opt-in (`RUST_LOG=debug`), goes only to stderr, and is never part of the
+/// The safe `Display` message of the error is additionally emitted at
+/// `DEBUG` level via the `tracing` subscriber (not the full internal
+/// chain). This does not weaken SEC-005: tracing output is opt-in
+/// (`RUST_LOG=debug`), goes only to stderr, and is never part of the
 /// machine-readable contract. It is safe to enable in development and CI
 /// pipelines that do not parse stderr.
 pub fn write_app_error_to_stderr(error: &crate::error::AppError, mode: OutputMode) {
+    // Opt-in DEBUG trace of the safe Display message; never part of the
+    // closed diagnostic (SEC-005).
     tracing::debug!(error = %error, "diagnostic detail");
     let diag = diagnostic_from_app_error(error);
     let mut renderer = Renderer::new(io::stdout(), io::stderr(), mode);

@@ -6,6 +6,10 @@
 /// codemie-gitops lint  --file <path> [--output text|json]
 /// codemie-gitops apply --file <path> [--url <url>]
 ///                      [--adopt-workflow-id <uuid>] [--output text|json]
+/// codemie-gitops save  --kind <kind> --project <project> --file <path>
+///                      [--slug <slug> | --name <name> | --repo-name <name>]
+///                      [--id <workflow-uuid>] [--url <url>]
+///                      [--output text|json]
 /// codemie-gitops login [--url <url>] [--auth-url <url>]
 ///                      [--client-id <id>] [--email <email>]
 /// ```
@@ -17,6 +21,7 @@
 ///   `CODEMIE_PASSWORD`) are resolved from environment only at runtime.
 /// - Non-secret selectors (`--client-id`, `--email`) may be supplied as flags.
 use std::ffi::OsString;
+use std::io::Write;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
@@ -90,6 +95,8 @@ pub enum Command {
         name: Option<String>,
         #[arg(long)]
         repo_name: Option<String>,
+        /// Select an unmarked Workflow by its canonical hyphenated UUID.
+        /// Valid only with `--kind Workflow`, together with `--slug`.
         #[arg(long = "id")]
         workflow_id: Option<String>,
         #[arg(long, short = 'f')]
@@ -129,6 +136,18 @@ pub enum Command {
     },
 }
 
+/// Read `CODEMIE_TOKEN`, rejecting a non-UTF-8 value explicitly rather
+/// than silently treating it as unset (SEC-001).
+fn read_token_env() -> Result<String, crate::error::AppError> {
+    match std::env::var("CODEMIE_TOKEN") {
+        Ok(value) => Ok(value),
+        Err(std::env::VarError::NotUnicode(_)) => Err(crate::error::AppError::Configuration(
+            "CODEMIE_TOKEN must be valid UTF-8".into(),
+        )),
+        Err(std::env::VarError::NotPresent) => Ok(String::new()),
+    }
+}
+
 /// Entry point for the command dispatcher.
 ///
 /// Returns the process exit code. Config resolution and auth-mode selection
@@ -137,7 +156,26 @@ pub enum Command {
 ///
 /// Stdout is empty on every failure path in this function.
 pub async fn run_from(args: impl IntoIterator<Item = OsString>) -> i32 {
-    let cli = Cli::parse_from(args);
+    let cli = match Cli::try_parse_from(args) {
+        Ok(cli) => cli,
+        Err(error) => {
+            // Help/version output is printed to stdout and exits 0; every
+            // other clap failure (unknown flag, bad value, missing argument)
+            // is reported as the single closed usage diagnostic instead of
+            // clap's raw text, which could echo the offending argument
+            // (SEC-005, contracts/cli.md §7).
+            if error.use_stderr() {
+                crate::output::write_failure(
+                    &crate::error::AppError::Usage("invalid command line".into()),
+                    OutputMode::Text,
+                );
+                return 2;
+            } else {
+                let _ = error.print();
+                return 0;
+            }
+        }
+    };
     match cli.command {
         Command::Lint { file, output } => {
             let command = match LintCommand::try_from(RawLintCommand { file }) {
@@ -152,6 +190,12 @@ pub async fn run_from(args: impl IntoIterator<Item = OsString>) -> i32 {
                     if result.write(output).is_ok() {
                         0
                     } else {
+                        crate::output::write_failure(
+                            &crate::error::AppError::Internal(
+                                "failed to write command output".into(),
+                            ),
+                            output,
+                        );
                         2
                     }
                 }
@@ -189,7 +233,13 @@ pub async fn run_from(args: impl IntoIterator<Item = OsString>) -> i32 {
                     return e.exit_code();
                 }
             };
-            let token = std::env::var("CODEMIE_TOKEN").unwrap_or_default();
+            let token = match read_token_env() {
+                Ok(token) => token,
+                Err(error) => {
+                    crate::output::write_failure(&error, output);
+                    return error.exit_code();
+                }
+            };
             let command = match ApplyCommand::try_from(RawApplyCommand {
                 file,
                 base_url,
@@ -207,6 +257,12 @@ pub async fn run_from(args: impl IntoIterator<Item = OsString>) -> i32 {
                     if outcome.write(output).is_ok() {
                         0
                     } else {
+                        crate::output::write_failure(
+                            &crate::error::AppError::Internal(
+                                "failed to write command output".into(),
+                            ),
+                            output,
+                        );
                         2
                     }
                 }
@@ -277,6 +333,12 @@ pub async fn run_from(args: impl IntoIterator<Item = OsString>) -> i32 {
                     if outcome.write(output).is_ok() {
                         0
                     } else {
+                        crate::output::write_failure(
+                            &crate::error::AppError::Internal(
+                                "failed to write command output".into(),
+                            ),
+                            output,
+                        );
                         2
                     }
                 }
@@ -300,18 +362,24 @@ pub async fn run_from(args: impl IntoIterator<Item = OsString>) -> i32 {
             let config = match resolve_config(&args) {
                 Ok(c) => c,
                 Err(e) => {
-                    crate::render::write_app_error_to_stderr(&e, OutputMode::default());
+                    crate::output::write_failure(&e, OutputMode::default());
                     return e.exit_code();
                 }
             };
-            let credentials = Credentials::from_env(client_id, email);
+            let credentials = match Credentials::from_env(client_id, email) {
+                Ok(credentials) => credentials,
+                Err(e) => {
+                    crate::output::write_failure(&e, OutputMode::default());
+                    return e.exit_code();
+                }
+            };
             let strategy = match AuthStrategy::try_from(RawAuthSelection {
                 credentials,
                 auth_url_configured: config.auth_url.is_some(),
             }) {
                 Ok(strategy) => strategy,
                 Err(e) => {
-                    crate::render::write_app_error_to_stderr(&e, OutputMode::default());
+                    crate::output::write_failure(&e, OutputMode::default());
                     return e.exit_code();
                 }
             };
@@ -325,11 +393,21 @@ pub async fn run_from(args: impl IntoIterator<Item = OsString>) -> i32 {
                 Ok(token) => {
                     // Print the bearer token to stdout, newline-terminated.
                     // No other output on the success path (contracts/cli.md §7).
-                    println!("{token}");
+                    // A broken stdout (e.g. piped to a closed consumer) is an
+                    // error, not a panic: write failures are reported as a
+                    // closed internal diagnostic with exit 2.
+                    let mut stdout = std::io::stdout().lock();
+                    if writeln!(stdout, "{token}").is_err() {
+                        crate::output::write_failure(
+                            &crate::error::AppError::Internal("failed to write login token".into()),
+                            OutputMode::default(),
+                        );
+                        return 2;
+                    }
                     0
                 }
                 Err(e) => {
-                    crate::render::write_app_error_to_stderr(&e, OutputMode::default());
+                    crate::output::write_failure(&e, OutputMode::default());
                     e.exit_code()
                 }
             }

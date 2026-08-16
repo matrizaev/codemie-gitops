@@ -191,18 +191,29 @@ impl Credentials {
     /// `CODEMIE_PASSWORD`) are read from environment only. Non-secret selectors
     /// (`client_id`, `email`) are passed in because they may be overridden by
     /// CLI flags (flag > env precedence is handled by clap).
-    pub fn from_env(client_id: Option<String>, email: Option<String>) -> Self {
-        Credentials {
-            bearer_token: std::env::var("CODEMIE_TOKEN").ok().map(SecretValue::from),
-            client_secret: std::env::var("CODEMIE_CLIENT_SECRET")
-                .ok()
-                .map(SecretValue::from),
-            password: std::env::var("CODEMIE_PASSWORD")
-                .ok()
-                .map(SecretValue::from),
+    /// Load credentials from the current process environment.
+    ///
+    /// Secret credentials (`CODEMIE_TOKEN`, `CODEMIE_CLIENT_SECRET`,
+    /// `CODEMIE_PASSWORD`) are read from environment only. A secret that is
+    /// not valid UTF-8 is an explicit configuration error, never a silent
+    /// fallback (SEC-001).
+    pub fn from_env(client_id: Option<String>, email: Option<String>) -> Result<Self, AppError> {
+        fn secret(name: &str) -> Result<Option<SecretValue>, AppError> {
+            match std::env::var(name) {
+                Ok(value) => Ok(Some(SecretValue::from(value))),
+                Err(std::env::VarError::NotUnicode(_)) => Err(AppError::Configuration(format!(
+                    "{name} must be valid UTF-8"
+                ))),
+                Err(std::env::VarError::NotPresent) => Ok(None),
+            }
+        }
+        Ok(Credentials {
+            bearer_token: secret("CODEMIE_TOKEN")?,
+            client_secret: secret("CODEMIE_CLIENT_SECRET")?,
+            password: secret("CODEMIE_PASSWORD")?,
             client_id,
             email,
-        }
+        })
     }
 }
 
@@ -314,6 +325,29 @@ fn map_reqwest_error(source: reqwest::Error) -> AppError {
     AuthError::Dispatch(source).into()
 }
 
+/// Read an authentication response body with the shared 8 MiB cap, streaming
+/// so the bound is enforced during the read (SEC-003).
+async fn read_bounded_body(resp: reqwest::Response) -> Result<Vec<u8>, AppError> {
+    let mut resp = resp;
+    if let Some(len) = resp.content_length()
+        && len as usize > crate::http::RESPONSE_BODY_LIMIT
+    {
+        return Err(AppError::ApiIncompatible(
+            "authentication response body exceeds 8 MiB limit".into(),
+        ));
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(AuthError::ResponseBody)? {
+        if body.len().saturating_add(chunk.len()) > crate::http::RESPONSE_BODY_LIMIT {
+            return Err(AppError::ApiIncompatible(
+                "authentication response body exceeds 8 MiB limit".into(),
+            ));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
 /// Extract the bearer token from an authentication HTTP response.
 ///
 /// - 3xx → `AppError::Authentication`: redirect disabled; credentials must
@@ -321,9 +355,9 @@ fn map_reqwest_error(source: reqwest::Error) -> AppError {
 /// - 4xx / 5xx → `AppError::Authentication`.
 /// - 2xx → parse `{"access_token": "..."}` and return the token string.
 ///
-/// The response body is consumed and discarded except for `access_token`.
-/// Server-supplied error bodies, status text, and headers are never forwarded
-/// into the error chain or logs (SEC-005).
+/// The response body is bounded and strictly decoded (duplicate JSON keys are
+/// rejected, nesting depth is bounded); server-supplied error bodies, status
+/// text, and headers are never forwarded into the error chain or logs (SEC-005).
 async fn extract_token_from_response(resp: reqwest::Response) -> Result<String, AppError> {
     let status = resp.status();
 
@@ -341,11 +375,16 @@ async fn extract_token_from_response(resp: reqwest::Response) -> Result<String, 
         ));
     }
 
-    // 2xx: read the body and extract access_token.
-    let bytes = resp.bytes().await.map_err(AuthError::ResponseBody)?;
-
+    // 2xx: read the bounded body and strictly decode access_token.
+    let bytes = read_bounded_body(resp).await?;
+    let value = crate::strict_json::from_slice(&bytes).map_err(AuthError::TokenResponse)?;
+    if crate::http::json_max_depth(&value, 0) > crate::http::JSON_MAX_DEPTH {
+        return Err(AppError::ApiIncompatible(
+            "authentication response JSON nesting exceeds 64 levels".into(),
+        ));
+    }
     let token_resp: TokenResponse =
-        serde_json::from_slice(&bytes).map_err(AuthError::TokenResponse)?;
+        serde_json::from_value(value).map_err(AuthError::TokenResponse)?;
 
     Ok(token_resp.access_token)
 }
@@ -386,6 +425,11 @@ async fn extract_token_from_response(resp: reqwest::Response) -> Result<String, 
 /// - 4xx / 5xx → `AppError::Authentication`.
 /// - Network / TLS failures → `AppError::Connectivity`.
 /// - No credential value appears in tracing events, error messages, or logs.
+///
+/// Callers must pass endpoints already validated by
+/// `crate::config::ValidatedUrl` / `crate::config::ValidatedAuthUrl`
+/// (the CLI boundary does so): `auth_url` https-only and `url` https-or-
+/// loopback-http are guaranteed at that boundary.
 pub async fn login(
     mode: AuthMode,
     credentials: &Credentials,
@@ -591,7 +635,7 @@ mod tests {
 
     #[test]
     fn credentials_from_env_does_not_panic() {
-        let creds = Credentials::from_env(None, None);
+        let creds = Credentials::from_env(None, None).expect("env credentials must load");
         let _ = creds.bearer_token;
         let _ = creds.client_secret;
         let _ = creds.password;
