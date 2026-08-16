@@ -6,7 +6,8 @@ automatic rollback command.
 
 Documentation: [documentation map](docs/README.md),
 [current implementation reference](docs/implementation-reference.md),
-[architecture](ARCHITECTURE.md), and [portable examples](examples/README.md).
+[architecture](ARCHITECTURE.md), [architecture decisions](docs/adr/README.md),
+[closed contracts](contracts/README.md), and [portable examples](examples/README.md).
 The declaration JSON Schema is the closed machine authority for YAML; the
 human YAML reference is linked from the documentation map.
 

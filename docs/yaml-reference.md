@@ -1,6 +1,6 @@
 # YAML declaration reference
 
-This page documents the complete `codemie.epam.com/v1alpha1` authoring format. The [JSON Schema](../specs/codemie-cicd-tool/contracts/declaration-v1alpha1.schema.json) is the machine-readable source of truth.
+This page documents the complete `codemie.epam.com/v1alpha1` authoring format. The [JSON Schema](../contracts/declaration-v1alpha1.schema.json) is the machine-readable source of truth.
 
 Each file contains exactly one declaration. Objects are closed unless this page explicitly calls them unrestricted: otherwise, keys not listed here are invalid. A field marked **required** must be present. “Optional, nullable” means it may be omitted or written as `null`; other optional fields must have the stated type when present. Empty arrays are valid unless a minimum is stated. YAML duplicate keys, multiple documents, custom tags, and server IDs are rejected.
 

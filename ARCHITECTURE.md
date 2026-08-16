@@ -121,6 +121,8 @@ Text/JSON Outcome (stdout)
 
 ## Key Design Decisions
 
+Deeper rationale for each cluster below lives in [docs/adr](docs/adr/README.md).
+
 ### 1. **Stateless Operations**
 Each invocation is independent. Authentication via `--url` and bearer token in `Authorization` header. No session state or local cache.
 
@@ -217,5 +219,8 @@ Per the product specification, the following are deliberate non-goals:
 
 For exact implementation algorithms, resource limits, reconstruction order,
 and test ownership, see [the current implementation reference](docs/implementation-reference.md).
-See [the documentation map](docs/README.md) for authority and historical-artifact rules,
-[README.md](README.md) for commands, and [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines.
+See [the documentation map](docs/README.md) for the authority order (executable
+contracts > code/tests > implementation reference > architecture > user docs >
+ADRs), [docs/adr](docs/adr/README.md) for the rationale behind key decisions,
+[README.md](README.md) for commands, and [CONTRIBUTING.md](CONTRIBUTING.md) for
+development guidelines.

@@ -1,6 +1,6 @@
 [package]
 name = "codemie-gitops"
-version = "0.1.9"
+version = "0.1.10"
 edition = "2024"
 rust-version = "1.95"
 description = "CodeMie declarative CI/CD CLI"

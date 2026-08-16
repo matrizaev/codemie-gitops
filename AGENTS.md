@@ -2,21 +2,84 @@
 
 ## Development Methodology
 
-This repository follows Specification-Driven Development.
+This repository follows Specification-Driven Development with a **temporary
+artifact lifecycle**. Product behavior is defined by an approved specification
+before implementation, and implementation must conform to the approved
+specification, architecture, contracts, and task breakdown.
 
-Product behavior is defined by approved specifications before implementation.
-
-Architecture is derived from approved specifications.
-
-Implementation must conform to the approved specification, architecture,
-contracts, and task breakdown.
+Working artifacts — feature specs, plans, task lists, verification reports,
+security-review notes, traceability files, and implementation evidence — are
+**temporary**. They are produced while a feature is being designed and built,
+and they are deleted (or their unique durable content is distilled) before the
+feature is considered complete. Git history is the archive for completed
+implementation-process artifacts. Do **not** accumulate completed feature
+process files on `main`, and do **not** move them into an `archive/`
+directory.
 
 Do not silently resolve conflicts downstream. Update the authoritative artifact
 or escalate the conflict to the appropriate role.
 
-## Agent Workflow
+## Feature Artifact Lifecycle
 
-For non-trivial development, follow this lifecycle:
+A feature follows this lifecycle:
+
+```text
+feature intent
+    ↓
+temporary spec
+    ↓
+temporary plan
+    ↓
+temporary tasks
+    ↓
+implementation
+    ↓
+tests / contracts / types
+    ↓
+distill durable knowledge
+    ↓
+delete temporary artifacts
+```
+
+Plans, task lists, verification reports, implementation evidence, and
+temporary feature specs are **working artifacts, not permanent project
+documentation**. A feature is not complete until its temporary SDD artifacts
+have either:
+
+1. been deleted, or
+2. had their unique durable content distilled into the appropriate current
+   source of truth:
+   - behavior → code and tests
+   - closed machine interfaces → `contracts/` schemas/manifests
+   - architectural rationale → `docs/adr/`
+   - implementation reference → `docs/implementation-reference.md`
+   - user-facing semantics → `README.md` / `docs/yaml-reference.md`
+
+Durable current knowledge lives in: `ARCHITECTURE.md`,
+`docs/implementation-reference.md`, `docs/yaml-reference.md`,
+`docs/adr/`, `contracts/`, code, tests, and the top-level user docs. See
+[docs/README.md](docs/README.md) for the authority order.
+
+## Temporary Feature Workspace
+
+Prefer keeping active feature artifacts in a Git-ignored working area:
+
+```text
+.work/<feature-name>/
+├── spec.md
+├── plan.md
+├── tasks.md
+└── optional temporary review notes
+```
+
+`.work/` is ignored by Git (see `.gitignore`). If committed feature
+specifications are occasionally necessary, they must be removed or distilled
+before the merge; do not merge a feature that still carries its process
+artifacts in the active tree.
+
+## Roles
+
+For non-trivial development, route work through these roles:
 
 1. `product-spec-owner`
    - Owns product requirements, scope, scenarios, and acceptance criteria.
@@ -45,6 +108,10 @@ For non-trivial development, follow this lifecycle:
    - Does not release, publish, tag, merge, or deploy without explicit user
      authorization.
 
+Reviews are lifecycle stages, not permanent files: a security review or
+verification report is evidence produced during the stage and does not remain
+in the active tree once the feature converges.
+
 ## Conflict Ownership
 
 Route conflicts according to ownership:
@@ -57,25 +124,6 @@ Route conflicts according to ownership:
 - Deployment and release concerns → `release-engineer`
 
 Do not silently resolve an upstream conflict during a downstream lifecycle stage.
-
-## Artifact Layout
-
-Feature artifacts should live together under:
-
-`specs/<feature-name>/`
-
-Typical structure:
-
-```text
-specs/<feature-name>/
-├── spec.md
-├── plan.md
-├── research.md
-├── data-model.md
-├── tasks.md
-├── contracts/
-└── adr/
-```
 
 ## Repository Scope
 

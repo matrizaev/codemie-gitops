@@ -1,7 +1,7 @@
 use serde_json::Value;
 
 fn contract() -> Value {
-    serde_json::from_str(include_str!("../specs/codemie-openapi.json"))
+    serde_json::from_str(include_str!("../contracts/openapi.json"))
         .expect("approved OpenAPI baseline must remain valid JSON")
 }
 
@@ -71,10 +71,9 @@ fn used_operations_declare_success_responses_and_mutation_bodies() {
 
 #[test]
 fn contract_metadata_matches_checked_in_openapi() {
-    let metadata: Value = serde_json::from_str(include_str!(
-        "../specs/rust-architecture-remediation/contract-metadata.json"
-    ))
-    .expect("contract metadata must be valid JSON");
+    let metadata: Value =
+        serde_json::from_str(include_str!("../contracts/openapi-contract-metadata.json"))
+            .expect("contract metadata must be valid JSON");
     let contract = contract();
 
     assert_eq!(metadata["openapi"], contract["openapi"]);

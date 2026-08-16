@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   portable natural references while preserving graph-local state IDs.
 - Save documentation and architecture now define File Datasource YAML-last
   multi-artifact publication and orphan-placeholder recovery.
+- Documentation restructure: removed historical SDD process artifacts (feature
+  specs, plans, task lists, verification/security-review reports, and the
+  completed Rust architecture remediation) from the active tree; consolidated
+  executable contracts under `contracts/`; centralized durable architecture
+  rationale in `docs/adr/`; and updated `AGENTS.md` to a temporary-artifact
+  lifecycle with a Git-ignored `.work/` workspace.
 
 ### Fixed
 - (upcoming fixes)

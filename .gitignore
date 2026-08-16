@@ -2,3 +2,7 @@
 /target/
 .env
 /.codex/
+
+# Temporary feature workspace — working artifacts are not committed
+# (see AGENTS.md "Temporary Feature Workspace")
+/.work/
