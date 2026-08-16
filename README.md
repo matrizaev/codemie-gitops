@@ -207,6 +207,20 @@ translates `metadata.repo_name` to API `name`. There is no separate display
 name. `index_type` and `vcs_type` describe the Datasource branch; they are not
 part of identity and cannot disambiguate duplicate `project + repo_name` rows.
 
+## Debugging
+
+On failure the CLI writes one closed diagnostic line to stderr (`error: E_SCHEMA`,
+or a JSON object with `errorCode`/`category`/`exitCode`). To see the full
+internal error chain, set `RUST_LOG=debug`:
+
+```sh
+RUST_LOG=debug codemie-gitops apply --file declaration.yaml
+```
+
+The debug output goes only to stderr and is never part of the machine-readable
+stdout contract, so enabling it does not affect CI parsers that read stdout or
+the exit code.
+
 ## Local development
 
 Run the Rust checks with:

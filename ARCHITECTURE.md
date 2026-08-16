@@ -8,7 +8,7 @@
 - **Single-entity**: Process one declaration per command invocation.
 - **Specification-driven**: Validate against JSON Schema before semantic operations.
 - **Type-safe**: Use Rust's type system to enforce domain invariants.
-- **Observable**: Structured logging with `tracing` for production debugging.
+- **Observable**: Structured logging with `tracing`. Set `RUST_LOG=debug` to emit the full internal error chain to stderr alongside the closed diagnostic. This does not weaken the output contract (SEC-005): tracing output is opt-in, goes only to stderr, and is never part of the machine-readable stdout contract.
 
 ## Core Commands
 
@@ -164,6 +164,8 @@ Errors are structured using `thiserror`:
 - Validation errors → semantic invariant violation
 - HTTP errors → server response with typed classification
 - Auth errors → credential/token issues
+
+The closed diagnostic written to stderr contains only the `errorCode`, `category`, and `exitCode` from a fixed enum — no raw server text, credentials, or user input (SEC-005). The full internal error chain is additionally emitted at `DEBUG` level via `tracing` before the closed diagnostic line. Enable it with `RUST_LOG=debug`; it goes only to stderr and is never part of the machine-readable stdout contract, so it does not weaken SEC-005.
 
 ## Boundary Types vs. Domain Types
 
