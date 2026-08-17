@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Workflow offline validation now accepts the reserved terminal-state marker
+  `end` as a transition target (`next.state_id`, `next.state_ids`, Condition
+  `then`/`otherwise`, and Switch `cases[].state_id`/`default`), matching the
+  CodeMie server; `save`, `lint`, and `apply` no longer reject valid server
+  Workflows whose last state transitions to `end`.
+
 ## [0.1.11] - 2026-08-16
 
 ### Added

@@ -153,9 +153,22 @@ fn workflow_state_id(state: &WorkflowState) -> &str {
     }
 }
 
+/// The reserved terminal-state marker accepted as a transition target.
+///
+/// The CodeMie server validates workflow transition targets against
+/// `states + ["end"]` (config_yaml_validation.py / validation/schema.py);
+/// `end` is a terminal marker, not a declared state id.
+const RESERVED_TERMINAL_TARGET: &str = "end";
+
+/// Whether a transition target names a declared state id or the reserved
+/// terminal marker `end`.
+fn is_valid_transition_target(target: &str, state_ids: &HashSet<String>) -> bool {
+    target == RESERVED_TERMINAL_TARGET || state_ids.contains(target)
+}
+
 /// Validate every state-transition target (`next.state_id`,
 /// `next.state_ids`, condition branches, and switch cases/default)
-/// names an existing state id.
+/// names an existing state id or the reserved terminal marker `end`.
 fn validate_transition_targets(
     index: usize,
     state: &WorkflowState,
@@ -187,7 +200,7 @@ fn validate_transition_targets(
         if target.is_empty() {
             continue;
         }
-        if !state_ids.contains(target) {
+        if !is_valid_transition_target(target, state_ids) {
             return Err(AppError::Schema(format!(
                 "'{}': workflow state[{index}] next targets unknown state '{target}'",
                 source_path.display(),
@@ -292,7 +305,7 @@ fn validate_workflow_local_fixture(
             }
         }
         for target in targets {
-            if !target.is_empty() && !state_ids.contains(target) {
+            if !target.is_empty() && !is_valid_transition_target(target, &state_ids) {
                 return Err(AppError::Schema(format!(
                     "'{}': workflow state[{index}] next targets unknown state '{target}'",
                     source_path.display()
@@ -1140,6 +1153,244 @@ mod tests {
         assert!(
             msg.contains("ghost"),
             "error must name the unknown switch target: {msg}"
+        );
+    }
+
+    /// The reserved terminal marker `end` is a valid `next.state_id` target
+    /// (the CodeMie server validates transition targets against
+    /// `states + ["end"]`).
+    #[test]
+    fn workflow_next_state_id_end_passes_validate_natural() {
+        let decl = ParsedDeclaration::fixture(
+            EntityKind::Workflow,
+            serde_json::json!({
+                "apiVersion": "codemie.epam.com/v1alpha1",
+                "kind": "Workflow",
+                "metadata": {"project": "p", "slug": "wf"},
+                "spec": {
+                    "execution_config": {
+                        "assistants": [{"id": "a"}],
+                        "tools": [],
+                        "custom_nodes": [],
+                        "states": [
+                            {"id": "s1", "assistant_id": "a",
+                             "next": {"state_id": "s2"}},
+                            {"id": "s2", "assistant_id": "a",
+                             "next": {"state_id": "end"}},
+                        ],
+                    }
+                }
+            }),
+            p("workflows/wf.yaml"),
+        );
+        let result = validate_natural(&decl);
+        assert!(
+            result.is_ok(),
+            "terminal 'end' target must pass validate_natural: {result:?}"
+        );
+    }
+
+    /// A switch whose `default` and a case `state_id` name the reserved
+    /// terminal marker `end` passes validate_natural.
+    #[test]
+    fn workflow_switch_end_default_and_case_pass_validate_natural() {
+        let decl = ParsedDeclaration::fixture(
+            EntityKind::Workflow,
+            serde_json::json!({
+                "apiVersion": "codemie.epam.com/v1alpha1",
+                "kind": "Workflow",
+                "metadata": {"project": "p", "slug": "wf"},
+                "spec": {
+                    "execution_config": {
+                        "assistants": [{"id": "a"}],
+                        "tools": [],
+                        "custom_nodes": [],
+                        "states": [
+                            {"id": "s1", "assistant_id": "a",
+                             "next": {"switch": {"default": "end",
+                                                 "cases": [
+                                                     {"condition": "c1", "state_id": "s1"},
+                                                     {"condition": "c2", "state_id": "end"},
+                                                 ]}}},
+                        ],
+                    }
+                }
+            }),
+            p("workflows/wf.yaml"),
+        );
+        let result = validate_natural(&decl);
+        assert!(
+            result.is_ok(),
+            "switch default/case 'end' targets must pass validate_natural: {result:?}"
+        );
+    }
+
+    /// A condition whose `then` and `otherwise` branches name the reserved
+    /// terminal marker `end` passes validate_natural.
+    #[test]
+    fn workflow_condition_end_branches_pass_validate_natural() {
+        let decl = ParsedDeclaration::fixture(
+            EntityKind::Workflow,
+            serde_json::json!({
+                "apiVersion": "codemie.epam.com/v1alpha1",
+                "kind": "Workflow",
+                "metadata": {"project": "p", "slug": "wf"},
+                "spec": {
+                    "execution_config": {
+                        "assistants": [{"id": "a"}],
+                        "tools": [],
+                        "custom_nodes": [],
+                        "states": [
+                            {"id": "s1", "assistant_id": "a",
+                             "next": {"condition": {"expression": "x > 1",
+                                                    "then": "end",
+                                                    "otherwise": "s1"}}},
+                        ],
+                    }
+                }
+            }),
+            p("workflows/wf.yaml"),
+        );
+        let result = validate_natural(&decl);
+        assert!(
+            result.is_ok(),
+            "condition 'end' branches must pass validate_natural: {result:?}"
+        );
+    }
+
+    /// `next.state_ids` may contain the reserved terminal marker `end`
+    /// alongside declared state ids.
+    #[test]
+    fn workflow_state_ids_containing_end_passes_validate_natural() {
+        let decl = ParsedDeclaration::fixture(
+            EntityKind::Workflow,
+            serde_json::json!({
+                "apiVersion": "codemie.epam.com/v1alpha1",
+                "kind": "Workflow",
+                "metadata": {"project": "p", "slug": "wf"},
+                "spec": {
+                    "execution_config": {
+                        "assistants": [{"id": "a"}],
+                        "tools": [],
+                        "custom_nodes": [],
+                        "states": [
+                            {"id": "s1", "assistant_id": "a",
+                             "next": {"state_ids": ["s1", "end"]}},
+                        ],
+                    }
+                }
+            }),
+            p("workflows/wf.yaml"),
+        );
+        let result = validate_natural(&decl);
+        assert!(
+            result.is_ok(),
+            "state_ids containing 'end' must pass validate_natural: {result:?}"
+        );
+    }
+
+    /// Only the exact literal `end` is reserved: a similar-looking target
+    /// that is not a declared state still fails, so the reservation did not
+    /// widen the accepted target set.
+    #[test]
+    fn workflow_end_like_target_still_fails_validate_natural() {
+        let decl = ParsedDeclaration::fixture(
+            EntityKind::Workflow,
+            serde_json::json!({
+                "apiVersion": "codemie.epam.com/v1alpha1",
+                "kind": "Workflow",
+                "metadata": {"project": "p", "slug": "wf"},
+                "spec": {
+                    "execution_config": {
+                        "assistants": [{"id": "a"}],
+                        "tools": [],
+                        "custom_nodes": [],
+                        "states": [
+                            {"id": "s1", "assistant_id": "a",
+                             "next": {"state_id": "end-of-flow"}},
+                        ],
+                    }
+                }
+            }),
+            p("workflows/wf.yaml"),
+        );
+        let err =
+            validate_natural(&decl).expect_err("target that merely contains 'end' must still fail");
+        assert_eq!(err.exit_code(), 2);
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("end-of-flow"),
+            "error must name the unknown target state: {msg}"
+        );
+    }
+
+    /// Production parse path: a schema-valid Workflow whose final state
+    /// targets the reserved terminal marker `end` passes
+    /// `validate_transition_targets` (the offline path used by lint, apply,
+    /// and save).
+    #[test]
+    fn parsed_workflow_terminal_end_passes_validate_natural() {
+        let raw = r#"apiVersion: codemie.epam.com/v1alpha1
+kind: Workflow
+metadata:
+  project: p
+  slug: wf
+spec:
+  name: WF
+  description: terminal end target
+  mode: Sequential
+  shared: false
+  execution_config:
+    messages_limit_before_summarization: 10
+    tokens_limit_before_summarization: 1000
+    type: default
+    enable_summarization_node: false
+    recursion_limit: 10
+    max_concurrency: 1
+    verbose: false
+    max_iteration_key_output_limit: 100
+    assistants:
+      - id: a
+        name: A
+        model: m
+        system_prompt: prompt
+        limit_tool_output_tokens: 1000
+        tools: []
+        exclude_extra_context_tools: false
+        mcp_servers: []
+        skillRefs: []
+        datasourceRefs: []
+    tools: []
+    custom_nodes: []
+    states:
+      - id: s1
+        assistant_id: a
+        task: do it
+        finish_iteration: false
+        next:
+          state_id: end
+          override_task: false
+          store_in_context: false
+          include_in_llm_history: true
+          clear_prior_messages: false
+          clear_context_store: false
+          include_in_iterator_context: []
+          append_to_context: false
+        interrupt_before: false
+        resolve_dynamic_values_in_prompt: false
+        result_as_human_message: false
+    retry_policy:
+      initial_interval: 1000
+      backoff_factor: 2
+      max_interval: 60000
+      max_attempts: 3
+"#;
+        let decl = crate::parse::parse_and_validate(raw, Path::new("workflows/wf.yaml"))
+            .expect("schema-valid workflow must parse");
+        let result = validate_natural(&decl);
+        assert!(
+            result.is_ok(),
+            "parsed workflow with terminal 'end' must pass validate_natural: {result:?}"
         );
     }
 

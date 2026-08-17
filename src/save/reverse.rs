@@ -1166,6 +1166,50 @@ mod tests {
         assert_eq!(execution["states"][0]["next"]["override_task"], false);
     }
 
+    /// A workflow whose final state targets the reserved terminal marker
+    /// `end` survives the full save round trip: normalized execution → canonical
+    /// declaration YAML → `validate_generated` (schema + offline natural
+    /// validation). This is the `save` path that previously failed with
+    /// `E_SCHEMA` on `next.state_id: "end"`.
+    #[test]
+    fn terminal_end_workflow_passes_validate_generated() {
+        let mut execution = serde_json::json!({
+            "messages_limit_before_summarization": 10,
+            "tokens_limit_before_summarization": 1000,
+            "enable_summarization_node": false,
+            "recursion_limit": 10,
+            "max_concurrency": 1,
+            "assistants": [{
+                "id": "actor-1",
+                "assistantRef": {"project": "p", "slug": "assistant-a"}
+            }],
+            "custom_nodes": [],
+            "states": [{
+                "id": "state-1",
+                "assistant_id": "actor-1",
+                "next": {"state_id": "end"}
+            }],
+            "meta_states": [{"id": "ui-only"}]
+        });
+        normalize_workflow_execution(&mut execution).expect("execution should normalize");
+
+        let declaration = serde_json::json!({
+            "apiVersion": "codemie.epam.com/v1alpha1",
+            "kind": "Workflow",
+            "metadata": {"project": "p", "slug": "wf"},
+            "spec": {
+                "name": "wf",
+                "description": "terminal end workflow",
+                "mode": "Sequential",
+                "shared": false,
+                "execution_config": execution,
+            }
+        });
+        let yaml = canonical_yaml(&declaration).expect("canonical YAML must serialize");
+        crate::input::validate_generated(&yaml)
+            .expect("generated declaration with terminal 'end' must validate");
+    }
+
     #[test]
     fn normalizes_api_toolkit_and_settings_shape() {
         let value = serde_json::json!([{
