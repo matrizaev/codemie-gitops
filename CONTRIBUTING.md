@@ -209,15 +209,23 @@ mod tests {
 ## Documentation
 
 - **README.md**: User-facing command and configuration docs.
-- **docs/README.md**: Authority map and historical-document rules.
+- **docs/README.md**: Documentation authority order (executable contracts >
+  code/tests > implementation reference > architecture > user docs > ADRs).
 - **docs/yaml-reference.md**: Complete declaration authoring language. Update
   it whenever the declaration schema changes.
 - **docs/implementation-reference.md**: Current algorithms, limits, module
   ownership, and reconstruction guidance. Update it with behavioral or
   architectural changes.
 - **ARCHITECTURE.md**: Short design, module organization, and data flow.
-- **Closed contracts**: Update schemas/manifests and their tests with any
-  accepted wire-format change. Prose cannot widen a closed contract.
+- **docs/adr/**: Rationale for architectural decisions. Add an ADR when future
+  maintainers need to know *why* one reasonable design was selected over
+  another; do not add ADRs for routine implementation changes.
+- **contracts/**: Closed machine/wire contracts. Update schemas/manifests and
+  their tests with any accepted wire-format change; prose cannot widen a
+  closed contract. Temporary feature process artifacts (specs, plans, task
+  lists, verification/security-review reports) are not committed to the active
+  tree — keep them under the ignored `.work/` area and delete or distill them
+  before merge (see `AGENTS.md`).
 - **Code comments**: Explain *why*, not *what*. Let the code speak for itself.
 - **Doc comments on public APIs**: Include examples for complex behavior.
 

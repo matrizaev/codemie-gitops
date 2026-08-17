@@ -260,14 +260,12 @@ pub(super) struct DatasourceSnapshot {
 
 pub(super) async fn read_workflow(
     client: &ApiClient,
-    url: &crate::config::ValidatedUrl,
     project: &str,
     slug: &str,
     workflow_id: Option<&str>,
 ) -> Result<EntitySnapshot, AppError> {
     let mut snapshot =
-        crate::adapters::workflow::resolve_snapshot(client, url, project, slug, workflow_id)
-            .await?;
+        crate::adapters::workflow::resolve_snapshot(client, project, slug, workflow_id).await?;
     reverse_workflow_managed_references(client, &mut snapshot).await?;
     Ok(EntitySnapshot::Workflow(snapshot))
 }
@@ -319,7 +317,7 @@ async fn reverse_workflow_managed_references(
                 "assistantRef".into(),
                 read_reference_by_id(
                     client,
-                    &format!("/v1/assistants/id/{}", encode_query_value(&assistant_id)),
+                    &format!("/v1/assistants/id/{}", encode_path_segment(&assistant_id)),
                     &assistant_id,
                     "project",
                     "slug",
@@ -334,7 +332,7 @@ async fn reverse_workflow_managed_references(
                 skill_refs.push(
                     read_reference_by_id(
                         client,
-                        &format!("/v1/skills/{}", encode_query_value(&id)),
+                        &format!("/v1/skills/{}", encode_path_segment(&id)),
                         &id,
                         "project",
                         "name",
@@ -347,7 +345,7 @@ async fn reverse_workflow_managed_references(
                 datasource_refs.push(
                     read_reference_by_id(
                         client,
-                        &format!("/v1/index/{}", encode_query_value(&id)),
+                        &format!("/v1/index/{}", encode_path_segment(&id)),
                         &id,
                         "project_name",
                         "repo_name",
@@ -405,7 +403,7 @@ async fn read_reference_by_id(
         AppError::ApiIncompatible("Workflow reference response must be an object".into())
     })?;
     if object.get("id").and_then(serde_json::Value::as_str) != Some(expected_id) {
-        return Err(AppError::Reconciliation(
+        return Err(AppError::ResolutionUnstable(
             "Workflow reference detail returned a conflicting id".into(),
         ));
     }
@@ -429,7 +427,7 @@ pub(super) async fn read_assistant(
 ) -> Result<EntitySnapshot, AppError> {
     let path = format!(
         "/v1/assistants/slug/{}?project={}",
-        encode_query_value(slug),
+        encode_path_segment(slug),
         encode_query_value(project)
     );
     let mut snapshot: AssistantSnapshot = client.get(&path).await?;
@@ -447,7 +445,7 @@ async fn resolve_assistant_ids(
     let mut refs = Vec::new();
     for id in ids.as_ref().into_iter().flatten() {
         let value: serde_json::Value = client
-            .get(&format!("/v1/assistants/id/{}", encode_query_value(id)))
+            .get(&format!("/v1/assistants/id/{}", encode_path_segment(id)))
             .await?;
         let object = value.as_object().ok_or_else(|| {
             AppError::ApiIncompatible("Assistant reference response must be an object".into())
@@ -483,7 +481,7 @@ async fn resolve_skill_ids(
         .flatten()
     {
         let value: serde_json::Value = client
-            .get(&format!("/v1/skills/{}", encode_query_value(id)))
+            .get(&format!("/v1/skills/{}", encode_path_segment(id)))
             .await?;
         let object = value.as_object().ok_or_else(|| {
             AppError::ApiIncompatible("Skill reference response must be an object".into())
@@ -508,35 +506,32 @@ async fn resolve_skill_ids(
 
 pub(super) async fn read_datasource(
     client: &ApiClient,
-    url: &crate::config::ValidatedUrl,
     project: &str,
     repo_name: &str,
 ) -> Result<EntitySnapshot, AppError> {
-    let id =
-        crate::adapters::datasource::resolve_reference(client, url, project, repo_name).await?;
+    let id = crate::adapters::datasource::resolve_reference(client, project, repo_name).await?;
     let snapshot = client
-        .get(&format!("/v1/index/{}", encode_query_value(&id)))
+        .get(&format!("/v1/index/{}", encode_path_segment(&id)))
         .await?;
     Ok(EntitySnapshot::Datasource(Box::new(snapshot)))
 }
 
 pub(super) async fn read_skill_snapshot(
     client: &ApiClient,
-    url: &crate::config::ValidatedUrl,
     project: &str,
     name: &str,
 ) -> Result<EntitySnapshot, AppError> {
-    let id = crate::adapters::skill::resolve_reference(client, url, project, name).await?;
-    let detail_a = read_skill_detail(client, url, &id).await?;
-    let payload_a = read_companion_payloads(client, url, &id, &detail_a).await?;
-    let detail_b = read_skill_detail(client, url, &id).await?;
-    let payload_b = read_companion_payloads(client, url, &id, &detail_b).await?;
-    let detail_c = read_skill_detail(client, url, &id).await?;
+    let id = crate::adapters::skill::resolve_reference(client, project, name).await?;
+    let detail_a = read_skill_detail(client, &id).await?;
+    let payload_a = read_companion_payloads(client, &id, &detail_a).await?;
+    let detail_b = read_skill_detail(client, &id).await?;
+    let payload_b = read_companion_payloads(client, &id, &detail_b).await?;
+    let detail_c = read_skill_detail(client, &id).await?;
     if skill_fingerprint(&detail_a) != skill_fingerprint(&detail_b)
         || skill_fingerprint(&detail_a) != skill_fingerprint(&detail_c)
         || payload_a != payload_b
     {
-        return Err(AppError::Reconciliation(
+        return Err(AppError::ResolutionUnstable(
             "Skill snapshot was unstable during save".into(),
         ));
     }
@@ -615,12 +610,8 @@ struct SkillCompanionPayloadDto {
     content: String,
 }
 
-async fn read_skill_detail(
-    client: &ApiClient,
-    _url: &crate::config::ValidatedUrl,
-    id: &str,
-) -> Result<SkillDetailDto, AppError> {
-    let path = format!("/v1/skills/{}", encode_query_value(id));
+async fn read_skill_detail(client: &ApiClient, id: &str) -> Result<SkillDetailDto, AppError> {
+    let path = format!("/v1/skills/{}", encode_path_segment(id));
     let value: SkillDetailDto = client.get(&path).await?;
     reject_secret_values(
         &serde_json::to_value(&value.toolkits).map_err(SaveError::JsonSerialization)?,
@@ -633,6 +624,12 @@ async fn read_skill_detail(
 
 fn reject_secret_keys(key: &str, value: &serde_json::Value) -> Result<(), AppError> {
     if value.is_null() {
+        return Ok(());
+    }
+    // Numeric limits (`tools_tokens_size_limit`, `tokens_size_limit`,
+    // `limit_tool_output_tokens`) are authorable, non-secret values even
+    // though their names contain `token`. A secret is never a number.
+    if value.is_number() {
         return Ok(());
     }
     let normalized = key.to_ascii_lowercase();
@@ -664,17 +661,49 @@ pub(super) fn reject_secret_values(value: &serde_json::Value) -> Result<(), AppE
     Ok(())
 }
 
-fn skill_fingerprint(value: &SkillDetailDto) -> SkillDetailDto {
-    let mut value = value.clone();
-    value
-        .companion_files
-        .sort_by(|left, right| left.path.cmp(&right.path));
-    value
+/// The authorable fields compared across the A/B/C observation reads.
+///
+/// Server/audit fields (`created_by`, `created_date`, counters,
+/// `user_abilities`, `display_name`) are classified ignored by
+/// skill-snapshot-v1.md §3 and do NOT enter the fingerprint: benign concurrent
+/// changes to them must not fail an otherwise stable save.
+#[derive(Debug, Clone, PartialEq)]
+struct SkillFingerprint {
+    id: String,
+    name: String,
+    project: String,
+    updated_date: Option<String>,
+    description: OpenResponseValue,
+    content: String,
+    visibility: OpenResponseValue,
+    categories: Vec<OpenResponseValue>,
+    toolkits: Vec<OpenResponseValue>,
+    mcp_servers: Vec<OpenResponseValue>,
+    companion_files: Vec<SkillCompanionMetadataDto>,
+    enabled_builtin_subagents: Vec<OpenResponseValue>,
+}
+
+fn skill_fingerprint(value: &SkillDetailDto) -> SkillFingerprint {
+    let mut companion_files = value.companion_files.clone();
+    companion_files.sort_by(|left, right| left.path.cmp(&right.path));
+    SkillFingerprint {
+        id: value.id.clone(),
+        name: value.name.clone(),
+        project: value.project.clone(),
+        updated_date: value.updated_date.clone(),
+        description: value.description.clone(),
+        content: value.content.clone(),
+        visibility: value.visibility.clone(),
+        categories: value.categories.clone(),
+        toolkits: value.toolkits.clone(),
+        mcp_servers: value.mcp_servers.clone(),
+        companion_files,
+        enabled_builtin_subagents: value.enabled_builtin_subagents.clone(),
+    }
 }
 
 async fn read_companion_payloads(
     client: &ApiClient,
-    _url: &crate::config::ValidatedUrl,
     id: &str,
     detail: &SkillDetailDto,
 ) -> Result<Vec<SkillCompanionMetadataDto>, AppError> {
@@ -691,7 +720,8 @@ async fn read_companion_payloads(
     let mut result = Vec::new();
     for (path, metadata) in paths {
         let query = format!(
-            "/v1/skills/{id}/companion-files/content?path={}",
+            "/v1/skills/{}/companion-files/content?path={}",
+            encode_path_segment(id),
             encode_query_value(&path)
         );
         let payload: SkillCompanionPayloadDto = client.get(&query).await?;
@@ -753,4 +783,49 @@ fn normalize_companion_path(path: &str) -> Result<String, AppError> {
         return Err(AppError::EntityNotExportable);
     }
     Ok(normalized)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dto(content: &str, likes: Option<u64>) -> SkillDetailDto {
+        SkillDetailDto {
+            id: "skill-id".into(),
+            name: "demo-skill".into(),
+            project: "demo".into(),
+            updated_date: Some("2026-08-13T00:00:00Z".into()),
+            description: OpenResponseValue(serde_json::json!("A demo skill")),
+            content: content.into(),
+            visibility: OpenResponseValue(serde_json::json!("private")),
+            categories: vec![OpenResponseValue(serde_json::json!("support"))],
+            toolkits: vec![],
+            mcp_servers: vec![],
+            companion_files: vec![],
+            enabled_builtin_subagents: vec![],
+            display_name: None,
+            created_by: None,
+            created_date: None,
+            assistants_count: Some(1),
+            user_abilities: Some(vec!["write".into()]),
+            unique_likes_count: likes,
+            unique_dislikes_count: None,
+        }
+    }
+
+    /// Audit/counter fields (likes, abilities, counts) do not enter the
+    /// stability fingerprint: benign concurrent changes must not fail a save.
+    #[test]
+    fn fingerprint_ignores_audit_fields() {
+        let a = dto("same content", Some(3));
+        let b = dto("same content", Some(9));
+        assert_eq!(skill_fingerprint(&a), skill_fingerprint(&b));
+    }
+
+    #[test]
+    fn fingerprint_detects_authorable_change() {
+        let a = dto("same content", Some(3));
+        let b = dto("different content", Some(3));
+        assert_ne!(skill_fingerprint(&a), skill_fingerprint(&b));
+    }
 }

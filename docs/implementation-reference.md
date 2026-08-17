@@ -22,7 +22,7 @@ and semantic validation before business logic receives it.
 
 `Cargo.toml` fixes Rust 1.95 and edition 2024. `Cargo.lock` is required for
 reproducible builds. `build.rs` reads
-`specs/codemie-cicd-tool/contracts/declaration-v1alpha1.schema.json`, removes
+`contracts/declaration-v1alpha1.schema.json`, removes
 conditionals unsupported by the type generator, disambiguates the wire field
 `indexType`, and uses `typify` to generate declaration DTOs in `OUT_DIR`.
 Runtime schema validation still uses the original unmodified embedded schema;
@@ -236,6 +236,5 @@ and `codemie-ui/` are never formatted, migrated, or treated as workspace code.
 8. Implement GET-only save reverse projection and exclusive publication.
 9. Run unit, CLI, OpenAPI, format, lint, and locked-build gates.
 
-Behavior not specified here must be taken from the closed contracts and their
-tests. Historical verification prose may explain intent but cannot widen the
-current executable contract.
+Behavior not specified here must be taken from the closed contracts in
+`contracts/` and their tests; an executable contract overrides prose.

@@ -93,7 +93,7 @@ pub(crate) fn ensure_rustls_provider() {
 // ---------------------------------------------------------------------------
 
 /// Maximum response body size: 8 MiB.
-const RESPONSE_BODY_LIMIT: usize = 8 * 1024 * 1024;
+pub(crate) const RESPONSE_BODY_LIMIT: usize = 8 * 1024 * 1024;
 
 /// Per-request timeout in seconds.
 const REQUEST_TIMEOUT_SECS: u64 = 60;
@@ -102,7 +102,7 @@ const REQUEST_TIMEOUT_SECS: u64 = 60;
 const GET_MAX_RETRIES: u32 = 3;
 
 /// Maximum JSON nesting depth for response decoding.
-const JSON_MAX_DEPTH: usize = 64;
+pub(crate) const JSON_MAX_DEPTH: usize = 64;
 
 /// Base jitter between GET retry attempts in milliseconds (attempt × base).
 ///
@@ -190,8 +190,9 @@ impl ApiClient {
             .redirect(reqwest::redirect::Policy::none())
             .user_agent(concat!("codemie-gitops/", env!("CARGO_PKG_VERSION")))
             .build()
-            // reqwest error intentionally discarded: it contains no actionable info
-            // and we do not leak internal TLS or networking details (SEC-005).
+            // The reqwest source is retained for the opt-in DEBUG trace only;
+            // the closed diagnostic and Display messages never include it
+            // (SEC-005).
             .map_err(TransportError::ClientBuild)?;
         Ok(ApiClient {
             client,
@@ -223,8 +224,8 @@ impl ApiClient {
 
     /// Map a reqwest send error to `AppError::Connectivity`.
     ///
-    /// The reqwest error is discarded to prevent leaking internal URL, IP
-    /// address, or TLS handshake details into the error chain (SEC-005).
+    /// The reqwest source is retained for the opt-in DEBUG trace only; the
+    /// closed diagnostic and Display messages never include it (SEC-005).
     fn map_send_error(error: reqwest::Error) -> AppError {
         TransportError::ReadDispatch(error).into()
     }
@@ -267,10 +268,12 @@ impl ApiClient {
 
     /// Read the response body up to `RESPONSE_BODY_LIMIT` (8 MiB).
     ///
-    /// Rejects early via `Content-Length` where possible; always re-checks
-    /// the actual byte count after the read (SEC-003).
-    async fn bounded_body(resp: reqwest::Response) -> Result<Vec<u8>, AppError> {
-        // Early rejection if the server announces a too-large body.
+    /// Rejects early via `Content-Length` when the server announces a
+    /// too-large body, and streams the body in chunks so the bound is
+    /// enforced *during* the read rather than after the whole body has been
+    /// buffered (SEC-003). A chunked response that exceeds the limit aborts
+    /// the read immediately.
+    async fn bounded_body(mut resp: reqwest::Response) -> Result<Vec<u8>, AppError> {
         if let Some(len) = resp.content_length()
             && len as usize > RESPONSE_BODY_LIMIT
         {
@@ -278,13 +281,16 @@ impl ApiClient {
                 "response body exceeds 8 MiB limit".into(),
             ));
         }
-        let bytes = resp.bytes().await.map_err(TransportError::ResponseBody)?;
-        if bytes.len() > RESPONSE_BODY_LIMIT {
-            return Err(AppError::ApiIncompatible(
-                "response body exceeds 8 MiB limit".into(),
-            ));
+        let mut body = Vec::new();
+        while let Some(chunk) = resp.chunk().await.map_err(TransportError::ResponseBody)? {
+            if body.len().saturating_add(chunk.len()) > RESPONSE_BODY_LIMIT {
+                return Err(AppError::ApiIncompatible(
+                    "response body exceeds 8 MiB limit".into(),
+                ));
+            }
+            body.extend_from_slice(&chunk);
         }
-        Ok(bytes.to_vec())
+        Ok(body)
     }
 
     /// Parse `body` as JSON into `T`, also enforcing the 64-level depth limit.
@@ -301,12 +307,13 @@ impl ApiClient {
         serde_json::from_value(value).map_err(|source| TransportError::ResponseShape(source).into())
     }
 
-    /// Send an authenticated GET request with up to `GET_MAX_RETRIES` attempts.
+    /// Send an authenticated GET request with up to `GET_MAX_RETRIES`
+    /// attempts and return the raw status/body for the caller to classify.
     ///
     /// Retries on: send failure (connection error), 429, and 5xx. Each retry
     /// is preceded by a `attempt × RETRY_BASE_JITTER_MS` sleep. 401 and 403
     /// are not retried. POST / PUT / DELETE use separate non-retrying methods.
-    pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, AppError> {
+    async fn send_get(&self, path: &str) -> Result<(reqwest::StatusCode, Vec<u8>), AppError> {
         let route = ApiRoute::try_from(path)?;
         let full_url = Self::join_url(&self.base_url, &route);
         let mut last_err =
@@ -337,17 +344,71 @@ impl ApiClient {
                         last_err = Self::classify_error_status(status, false);
                         continue;
                     }
-                    // Non-retriable non-2xx (401, 403, 4xx, 3xx).
-                    if !status.is_success() {
-                        return Err(Self::classify_error_status(status, false));
-                    }
                     let body = Self::bounded_body(resp).await?;
-                    return Self::deserialize_json(&body);
+                    return Ok((status, body));
                 }
             }
         }
 
         Err(last_err)
+    }
+
+    /// Send an authenticated GET request and decode a typed response.
+    pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, AppError> {
+        let (status, body) = self.send_get(path).await?;
+        if !status.is_success() {
+            return Err(Self::classify_error_status(status, false));
+        }
+        Self::deserialize_json(&body)
+    }
+
+    /// Send one non-retried modifying request with bearer auth and a bounded
+    /// body read. Modifying requests are never blindly retried (ADR-011).
+    async fn send_modifying(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> Result<(reqwest::StatusCode, Vec<u8>), AppError> {
+        let resp = request
+            .header(reqwest::header::AUTHORIZATION, self.auth_header_value())
+            .send()
+            .await
+            .map_err(Self::map_modifying_send_error)?;
+        let status = resp.status();
+        let body = Self::bounded_body(resp).await?;
+        Ok((status, body))
+    }
+
+    /// Send one non-retried modifying JSON request and return raw status/body.
+    async fn send_json<B: Serialize + ?Sized>(
+        &self,
+        method: ModificationMethod,
+        path: &str,
+        body: &B,
+    ) -> Result<(reqwest::StatusCode, Vec<u8>), AppError> {
+        let route = ApiRoute::try_from(path)?;
+        let full_url = Self::join_url(&self.base_url, &route);
+        let request = match method {
+            ModificationMethod::Post => self.client.post(full_url),
+            ModificationMethod::Put => self.client.put(full_url),
+        };
+        self.send_modifying(request.json(body)).await
+    }
+
+    /// Send one non-retried modifying multipart request and return raw status/body.
+    async fn send_multipart(
+        &self,
+        method: ModificationMethod,
+        path: &str,
+        query_params: &[(String, String)],
+        file_parts: Vec<(String, Vec<u8>)>,
+    ) -> Result<(reqwest::StatusCode, Vec<u8>), AppError> {
+        let full_url = Self::join_url_with_query(&self.base_url, path, query_params)?;
+        let form = Self::build_multipart_form(file_parts)?;
+        let request = match method {
+            ModificationMethod::Post => self.client.post(full_url),
+            ModificationMethod::Put => self.client.put(full_url),
+        };
+        self.send_modifying(request.multipart(form)).await
     }
 
     /// Send an authenticated POST request. Not retried.
@@ -359,23 +420,11 @@ impl ApiClient {
         B: Serialize,
         T: DeserializeOwned,
     {
-        let route = ApiRoute::try_from(path)?;
-        let full_url = Self::join_url(&self.base_url, &route);
-        let resp = self
-            .client
-            .post(full_url)
-            .header(reqwest::header::AUTHORIZATION, self.auth_header_value())
-            .json(body)
-            .send()
-            .await
-            .map_err(Self::map_modifying_send_error)?;
-
-        let status = resp.status();
+        let (status, body) = self.send_json(ModificationMethod::Post, path, body).await?;
         if !status.is_success() {
             return Err(Self::classify_error_status(status, true));
         }
-        let body_bytes = Self::bounded_body(resp).await?;
-        Self::deserialize_json(&body_bytes)
+        Self::deserialize_json(&body)
     }
 
     /// Send an authenticated PUT request. Not retried.
@@ -387,23 +436,11 @@ impl ApiClient {
         B: Serialize,
         T: DeserializeOwned,
     {
-        let route = ApiRoute::try_from(path)?;
-        let full_url = Self::join_url(&self.base_url, &route);
-        let resp = self
-            .client
-            .put(full_url)
-            .header(reqwest::header::AUTHORIZATION, self.auth_header_value())
-            .json(body)
-            .send()
-            .await
-            .map_err(Self::map_modifying_send_error)?;
-
-        let status = resp.status();
+        let (status, body) = self.send_json(ModificationMethod::Put, path, body).await?;
         if !status.is_success() {
             return Err(Self::classify_error_status(status, true));
         }
-        let body_bytes = Self::bounded_body(resp).await?;
-        Self::deserialize_json(&body_bytes)
+        Self::deserialize_json(&body)
     }
 
     /// Send an authenticated DELETE request. Not retried.
@@ -431,7 +468,7 @@ impl ApiClient {
         Ok(())
     }
 
-    /// GET that returns `Ok(None)` on 404 and `Ok(Some(T))` on 200.
+    /// GET that returns `Ok(None)` on 404 and `Ok(Some(T))` on success.
     ///
     /// All other non-2xx statuses and transport errors propagate normally.
     /// Used by adapters to distinguish "not found" (Create path) from errors.
@@ -439,48 +476,15 @@ impl ApiClient {
         &self,
         path: &str,
     ) -> Result<Option<T>, AppError> {
-        let route = ApiRoute::try_from(path)?;
-        let full_url = Self::join_url(&self.base_url, &route);
-        let mut last_err =
-            AppError::Connectivity("GET request failed after all retry attempts".into());
-
-        for attempt in 0..GET_MAX_RETRIES {
-            if attempt > 0 {
-                let jitter = Duration::from_millis(RETRY_BASE_JITTER_MS * u64::from(attempt));
-                tokio::time::sleep(jitter).await;
-            }
-
-            match self
-                .client
-                .get(full_url.clone())
-                .header(reqwest::header::AUTHORIZATION, self.auth_header_value())
-                .send()
-                .await
-            {
-                Err(e) => {
-                    last_err = Self::map_send_error(e);
-                }
-                Ok(resp) => {
-                    let status = resp.status();
-                    // 404 → entity not found; return None for the Create path.
-                    if status == reqwest::StatusCode::NOT_FOUND {
-                        return Ok(None);
-                    }
-                    if status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS
-                    {
-                        last_err = Self::classify_error_status(status, false);
-                        continue;
-                    }
-                    if !status.is_success() {
-                        return Err(Self::classify_error_status(status, false));
-                    }
-                    let body = Self::bounded_body(resp).await?;
-                    return Self::deserialize_json::<T>(&body).map(Some);
-                }
-            }
+        let (status, body) = self.send_get(path).await?;
+        // 404 → entity not found; return None for the Create path.
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
         }
-
-        Err(last_err)
+        if !status.is_success() {
+            return Err(Self::classify_error_status(status, false));
+        }
+        Self::deserialize_json::<T>(&body).map(Some)
     }
 
     /// POST that returns `Ok(None)` on authoritative Datasource 409 Conflict
@@ -490,28 +494,14 @@ impl ApiClient {
         B: serde::Serialize,
         T: serde::de::DeserializeOwned,
     {
-        let route = ApiRoute::try_from(path)?;
-        let full_url = Self::join_url(&self.base_url, &route);
-        let resp = self
-            .client
-            .post(full_url)
-            .header(reqwest::header::AUTHORIZATION, self.auth_header_value())
-            .json(body)
-            .send()
-            .await
-            .map_err(Self::map_modifying_send_error)?;
-
-        let status = resp.status();
+        let (status, body) = self.send_json(ModificationMethod::Post, path, body).await?;
         if status == reqwest::StatusCode::CONFLICT {
-            // Drain body to release the connection.
-            let _ = Self::bounded_body(resp).await;
             return Ok(None);
         }
         if !status.is_success() {
             return Err(Self::classify_error_status(status, true));
         }
-        let body_bytes = Self::bounded_body(resp).await?;
-        Self::deserialize_json(&body_bytes).map(Some)
+        Self::deserialize_json(&body).map(Some)
     }
 
     /// POST `multipart/form-data` with scalar query parameters.
@@ -524,27 +514,16 @@ impl ApiClient {
         query_params: &[(String, String)],
         file_parts: Vec<(String, Vec<u8>)>,
     ) -> Result<Option<serde_json::Value>, AppError> {
-        let full_url = Self::join_url_with_query(&self.base_url, path, query_params)?;
-        let form = Self::build_multipart_form(file_parts)?;
-        let resp = self
-            .client
-            .post(full_url)
-            .header(reqwest::header::AUTHORIZATION, self.auth_header_value())
-            .multipart(form)
-            .send()
-            .await
-            .map_err(Self::map_modifying_send_error)?;
-
-        let status = resp.status();
+        let (status, body) = self
+            .send_multipart(ModificationMethod::Post, path, query_params, file_parts)
+            .await?;
         if status == reqwest::StatusCode::CONFLICT {
-            let _ = Self::bounded_body(resp).await;
             return Ok(None);
         }
         if !status.is_success() {
             return Err(Self::classify_error_status(status, true));
         }
-        let body_bytes = Self::bounded_body(resp).await?;
-        Self::deserialize_json(&body_bytes).map(Some)
+        Self::deserialize_json(&body).map(Some)
     }
 
     /// PUT `multipart/form-data` with scalar query parameters. Not retried.
@@ -554,23 +533,13 @@ impl ApiClient {
         query_params: &[(String, String)],
         file_parts: Vec<(String, Vec<u8>)>,
     ) -> Result<serde_json::Value, AppError> {
-        let full_url = Self::join_url_with_query(&self.base_url, path, query_params)?;
-        let form = Self::build_multipart_form(file_parts)?;
-        let resp = self
-            .client
-            .put(full_url)
-            .header(reqwest::header::AUTHORIZATION, self.auth_header_value())
-            .multipart(form)
-            .send()
-            .await
-            .map_err(Self::map_modifying_send_error)?;
-
-        let status = resp.status();
+        let (status, body) = self
+            .send_multipart(ModificationMethod::Put, path, query_params, file_parts)
+            .await?;
         if !status.is_success() {
             return Err(Self::classify_error_status(status, true));
         }
-        let body_bytes = Self::bounded_body(resp).await?;
-        Self::deserialize_json(&body_bytes)
+        Self::deserialize_json(&body)
     }
 
     /// The sole production modifying boundary.
@@ -681,7 +650,7 @@ impl ApiClient {
 ///
 /// `current` is the depth of the container that holds `value`. Pass `0` on
 /// the root call. An empty root object returns `1`.
-fn json_max_depth(value: &serde_json::Value, current: usize) -> usize {
+pub(crate) fn json_max_depth(value: &serde_json::Value, current: usize) -> usize {
     match value {
         serde_json::Value::Array(arr) => arr
             .iter()
@@ -711,21 +680,42 @@ pub fn encode_query_value(value: &str) -> String {
     url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
 }
 
+/// Percent-encode one URL path segment per RFC 3986: only unreserved
+/// characters (A-Z, a-z, 0-9, hyphen, underscore, dot, tilde) are kept
+/// verbatim and everything else becomes percent-encoded uppercase hex.
+///
+/// This is distinct from `encode_query_value`: in a path segment a
+/// space must become `%20`, never `+` (a literal plus in an
+/// RFC 3986 path).
+pub fn encode_path_segment(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                encoded.push(char::from(byte));
+            }
+            _ => {
+                encoded.push('%');
+                encoded.push_str(&format!("{byte:02X}"));
+            }
+        }
+    }
+    encoded
+}
+
 // ---------------------------------------------------------------------------
 // Capability preflight (ADR-012 Option A)
 // ---------------------------------------------------------------------------
 
-/// Verify that the authenticated principal has sufficient privilege for
-/// Workflow, Skill, or Datasource exhaustive resolution (ADR-012 Option A).
+/// Prove exact membership in the effective project.
 ///
 /// Calls `GET {url}/v1/user` (route from `adapter-manifest-v2.42.0.json`
-/// §capabilityPreflight) and checks:
-/// - `is_admin == true` (global admin), OR
-/// - `is_maintainer == true` (global maintainer), OR
-/// - One `projects[]` entry whose `name` equals `effective_project` and whose
-///   `is_project_admin` member is true
+/// §capabilityPreflight) and checks that the principal is an exact member of
+/// `effective_project` (`projects[].name`). Per ADR-0003, exact membership
+/// is necessary and sufficient client-side authorization to reach a create;
+/// role/admin fields are optional visibility context, never gates.
 ///
-/// Returns a project-bound proof when any condition holds; otherwise returns
+/// Returns a project-bound proof on membership; otherwise returns
 /// `AppError::VisibilityUnproven`. Response body and role values are discarded
 /// after the check and are never forwarded to logs or output (SEC-005).
 pub async fn preflight_visibility(
@@ -784,6 +774,14 @@ mod tests {
     // -----------------------------------------------------------------------
     // ApiClient construction
     // -----------------------------------------------------------------------
+
+    #[test]
+    fn path_segment_encoding_uses_percent_not_plus() {
+        assert_eq!(encode_path_segment("my assistant"), "my%20assistant");
+        assert_eq!(encode_path_segment("a/b?c"), "a%2Fb%3Fc");
+        assert_eq!(encode_path_segment("slug-1_2.3~4"), "slug-1_2.3~4");
+        assert_eq!(encode_path_segment("héllo"), "h%C3%A9llo");
+    }
 
     #[test]
     fn api_client_constructs_with_loopback_url() {

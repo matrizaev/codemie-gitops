@@ -1,56 +1,60 @@
 # Documentation map
 
-This directory describes the implementation currently shipped by this repository.
-Use this page to choose the correct source when rebuilding or changing the tool.
+This page is the authority model for the repository's knowledge surface. Use it
+to choose the correct source when rebuilding or changing the tool.
 
 ## Authority order
 
-1. [`../Cargo.lock`](../Cargo.lock) fixes the dependency graph used to build the
-   binary.
-2. [`../specs/codemie-cicd-tool/contracts/`](../specs/codemie-cicd-tool/contracts/)
-   contains closed machine and wire contracts. In particular,
-   `declaration-v1alpha1.schema.json` is the accepted authoring language and
-   `adapter-manifest-v2.42.0.json` pins the server routes and projections.
-   Save adds its versioned contracts under
-   [`../specs/save-server-entity/contracts/`](../specs/save-server-entity/contracts/).
-3. [`implementation-reference.md`](implementation-reference.md) describes the
-   current module boundaries, algorithms, limits, and control flow.
-4. [`../ARCHITECTURE.md`](../ARCHITECTURE.md) gives the shorter architectural
-   overview.
-5. [`../README.md`](../README.md) and [`../CONTRIBUTING.md`](../CONTRIBUTING.md)
-   describe operator and contributor workflows.
-6. [`yaml-reference.md`](yaml-reference.md) documents every declaration field,
-   accepted value, conditional rule, and Datasource variant.
+1. **Executable contracts/schemas** — [`../contracts/`](../contracts/)
+   contains the closed machine and wire contracts:
+   `declaration-v1alpha1.schema.json` is the accepted authoring language,
+   `adapter-manifest-v2.42.0.json` pins server routes and projections,
+   `openapi.json` pins the backend wire shapes, and the
+   `*-v1.md`/`*.schema.json` files pin the CLI, HTTP adapter, canonical
+   YAML, save publication, and reverse-projection contracts.
+2. **Executable code and tests** — `src/` and `tests/` represent the
+   current implementation behavior. When prose disagrees with code, update the
+   prose and tests together; do not reinterpret a contract silently.
+3. **Current implementation reference** —
+   [`implementation-reference.md`](implementation-reference.md) describes
+   module boundaries, algorithms, limits, and control flow.
+4. **Architecture documentation** — [`../ARCHITECTURE.md`](../ARCHITECTURE.md)
+   gives the shorter architectural overview: boundaries, flows, invariants,
+   principles, non-goals, and responsibility ownership.
+5. **User/operator documentation** — [`../README.md`](../README.md) and
+   [`../CONTRIBUTING.md`](../CONTRIBUTING.md) describe operator and
+   contributor workflows; [`yaml-reference.md`](yaml-reference.md) documents
+   the declaration language for authors.
+6. **ADRs for rationale** — [`adr/`](adr/) records *why* one reasonable
+   design was selected over another.
 
-When prose disagrees with a closed JSON Schema or adapter manifest, the closed
-contract wins. When prose describes an implementation detail and disagrees with
-executable code, update the prose and tests together; do not reinterpret the
-contract silently.
+## Precedence rules
+
+- Code and tests represent current implementation behavior.
+- Executable contracts (schemas, manifests, pinned OpenAPI) **override
+  conflicting prose** for closed machine interfaces.
+- ADRs explain rationale but do **not** override current executable contracts.
+- If a concrete value or rule is already authoritative in code, a schema, a
+  generated contract, configuration, or a test, prefer linking to or describing
+  the ownership of that fact rather than duplicating the exact value in prose.
 
 ## Historical material
 
-Files named `Q-*`, `O-*`, `SEC-*`, and `*-verification*` under
-`../specs/codemie-cicd-tool/` are dated review evidence. They intentionally
-record failures, superseded designs, and external activation gaps from the time
-of review. They are not a cumulative description of the current executable.
-
-The revision history in `../specs/codemie-cicd-tool.md` and superseded ADR
-sections explain why the design changed. Rebuild current behavior from the
-active contracts and current implementation reference, not from an older
-review verdict in isolation.
-
-`../specs/rust-architecture-remediation/` records the completed migration from
-repository-wide processing to the current single-file implementation. It is
-useful rationale, not a second runtime contract.
+Completed implementation-process artifacts (feature specs, plans, task lists,
+verification reports, security-review notes, traceability files, and migration
+inventories) are **intentionally absent** from the active repository tree. Git
+history is their archive. Do not reconstruct current behavior from older
+review verdicts or superseded design clauses.
 
 ## Rebuild baseline
 
 - Rust 1.95, edition 2024.
 - Package version: read from `Cargo.toml`.
 - Backend contract baseline: CodeMie tag `2.42.0`, commit
-  `2a481c290c99bf30ef80aadafa03d876a7f5f732`.
+  `2a481c290c99bf30ef80aadafa03d876a7f5f732` (see
+  [`../contracts/source-baseline.md`](../contracts/source-baseline.md)).
 - Build: `cargo build --locked --release`.
 - Required checks: `make format`, `make lint`, `make test`.
 - Generated declaration DTOs: `build.rs` reads the checked-in declaration JSON
-  Schema and writes Rust types into Cargo's `OUT_DIR`; generated source is not
-  committed.
+  Schema at `contracts/declaration-v1alpha1.schema.json` and writes Rust
+  types into Cargo's `OUT_DIR`; generated source is not committed.

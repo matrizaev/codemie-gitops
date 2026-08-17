@@ -125,7 +125,24 @@ fn reject_controls(raw: &str) -> Result<(), ConfigError> {
 
 fn is_loopback_http(url: &url::Url) -> bool {
     match url.host() {
-        Some(url::Host::Domain(domain)) => domain == "localhost",
+        // ADR-011 §3: the `localhost` hostname is accepted only when its
+        // resolved addresses are loopback. The runtime confirms the resolution
+        // rather than trusting the string, so a hosts/DNS entry pointing
+        // `localhost` at a remote address cannot authorize plaintext HTTP.
+        Some(url::Host::Domain(domain)) => {
+            if domain != "localhost" {
+                return false;
+            }
+            let port = url.port_or_known_default().unwrap_or(80);
+            std::net::ToSocketAddrs::to_socket_addrs(&(domain, port))
+                .map(|mut addresses| {
+                    addresses.all(|address| match address {
+                        std::net::SocketAddr::V4(v4) => v4.ip().is_loopback(),
+                        std::net::SocketAddr::V6(v6) => v6.ip().is_loopback(),
+                    })
+                })
+                .unwrap_or(false)
+        }
         Some(url::Host::Ipv4(address)) => address.is_loopback(),
         Some(url::Host::Ipv6(address)) => address.is_loopback(),
         None => false,

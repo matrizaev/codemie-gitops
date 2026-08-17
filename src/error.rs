@@ -132,10 +132,27 @@ pub enum AppError {
     #[error("internal error: {0}")]
     Internal(String),
 
-    /// E_RECONCILIATION (exit 1): ambiguous identity, adoption required,
-    /// resolution instability, or uncertain write.
+    /// E_RECONCILIATION (exit 1): ambiguous identity or uncertain write.
     #[error("reconciliation error: {0}")]
     Reconciliation(String),
+
+    /// E_ADOPTION_REQUIRED (exit 1): an unmarked Workflow requires explicit adoption.
+    #[error("workflow adoption required: {0}")]
+    AdoptionRequired(String),
+
+    /// E_IDENTITY_MARKER_INVALID (exit 1): a reserved Workflow marker is
+    /// malformed, conflicting, or otherwise invalid.
+    #[error("workflow identity marker invalid: {0}")]
+    IdentityMarkerInvalid(String),
+
+    /// E_RESOLUTION_UNSTABLE (exit 1): identity or snapshot state changed
+    /// during resolution/observation.
+    #[error("resolution unstable: {0}")]
+    ResolutionUnstable(String),
+
+    /// E_MISSING_REFERENCE (exit 1): a referenced entity is missing on the server.
+    #[error("referenced entity is missing: {0}")]
+    MissingReference(String),
 
     /// E_ENTITY_NOT_FOUND (exit 1): the selected server entity does not exist.
     #[error("selected entity was not found")]
@@ -156,6 +173,10 @@ impl AppError {
         match self {
             AppError::TransportLayer(error) if error.is_write_uncertain() => 1,
             AppError::Reconciliation(_)
+            | AppError::AdoptionRequired(_)
+            | AppError::IdentityMarkerInvalid(_)
+            | AppError::ResolutionUnstable(_)
+            | AppError::MissingReference(_)
             | AppError::EntityNotFound
             | AppError::EntityNotExportable
             | AppError::WorkflowAlreadyMarked

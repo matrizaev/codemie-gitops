@@ -6,16 +6,15 @@
 /// Many matches → `AppError::Reconciliation`.
 use serde::Deserialize;
 
-use crate::config::ValidatedUrl;
 use crate::error::AppError;
 use crate::http::{ApiClient, encode_query_value, preflight_visibility};
-use crate::pagination::{Pagination, PaginationInput, SERVER_LIST_MAX_ITEMS};
+
 use crate::parse::ParsedDeclaration;
 use crate::projection::{ExistingEntity, project};
 
 use super::{
     ApplyAction, ApplyResult, PreparedWrite, ResolutionTarget, WriteAbilityEvidence,
-    decode_write_response, map_pagination_error, prove_write,
+    decode_write_response, prove_write,
 };
 
 #[derive(Deserialize)]
@@ -67,7 +66,7 @@ pub(super) struct CompletedResolution {
     _name: String,
     target: ResolutionTarget,
     _scan: ScanEvidence,
-    _write_ability: Option<WriteAbilityEvidence>,
+    write_ability: Option<WriteAbilityEvidence>,
 }
 
 impl CompletedResolution {
@@ -78,6 +77,10 @@ impl CompletedResolution {
     pub(super) fn target(&self) -> &ResolutionTarget {
         &self.target
     }
+
+    pub(super) fn write_ability_is_proven(&self) -> bool {
+        self.write_ability.is_some()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -86,19 +89,17 @@ impl CompletedResolution {
 
 pub async fn apply(
     client: &ApiClient,
-    base_url: &ValidatedUrl,
     decl: &ParsedDeclaration,
     project_name: &str,
     skill_name: &str,
 ) -> Result<ApplyResult, AppError> {
     let initial_visibility = preflight_visibility(client, project_name).await?;
     let creator = initial_visibility.authenticated_user_id().to_owned();
-    let enumeration = enumerate(client, base_url, project_name, skill_name, &creator).await?;
+    let enumeration = enumerate(client, project_name, skill_name, &creator).await?;
     match enumeration.matches.as_slice() {
         [] => {
             create_with_reresolution(
                 client,
-                base_url,
                 CreateRequest {
                     declaration: decl,
                     project_name,
@@ -115,15 +116,16 @@ pub async fn apply(
                 server_id: single.id.clone(),
                 meta_config: None,
             };
-            let plan = project(decl, Some(&existing), None)?;
+            let plan = project(decl, Some(&existing))?;
             let resolution = CompletedResolution {
                 effective_project: project_name.to_owned(),
                 _name: skill_name.to_owned(),
                 target: ResolutionTarget::Update {
                     server_id: single.id.clone(),
+                    write_ability,
                 },
                 _scan: enumeration.evidence,
-                _write_ability: Some(write_ability),
+                write_ability: Some(write_ability),
             };
             let visibility = preflight_visibility(client, project_name).await?;
             let prepared = PreparedWrite::skill(client, visibility, resolution, plan)?;
@@ -141,14 +143,12 @@ pub async fn apply(
 /// (FR-031/DR-003/W-002).
 pub async fn resolve_reference(
     client: &ApiClient,
-    base_url: &ValidatedUrl,
     project_name: &str,
     skill_name: &str,
 ) -> Result<String, AppError> {
     let visibility = preflight_visibility(client, project_name).await?;
     let enumeration = enumerate(
         client,
-        base_url,
         project_name,
         skill_name,
         visibility.authenticated_user_id(),
@@ -156,7 +156,7 @@ pub async fn resolve_reference(
     .await?;
     match enumeration.matches.as_slice() {
         [single] => Ok(single.id.clone()),
-        [] => Err(AppError::Reconciliation(
+        [] => Err(AppError::MissingReference(
             "referenced Skill is missing on the target server".into(),
         )),
         _ => Err(AppError::Reconciliation(
@@ -168,12 +168,11 @@ pub async fn resolve_reference(
 /// Post-write exact identity verification for the coordinator (FR-034/R-001).
 pub async fn verify_identity(
     client: &ApiClient,
-    base_url: &ValidatedUrl,
     project_name: &str,
     skill_name: &str,
     expected_server_id: &str,
 ) -> Result<(), AppError> {
-    let actual = resolve_reference(client, base_url, project_name, skill_name).await?;
+    let actual = resolve_reference(client, project_name, skill_name).await?;
     if actual == expected_server_id {
         Ok(())
     } else {
@@ -189,7 +188,6 @@ pub async fn verify_identity(
 
 async fn enumerate(
     client: &ApiClient,
-    _base_url: &ValidatedUrl,
     project_name: &str,
     skill_name: &str,
     creator_user_id: &str,
@@ -204,89 +202,59 @@ async fn enumerate(
         source,
     })?;
 
-    let mut all_matches = Vec::new();
-    let mut page = 0u32;
-    let mut pages_requested = 0u32;
-    let mut total_seen = 0u32;
-    let mut fingerprint: Option<Pagination> = None;
-    let mut seen_ids = std::collections::HashSet::new();
-
-    loop {
+    let scan = crate::pagination::scan_pages("skill", |page| {
         let path = format!(
             "/v1/skills?filters={}&page={}&per_page=100",
             encode_query_value(&filter),
             page
         );
-        let resp: SkillPage = client.get(&path).await?;
-        pages_requested += 1;
-        let pagination = validate_pagination(page, &resp, fingerprint)?;
-        fingerprint = Some(pagination);
-        let total_pages = pagination.pages();
+        async move {
+            let resp: SkillPage = client.get(&path).await?;
+            for item in &resp.skills {
+                if item.created_by.id.is_empty() {
+                    return Err(AppError::ApiIncompatible(
+                        "skill creator id is empty".into(),
+                    ));
+                }
+            }
+            Ok(crate::pagination::Page {
+                items: resp.skills,
+                pagination: crate::pagination::PaginationInput {
+                    requested_page: page,
+                    page: resp.page,
+                    per_page: resp.per_page,
+                    total: resp.total,
+                    pages: resp.pages,
+                },
+            })
+        }
+    })
+    .await?;
 
-        for item in resp.skills {
-            // `created_by` participates in the pinned creator-scoped identity
-            // shape. Its value may be null, but the member itself is required.
-            if item.created_by.id.is_empty() {
-                return Err(AppError::ApiIncompatible(
-                    "skill creator id is empty".into(),
-                ));
-            }
-            total_seen += 1;
-            if total_seen > SERVER_LIST_MAX_ITEMS {
-                return Err(AppError::ApiIncompatible(
-                    "skill enumeration exceeded 100,000-item cap".into(),
-                ));
-            }
-            if !seen_ids.insert(item.id.clone()) {
-                return Err(AppError::Reconciliation(
-                    "skill enumeration repeated an entity id".into(),
-                ));
-            }
-            if item.name == skill_name
+    let matches = scan
+        .items
+        .into_iter()
+        .filter(|item| {
+            item.name == skill_name
                 && item.project == project_name
                 && item.created_by.id == creator_user_id
-            {
-                all_matches.push(item);
-            }
-        }
-
-        if total_pages == 0 || page + 1 >= total_pages {
-            break;
-        }
-        page += 1;
-    }
-
-    let expected_total = fingerprint.map_or(0, Pagination::total);
-    if total_seen != expected_total {
-        return Err(AppError::Reconciliation(
-            "skill enumeration ended before the advertised total".into(),
-        ));
-    }
+        })
+        .collect();
 
     Ok(Enumeration {
-        matches: all_matches,
+        matches,
         evidence: ScanEvidence {
-            _pages_requested: pages_requested,
-            _items_seen: total_seen,
-            _advertised_total: expected_total,
+            _pages_requested: scan.pages_requested,
+            _items_seen: scan.items_seen,
+            _advertised_total: scan.advertised_total,
         },
     })
 }
 
-fn validate_pagination(
-    requested_page: u32,
-    response: &SkillPage,
-    fingerprint: Option<Pagination>,
-) -> Result<Pagination, AppError> {
-    Pagination::try_from(PaginationInput {
-        requested_page,
-        page: response.page,
-        per_page: response.per_page,
-        total: response.total,
-        pages: response.pages,
-    })
-    .and_then(|pagination| pagination.ensure_stable(fingerprint))
-    .map_err(|error| map_pagination_error("skill", error))
+impl crate::pagination::PageItem for SkillItem {
+    fn page_item_id(&self) -> &str {
+        &self.id
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -303,16 +271,15 @@ struct CreateRequest<'a> {
 
 async fn create_with_reresolution(
     client: &ApiClient,
-    base_url: &ValidatedUrl,
     request: CreateRequest<'_>,
 ) -> Result<ApplyResult, AppError> {
-    let plan = project(request.declaration, None, None)?;
+    let plan = project(request.declaration, None)?;
     let resolution = CompletedResolution {
         effective_project: request.project_name.to_owned(),
         _name: request.skill_name.to_owned(),
         target: ResolutionTarget::Create,
         _scan: request.initial_scan,
-        _write_ability: None,
+        write_ability: None,
     };
     let visibility = preflight_visibility(client, request.project_name).await?;
     let prepared = PreparedWrite::skill(client, visibility, resolution, plan)?;
@@ -321,7 +288,6 @@ async fn create_with_reresolution(
         None => {
             let collision = enumerate(
                 client,
-                base_url,
                 request.project_name,
                 request.skill_name,
                 request.creator_user_id,
@@ -331,11 +297,11 @@ async fn create_with_reresolution(
                 1 => Err(AppError::ServerRejected(
                     "Skill create collided with an existing same-creator identity".into(),
                 )),
-                0 => Err(AppError::Reconciliation(
+                0 => Err(AppError::ResolutionUnstable(
                     "Skill create conflict could not be resolved by the bounded same-creator scan"
                         .into(),
                 )),
-                _ => Err(AppError::Reconciliation(
+                _ => Err(AppError::ResolutionUnstable(
                     "Skill create conflict resolved to multiple same-creator identities".into(),
                 )),
             }

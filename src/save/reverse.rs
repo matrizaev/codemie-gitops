@@ -703,15 +703,18 @@ pub(super) fn reverse_datasource(
     };
     spec.insert("index_type".into(), branch.into());
     if branch != "file" {
+        // setting_id/cron_expression/timezone are absent from the file variant.
         insert_field(&mut spec, "setting_id", snapshot.setting_id);
-        insert_field(
-            &mut spec,
-            "guardrail_assignments",
-            snapshot.guardrail_assignments,
-        );
         insert_field(&mut spec, "cron_expression", snapshot.cron_expression);
         insert_field(&mut spec, "timezone", snapshot.timezone);
     }
+    // guardrail_assignments is admitted by the file variant too; dropping it
+    // would silently lose exported guardrails.
+    insert_field(
+        &mut spec,
+        "guardrail_assignments",
+        snapshot.guardrail_assignments,
+    );
     Ok(declaration(
         "Datasource",
         serde_json::json!({"project": project, "repo_name": repo_name}),
@@ -758,31 +761,37 @@ fn datasource_placeholder_paths(
         .filter_map(serde_json::Value::as_str)
         .take(10)
         .collect();
-    let names = if source_names.is_empty() {
-        vec!["replace-content.txt"]
+    // With no server filenames, derive one placeholder (`replace-content-1.txt`)
+    // so the declaration still names an explicit local input.
+    let names: Vec<&str> = if source_names.is_empty() {
+        vec![""]
     } else {
         source_names
     };
     let mut seen = std::collections::BTreeSet::new();
-    names
-        .into_iter()
-        .enumerate()
-        .map(|(index, name)| {
-            let safe = std::path::Path::new(name)
-                .file_name()
-                .and_then(std::ffi::OsStr::to_str)
-                .filter(|base| *base == name && !base.is_empty() && *base != ".")
-                .filter(|base| !base.chars().any(char::is_control));
-            let mut base = safe
-                .map(str::to_owned)
-                .unwrap_or_else(|| format!("replace-content-{}.txt", index + 1));
-            if !seen.insert(base.clone()) {
-                base = format!("replace-content-{}.txt", index + 1);
-                seen.insert(base.clone());
+    let mut replacements = 0usize;
+    let mut result = Vec::with_capacity(names.len());
+    for name in names {
+        let safe = std::path::Path::new(name)
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .filter(|base| *base == name && !base.is_empty() && *base != ".")
+            .filter(|base| !base.chars().any(char::is_control));
+        let mut base = match safe {
+            Some(base) => base.to_owned(),
+            None => {
+                replacements += 1;
+                format!("replace-content-{replacements}.txt")
             }
-            Ok(serde_json::Value::String(format!("{directory}/{base}")))
-        })
-        .collect()
+        };
+        if !seen.insert(base.clone()) {
+            replacements += 1;
+            base = format!("replace-content-{replacements}.txt");
+            seen.insert(base.clone());
+        }
+        result.push(serde_json::Value::String(format!("{directory}/{base}")));
+    }
+    Ok(result)
 }
 
 fn reverse_nested_branch(
@@ -803,14 +812,24 @@ fn reverse_nested_branch(
         "project_space_visible",
         snapshot.project_space_visible.clone(),
     );
-    copy_optional_nested(nested, "include_restricted_content", spec);
-    copy_optional_nested(nested, "include_archived_content", spec);
-    copy_optional_nested(nested, "include_attachments", spec);
-    copy_optional_nested(nested, "include_comments", spec);
-    copy_optional_nested(nested, "keep_markdown_format", spec);
-    copy_optional_nested(nested, "keep_newlines", spec);
     copy_optional_nested(nested, "embedding_model", spec);
-    copy_optional_nested(nested, "wiki_name", spec);
+    // Copy branch-specific keys only for the branch that declares them; the
+    // declaration schema is closed per variant, so a foreign key would make
+    // the generated declaration schema-invalid.
+    match nested_key {
+        "confluence" => {
+            copy_optional_nested(nested, "include_restricted_content", spec);
+            copy_optional_nested(nested, "include_archived_content", spec);
+            copy_optional_nested(nested, "include_attachments", spec);
+            copy_optional_nested(nested, "include_comments", spec);
+            copy_optional_nested(nested, "keep_markdown_format", spec);
+            copy_optional_nested(nested, "keep_newlines", spec);
+        }
+        "azure_devops_wiki" => {
+            copy_optional_nested(nested, "wiki_name", spec);
+        }
+        _ => {}
+    }
     Ok(())
 }
 
@@ -904,7 +923,7 @@ fn reverse_workflow_meta(
     })?;
     if let Some(marker) = object.get(WORKFLOW_RESERVED_KEY) {
         let marker_object = marker.as_object().ok_or_else(|| {
-            AppError::Reconciliation("Workflow reserved identity marker is invalid".into())
+            AppError::IdentityMarkerInvalid("Workflow reserved identity marker is invalid".into())
         })?;
         let valid = marker_object.len() == 4
             && marker_object
@@ -924,7 +943,7 @@ fn reverse_workflow_meta(
                 .and_then(serde_json::Value::as_str)
                 == Some(slug);
         if !valid {
-            return Err(AppError::Reconciliation(
+            return Err(AppError::IdentityMarkerInvalid(
                 "Workflow reserved identity marker is invalid".into(),
             ));
         }

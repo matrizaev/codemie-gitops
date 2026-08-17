@@ -1,5 +1,7 @@
 use std::num::NonZeroU32;
 
+use crate::error::AppError;
+
 /// Shared server-list traversal budget.
 pub(crate) const SERVER_LIST_MAX_ITEMS: u32 = 100_000;
 const SERVER_LIST_MAX_PAGES: u32 = 1_000;
@@ -57,6 +59,12 @@ impl TryFrom<PaginationInput> for Pagination {
         if input.pages > SERVER_LIST_MAX_PAGES {
             return Err(PaginationError::PageCap);
         }
+        // A non-empty listing only has indices 0..pages-1; a response that
+        // reports a requested page at or beyond its own page count is
+        // incompatible (defense in depth: consumers also enforce the origin).
+        if input.pages != 0 && input.page >= input.pages {
+            return Err(PaginationError::PageCap);
+        }
         if (input.pages == 0) != (input.total == 0) {
             return Err(PaginationError::ZeroMismatch);
         }
@@ -87,6 +95,105 @@ impl Pagination {
     pub(crate) fn total(self) -> u32 {
         self.total
     }
+}
+
+// ---------------------------------------------------------------------------
+// Shared exhaustive page scan
+// ---------------------------------------------------------------------------
+
+/// One decoded page supplied to `scan_pages` by the entity adapter.
+pub(crate) struct Page<T> {
+    pub(crate) items: Vec<T>,
+    pub(crate) pagination: PaginationInput,
+}
+
+/// Items whose server id is exposed for duplicate/cap detection.
+pub(crate) trait PageItem {
+    fn page_item_id(&self) -> &str;
+}
+
+/// Result of a completed exhaustive scan.
+pub(crate) struct Scan<T> {
+    pub(crate) items: Vec<T>,
+    pub(crate) pages_requested: u32,
+    pub(crate) items_seen: u32,
+    pub(crate) advertised_total: u32,
+}
+
+/// Shared zero-based exhaustive scan used by every kind adapter.
+///
+/// Enforces the shared traversal invariants in one place: page 0 first, exact
+/// page-size 100, page-range/origin validation, fingerprint stability across
+/// pages (drift/cycles), the 100,000-item cap, repeated-id detection, and
+/// advertised-total reconciliation. `fetch_page(page)` decodes and
+/// validates one page; item-level filtering stays with the caller after the
+/// scan.
+pub(crate) async fn scan_pages<T, F, Fut>(
+    entity: &'static str,
+    mut fetch_page: F,
+) -> Result<Scan<T>, AppError>
+where
+    T: PageItem,
+    F: FnMut(u32) -> Fut,
+    Fut: std::future::Future<Output = Result<Page<T>, AppError>>,
+{
+    let mut all = Vec::new();
+    let mut page = 0u32;
+    let mut pages_requested = 0u32;
+    let mut total_seen = 0u32;
+    let mut fingerprint: Option<Pagination> = None;
+    let mut seen_ids = std::collections::HashSet::new();
+
+    loop {
+        let Page {
+            items,
+            pagination: input,
+        } = fetch_page(page).await?;
+        pages_requested += 1;
+        let pagination = Pagination::try_from(input)
+            .and_then(|validated| validated.ensure_stable(fingerprint))
+            .map_err(|error| {
+                if error.is_drift() {
+                    AppError::Reconciliation(format!("{entity} {error}"))
+                } else {
+                    AppError::ApiIncompatible(format!("{entity} {error}"))
+                }
+            })?;
+        fingerprint = Some(pagination);
+
+        for item in items {
+            total_seen += 1;
+            if total_seen > SERVER_LIST_MAX_ITEMS {
+                return Err(AppError::ApiIncompatible(format!(
+                    "{entity} enumeration exceeded 100,000-item cap"
+                )));
+            }
+            if !seen_ids.insert(item.page_item_id().to_owned()) {
+                return Err(AppError::Reconciliation(format!(
+                    "{entity} enumeration repeated an entity id"
+                )));
+            }
+            all.push(item);
+        }
+
+        if pagination.pages() == 0 || page + 1 >= pagination.pages() {
+            break;
+        }
+        page += 1;
+    }
+
+    let advertised_total = fingerprint.map_or(0, Pagination::total);
+    if total_seen != advertised_total {
+        return Err(AppError::Reconciliation(format!(
+            "{entity} enumeration ended before the advertised total"
+        )));
+    }
+    Ok(Scan {
+        items: all,
+        pages_requested,
+        items_seen: total_seen,
+        advertised_total,
+    })
 }
 
 #[cfg(test)]
@@ -141,7 +248,7 @@ mod tests {
     #[test]
     fn detects_fingerprint_drift() {
         let first = Pagination::try_from(valid(0, 101, 2)).unwrap();
-        let second = Pagination::try_from(valid(1, 100, 1)).unwrap();
+        let second = Pagination::try_from(valid(1, 200, 2)).unwrap();
         assert!(matches!(
             second.ensure_stable(Some(first)),
             Err(PaginationError::Drift)

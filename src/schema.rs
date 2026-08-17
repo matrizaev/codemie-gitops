@@ -16,7 +16,7 @@
 ///
 /// The path is relative to this source file's location inside the workspace.
 pub const DECLARATION_SCHEMA_JSON: &str =
-    include_str!("../specs/codemie-cicd-tool/contracts/declaration-v1alpha1.schema.json");
+    include_str!("../contracts/declaration-v1alpha1.schema.json");
 
 #[cfg(test)]
 mod tests {

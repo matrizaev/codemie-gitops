@@ -23,16 +23,28 @@ pub enum OutputMode {
     Json,
 }
 
+/// Parse failure for `--output`.
+#[derive(Debug)]
+pub struct OutputModeParseError(String);
+
+impl std::fmt::Display for OutputModeParseError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for OutputModeParseError {}
+
 impl std::str::FromStr for OutputMode {
-    type Err = String;
+    type Err = OutputModeParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "text" => Ok(OutputMode::Text),
             "json" => Ok(OutputMode::Json),
-            other => Err(format!(
+            other => Err(OutputModeParseError(format!(
                 "unknown output mode '{other}'; expected 'text' or 'json'"
-            )),
+            ))),
         }
     }
 }

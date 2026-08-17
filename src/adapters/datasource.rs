@@ -1,22 +1,36 @@
 /// Datasource entity adapter — D-001.
 ///
-/// Visibility preflight (`GET /v1/user`) required before any write (ADR-012 Option A).
-/// Exhaustive `(project, repo_name, index_type)` resolution via paginated
-/// `GET /v1/index?full_response=true&page={page}&per_page=100&filters={json}`.
-/// Pagination is zero-indexed. Cap: 1,000 pages / 100,000 items → `E_API_INCOMPATIBLE`.
+/// Visibility preflight (GET /v1/user) required before any write.
+/// Exhaustive (project, repo_name, index_type) identity resolution via
+/// paginated GET /v1/index?full_response=true&page={page}&per_page=100&filters={json}.
+/// The persisted kind participates in identity matching: a visible row selects
+/// update only when its kind equals the declaration's kind; a miss (including
+/// a same-name row of a different kind) permits one create. The kind is read
+/// from the server's index_type/vcs_type fields (see server_kind_matches).
+/// Pagination is zero-indexed. Cap: 1,000 pages / 100,000 items → E_API_INCOMPATIBLE.
 /// File Datasource: multipart transport with parts cap (10) and basename safety.
 use serde::Deserialize;
 
-use crate::config::ValidatedUrl;
 use crate::error::AppError;
+
+/// Extra re-polls after a create response before declaring the write uncertain.
+///
+/// The server acknowledges datasource creates before the index row is
+/// committed by its background indexing task; a single immediate re-read can
+/// still observe an empty page. Bounded, short re-polls make the create path
+/// deterministic without unbounded waiting.
+const POST_WRITE_REPOLL_ATTEMPTS: u32 = 4;
+
+/// Delay between post-write re-polls in milliseconds.
+const POST_WRITE_REPOLL_INTERVAL_MS: u64 = 400;
 use crate::http::{ApiClient, encode_query_value, preflight_visibility};
-use crate::pagination::{Pagination, PaginationInput, SERVER_LIST_MAX_ITEMS};
+
 use crate::parse::ParsedDeclaration;
 use crate::projection::{ExistingEntity, RequestBody, project};
 
 use super::{
     ApplyAction, ApplyResult, PreparedWrite, PreparedWriteResponse, ResolutionTarget,
-    WriteAbilityEvidence, map_pagination_error, prove_write,
+    WriteAbilityEvidence, prove_write,
 };
 
 // ---------------------------------------------------------------------------
@@ -43,7 +57,9 @@ struct DatasourceItem {
     repo_name: String,
     project_name: String,
     #[serde(rename = "index_type")]
-    _index_type: String,
+    index_type: String,
+    #[serde(rename = "vcs_type", default)]
+    vcs_type: Option<String>,
     user_abilities: Vec<String>,
 }
 
@@ -77,7 +93,7 @@ pub(super) struct CompletedResolution {
     index_type: String,
     target: ResolutionTarget,
     _scan: ScanEvidence,
-    _write_ability: Option<WriteAbilityEvidence>,
+    write_ability: Option<WriteAbilityEvidence>,
 }
 
 impl CompletedResolution {
@@ -96,6 +112,10 @@ impl CompletedResolution {
     pub(super) fn target(&self) -> &ResolutionTarget {
         &self.target
     }
+
+    pub(super) fn write_ability_is_proven(&self) -> bool {
+        self.write_ability.is_some()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -111,17 +131,12 @@ pub struct ApplyRequest<'a> {
 }
 
 /// Apply one Datasource using bytes validated at the selected-input boundary.
-pub async fn apply(
-    client: &ApiClient,
-    base_url: &ValidatedUrl,
-    request: ApplyRequest<'_>,
-) -> Result<ApplyResult, AppError> {
+pub async fn apply(client: &ApiClient, request: ApplyRequest<'_>) -> Result<ApplyResult, AppError> {
     // ADR-012 Option A: exact-effective-project preflight before any write.
     let _initial_visibility = preflight_visibility(client, request.project_name).await?;
 
     let enumeration = enumerate(
         client,
-        base_url,
         request.project_name,
         request.repo_name,
         request.index_type,
@@ -139,6 +154,7 @@ pub async fn apply(
                 }),
                 ResolutionTarget::Update {
                     server_id: single.id.clone(),
+                    write_ability,
                 },
                 Some(write_ability),
             )
@@ -152,7 +168,7 @@ pub async fn apply(
         )))?,
     };
 
-    let plan = project(request.declaration, existing.as_ref(), None)?;
+    let plan = project(request.declaration, existing.as_ref())?;
     let file_parts = if matches!(
         &plan,
         crate::projection::WritePlan::Create {
@@ -178,7 +194,7 @@ pub async fn apply(
         index_type: request.index_type.to_owned(),
         target,
         _scan: enumeration.evidence,
-        _write_ability: write_ability,
+        write_ability,
     };
     let visibility = preflight_visibility(client, request.project_name).await?;
     let prepared = PreparedWrite::datasource(client, visibility, resolution, plan, file_parts)?;
@@ -186,17 +202,35 @@ pub async fn apply(
     let server_id = if let Some(server_id) = dispatched.server_id {
         server_id
     } else {
-        let post_write = enumerate(
-            client,
-            base_url,
-            request.project_name,
-            request.repo_name,
-            request.index_type,
-        )
-        .await?;
-        match post_write.matches.as_slice() {
-            [single] => single.id.clone(),
-            _ => {
+        // The create response is acknowledged before the index row is
+        // committed (background indexing task); re-poll briefly instead of
+        // declaring the write uncertain on the first, still-empty page.
+        let mut post_write = None;
+        for attempt in 0..=POST_WRITE_REPOLL_ATTEMPTS {
+            let current = enumerate(
+                client,
+                request.project_name,
+                request.repo_name,
+                request.index_type,
+            )
+            .await?;
+            match current.matches.as_slice() {
+                [single] => {
+                    post_write = Some(single.id.clone());
+                    break;
+                }
+                [] if attempt < POST_WRITE_REPOLL_ATTEMPTS => {
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        POST_WRITE_REPOLL_INTERVAL_MS,
+                    ))
+                    .await;
+                }
+                _ => break,
+            }
+        }
+        match post_write {
+            Some(id) => id,
+            None => {
                 return Err(AppError::WriteUncertain(
                     "Datasource write succeeded but its exact server identity could not be re-resolved"
                         .into(),
@@ -215,12 +249,11 @@ pub async fn apply(
 /// different persisted kinds, resolution is ambiguous and no ID is selected.
 pub async fn resolve_reference(
     client: &ApiClient,
-    base_url: &ValidatedUrl,
     project_name: &str,
     repo_name: &str,
 ) -> Result<String, AppError> {
     preflight_visibility(client, project_name).await?;
-    let matches: Vec<String> = enumerate_project(client, base_url, project_name)
+    let matches: Vec<String> = enumerate_project(client, project_name)
         .await?
         .items
         .into_iter()
@@ -230,7 +263,7 @@ pub async fn resolve_reference(
 
     match matches.as_slice() {
         [single] => Ok(single.clone()),
-        [] => Err(AppError::Reconciliation(
+        [] => Err(AppError::MissingReference(
             "referenced Datasource is missing on the target server".into(),
         )),
         _ => Err(AppError::Reconciliation(
@@ -242,13 +275,12 @@ pub async fn resolve_reference(
 /// Post-write exact identity verification for the coordinator (R-001).
 pub async fn verify_identity(
     client: &ApiClient,
-    base_url: &ValidatedUrl,
     project_name: &str,
     repo_name: &str,
     index_type: &str,
     expected_server_id: &str,
 ) -> Result<(), AppError> {
-    let enumeration = enumerate(client, base_url, project_name, repo_name, index_type).await?;
+    let enumeration = enumerate(client, project_name, repo_name, index_type).await?;
     match enumeration.matches.as_slice() {
         [single] if single.id == expected_server_id => Ok(()),
         _ => Err(AppError::Reconciliation(
@@ -264,25 +296,53 @@ pub async fn verify_identity(
 
 async fn enumerate(
     client: &ApiClient,
-    base_url: &ValidatedUrl,
     project_name: &str,
     repo_name: &str,
-    _index_type: &str,
+    index_type: &str,
 ) -> Result<Enumeration, AppError> {
-    let project = enumerate_project(client, base_url, project_name).await?;
+    let project = enumerate_project(client, project_name).await?;
     Ok(Enumeration {
         matches: project
             .items
             .into_iter()
-            .filter(|item| item.repo_name == repo_name && item.project_name == project_name)
+            .filter(|item| {
+                item.repo_name == repo_name
+                    && item.project_name == project_name
+                    && server_kind_matches(item, index_type)
+            })
             .collect(),
         evidence: project.evidence,
     })
 }
 
+/// Whether a server index row carries the declaration's Datasource kind.
+///
+/// Servers historically reported the kind directly in the index_type field;
+/// current servers store the index granularity (code/summary/chunk-summary)
+/// there for VCS kinds and move the kind to vcs_type, while knowledge-base
+/// kinds remain prefixed in index_type (knowledge_base_*,
+/// llm_routing_google). This mirrors the server-to-declaration mapping in
+/// src/save/reverse.rs and keeps identity resolution exact across both
+/// shapes without ever treating a different kind as a match.
+fn server_kind_matches(item: &DatasourceItem, kind: &str) -> bool {
+    match item.index_type.as_str() {
+        "code" | "summary" | "chunk-summary" => {
+            item.vcs_type.as_deref() == Some(kind) && matches!(kind, "git" | "svn")
+        }
+        "knowledge_base_confluence" => kind == "confluence",
+        "knowledge_base_jira" => kind == "jira",
+        "knowledge_base_xray" => kind == "xray",
+        "knowledge_base_azure_devops_wiki" => kind == "azure_devops_wiki",
+        "knowledge_base_azure_devops_work_item" => kind == "azure_devops_work_item",
+        "knowledge_base_sharepoint" => kind == "sharepoint",
+        "llm_routing_google" => kind == "google",
+        "knowledge_base_file" => kind == "file",
+        other => other == kind,
+    }
+}
+
 async fn enumerate_project(
     client: &ApiClient,
-    _base_url: &ValidatedUrl,
     project_name: &str,
 ) -> Result<ProjectEnumeration, AppError> {
     let filter = serde_json::to_string(&serde_json::json!({ "project": project_name })).map_err(
@@ -292,79 +352,41 @@ async fn enumerate_project(
         },
     )?;
 
-    let mut all_items = Vec::new();
-    let mut page = 0u32;
-    let mut pages_requested = 0u32;
-    let mut total_seen = 0u32;
-    let mut fingerprint: Option<Pagination> = None;
-    let mut seen_ids = std::collections::HashSet::new();
-
-    loop {
+    let scan = crate::pagination::scan_pages("datasource", |page| {
         let path = format!(
             "/v1/index?full_response=true&page={}&per_page=100&filters={}",
             page,
             encode_query_value(&filter)
         );
-        let resp: DatasourcePage = client.get(&path).await?;
-        pages_requested += 1;
-        let pagination = validate_pagination(page, &resp.pagination, fingerprint)?;
-        fingerprint = Some(pagination);
-        let total_pages = pagination.pages();
-
-        for item in resp.data {
-            total_seen += 1;
-            if total_seen > SERVER_LIST_MAX_ITEMS {
-                return Err(AppError::ApiIncompatible(
-                    "datasource enumeration exceeded 100,000-item cap".into(),
-                ));
-            }
-            if !seen_ids.insert(item.id.clone()) {
-                return Err(AppError::Reconciliation(
-                    "datasource enumeration repeated an entity id".into(),
-                ));
-            }
-            all_items.push(item);
+        async move {
+            let resp: DatasourcePage = client.get(&path).await?;
+            Ok(crate::pagination::Page {
+                items: resp.data,
+                pagination: crate::pagination::PaginationInput {
+                    requested_page: page,
+                    page: resp.pagination.page,
+                    per_page: resp.pagination.per_page,
+                    total: resp.pagination.total,
+                    pages: resp.pagination.pages,
+                },
+            })
         }
-
-        // Zero-indexed: stop when we've seen all pages (pages=N means indices 0..N-1)
-        let next = page + 1;
-        if next >= total_pages {
-            break;
-        }
-        page = next;
-    }
-
-    let expected_total = fingerprint.map_or(0, Pagination::total);
-    if total_seen != expected_total {
-        return Err(AppError::Reconciliation(
-            "datasource enumeration ended before the advertised total".into(),
-        ));
-    }
-
+    })
+    .await?;
     Ok(ProjectEnumeration {
-        items: all_items,
+        items: scan.items,
         evidence: ScanEvidence {
-            _pages_requested: pages_requested,
-            _items_seen: total_seen,
-            _advertised_total: expected_total,
+            _pages_requested: scan.pages_requested,
+            _items_seen: scan.items_seen,
+            _advertised_total: scan.advertised_total,
         },
     })
 }
 
-fn validate_pagination(
-    requested_page: u32,
-    pagination: &DatasourcePagination,
-    fingerprint: Option<Pagination>,
-) -> Result<Pagination, AppError> {
-    Pagination::try_from(PaginationInput {
-        requested_page,
-        page: pagination.page,
-        per_page: pagination.per_page,
-        total: pagination.total,
-        pages: pagination.pages,
-    })
-    .and_then(|pagination| pagination.ensure_stable(fingerprint))
-    .map_err(|error| map_pagination_error("datasource", error))
+impl crate::pagination::PageItem for DatasourceItem {
+    fn page_item_id(&self) -> &str {
+        &self.id
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -400,3 +422,84 @@ async fn dispatch(prepared: PreparedWrite<'_>) -> Result<DispatchResult, AppErro
 // ---------------------------------------------------------------------------
 // File Datasource basename safety is enforced by the explicit-input loader.
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(index_type: &str, vcs_type: Option<&str>) -> DatasourceItem {
+        DatasourceItem {
+            id: "id".to_owned(),
+            repo_name: "repo".to_owned(),
+            project_name: "project".to_owned(),
+            index_type: index_type.to_owned(),
+            vcs_type: vcs_type.map(str::to_owned),
+            user_abilities: vec![],
+        }
+    }
+
+    #[test]
+    fn legacy_server_reports_kind_directly_in_index_type() {
+        // Historical shape: the declaration kind was the persisted value.
+        assert!(server_kind_matches(&item("git", None), "git"));
+        assert!(server_kind_matches(&item("svn", None), "svn"));
+        assert!(server_kind_matches(&item("google", None), "google"));
+        assert!(!server_kind_matches(&item("git", None), "svn"));
+    }
+
+    #[test]
+    fn vcs_kinds_read_kind_from_vcs_type_when_index_type_is_granularity() {
+        // Current shape: VCS rows carry the granularity in index_type and the
+        // kind in vcs_type.
+        assert!(server_kind_matches(&item("code", Some("git")), "git"));
+        assert!(server_kind_matches(&item("summary", Some("svn")), "svn"));
+        assert!(!server_kind_matches(&item("code", Some("git")), "svn"));
+        // A granularity without a matching VCS kind is never a match.
+        assert!(!server_kind_matches(
+            &item("code", Some("git")),
+            "confluence"
+        ));
+        assert!(!server_kind_matches(&item("code", None), "git"));
+    }
+
+    #[test]
+    fn knowledge_base_kinds_keep_prefixed_index_type() {
+        assert!(server_kind_matches(
+            &item("knowledge_base_confluence", None),
+            "confluence"
+        ));
+        assert!(server_kind_matches(
+            &item("knowledge_base_jira", None),
+            "jira"
+        ));
+        assert!(server_kind_matches(
+            &item("knowledge_base_xray", None),
+            "xray"
+        ));
+        assert!(server_kind_matches(
+            &item("knowledge_base_azure_devops_wiki", None),
+            "azure_devops_wiki"
+        ));
+        assert!(server_kind_matches(
+            &item("knowledge_base_azure_devops_work_item", None),
+            "azure_devops_work_item"
+        ));
+        assert!(server_kind_matches(
+            &item("knowledge_base_sharepoint", None),
+            "sharepoint"
+        ));
+        assert!(server_kind_matches(
+            &item("llm_routing_google", None),
+            "google"
+        ));
+        assert!(server_kind_matches(
+            &item("knowledge_base_file", None),
+            "file"
+        ));
+        // A different prefixed kind never matches.
+        assert!(!server_kind_matches(
+            &item("knowledge_base_jira", None),
+            "confluence"
+        ));
+    }
+}

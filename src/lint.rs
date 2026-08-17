@@ -95,7 +95,9 @@ fn collect_warnings(
     let source_file = selected
         .file_name()
         .and_then(|name| name.to_str())
-        .filter(|name| !name.is_empty() && name.len() <= 4096)
+        .filter(|name| {
+            !name.is_empty() && name.len() <= 4096 && !name.chars().any(char::is_control)
+        })
         .ok_or_else(|| AppError::Schema("selected filename cannot be represented safely".into()))?
         .to_owned();
     let mut warnings = Vec::new();

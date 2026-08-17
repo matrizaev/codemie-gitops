@@ -10,7 +10,7 @@ use snapshot::{read_assistant, read_datasource, read_skill_snapshot, read_workfl
 
 use crate::domain::InputFile;
 use crate::error::AppError;
-use crate::http::{ApiClient, encode_query_value};
+use crate::http::{ApiClient, encode_path_segment, encode_query_value};
 use crate::output::Outcome;
 use base64::Engine;
 
@@ -24,8 +24,20 @@ pub enum SaveKind {
     Datasource,
 }
 
+/// Parse failure for `--kind`.
+#[derive(Debug)]
+pub struct SaveKindParseError(String);
+
+impl std::fmt::Display for SaveKindParseError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for SaveKindParseError {}
+
 impl std::str::FromStr for SaveKind {
-    type Err = String;
+    type Err = SaveKindParseError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
@@ -33,7 +45,9 @@ impl std::str::FromStr for SaveKind {
             "Workflow" => Ok(Self::Workflow),
             "Skill" => Ok(Self::Skill),
             "Datasource" => Ok(Self::Datasource),
-            _ => Err("kind must be Assistant, Workflow, Skill, or Datasource".into()),
+            _ => Err(SaveKindParseError(
+                "kind must be Assistant, Workflow, Skill, or Datasource".into(),
+            )),
         }
     }
 }
@@ -68,7 +82,7 @@ enum SaveSelector {
     },
     Workflow {
         slug: String,
-        workflow_id: Option<crate::domain::ServerId>,
+        workflow_id: Option<crate::domain::WorkflowId>,
     },
     Skill {
         name: String,
@@ -154,9 +168,12 @@ impl TryFrom<RawSaveCommand> for SaveCommand {
                     .ok_or_else(|| AppError::Usage("slug is required".into()))?,
                 workflow_id: raw
                     .workflow_id
-                    .map(crate::domain::ServerId::try_from)
+                    .as_deref()
+                    .map(str::parse::<crate::domain::WorkflowId>)
                     .transpose()
-                    .map_err(|_| AppError::Usage("--id cannot be empty".into()))?,
+                    .map_err(|_| {
+                        AppError::Usage("--id must be a canonical hyphenated UUID".into())
+                    })?,
             },
             SaveKind::Skill => SaveSelector::Skill {
                 name: raw
@@ -202,15 +219,25 @@ async fn save_inner(command: SaveCommand) -> Result<Outcome, AppError> {
         .ok_or_else(|| AppError::Configuration("target URL is required for save".into()))?;
     let validated_url = crate::config::ValidatedUrl::try_from(url)?;
     let output_path = validate_output_path(command.file.as_path())?;
-    let client = ApiClient::new(
-        validated_url.clone(),
-        std::env::var("CODEMIE_TOKEN").unwrap_or_default().into(),
-    )?;
+    let token = match std::env::var("CODEMIE_TOKEN") {
+        Ok(token) => token,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(AppError::Configuration(
+                "CODEMIE_TOKEN must be valid UTF-8".into(),
+            ));
+        }
+        Err(std::env::VarError::NotPresent) => String::new(),
+    };
+    if token.is_empty() {
+        return Err(AppError::Authentication(
+            "CODEMIE_TOKEN is required for save".into(),
+        ));
+    }
+    let client = ApiClient::new(validated_url.clone(), token.into())?;
     let project = command.project.as_str();
     let response = if command.selector.kind() == SaveKind::Skill {
         read_skill_snapshot(
             &client,
-            &validated_url,
             project,
             command
                 .selector
@@ -221,7 +248,6 @@ async fn save_inner(command: SaveCommand) -> Result<Outcome, AppError> {
     } else if command.selector.kind() == SaveKind::Datasource {
         read_datasource(
             &client,
-            &validated_url,
             project,
             command
                 .selector
@@ -232,7 +258,6 @@ async fn save_inner(command: SaveCommand) -> Result<Outcome, AppError> {
     } else if command.selector.kind() == SaveKind::Workflow {
         read_workflow(
             &client,
-            &validated_url,
             project,
             command
                 .selector

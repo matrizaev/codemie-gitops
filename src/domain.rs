@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use crate::error::AppError;
@@ -5,8 +6,6 @@ use crate::parse::{EntityKind, ParsedDeclaration, ParsedNaturalIdentity};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InputFile(PathBuf);
-
-use std::path::{Path, PathBuf};
 
 impl InputFile {
     pub(crate) fn as_path(&self) -> &Path {
@@ -37,31 +36,40 @@ validated_path!(InputFile, "input file");
 pub(crate) struct InvalidPath(&'static str);
 
 /// Canonical server workflow identifier.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct WorkflowId(uuid::Uuid);
+///
+/// Stores the canonical hyphenated lowercase spelling so the string
+/// representation is itself the invariant; simple, braced, URN, and uppercase
+/// forms are rejected at conversion.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct WorkflowId(String);
+
+impl WorkflowId {
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
 
 impl FromStr for WorkflowId {
     type Err = InvalidWorkflowId;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        uuid::Uuid::parse_str(value)
-            .map(Self)
-            .map_err(|source| InvalidWorkflowId { source })
+        let parsed = uuid::Uuid::parse_str(value).map_err(|_| InvalidWorkflowId)?;
+        if parsed.hyphenated().to_string() != value {
+            return Err(InvalidWorkflowId);
+        }
+        Ok(Self(value.to_owned()))
     }
 }
 
 impl std::fmt::Display for WorkflowId {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(formatter)
+        formatter.write_str(&self.0)
     }
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("workflow ID is not a canonical UUID")]
-pub(crate) struct InvalidWorkflowId {
-    #[source]
-    source: uuid::Error,
-}
+#[error("workflow ID is not a canonical hyphenated UUID")]
+pub(crate) struct InvalidWorkflowId;
 
 /// Non-empty server-owned entity identifier.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -89,8 +97,67 @@ impl TryFrom<String> for ServerId {
 #[error("server ID is empty")]
 pub(crate) struct InvalidServerId;
 
-macro_rules! non_empty_identity {
-    ($name:ident, $label:literal) => {
+/// Schema-matching identifier constraints for the validated identity newtypes.
+///
+/// These mirror the closed declaration schema's metadata-field rules so that
+/// invalid identifiers are unrepresentable after boundary conversion, not just
+/// after schema validation. Lengths count Unicode scalar values, matching the
+/// schema's maxLength semantics.
+mod constraints {
+    /// C0/C1 controls and the Unicode bidi controls excluded by the schema.
+    pub(super) fn has_no_controls(value: &str) -> bool {
+        value.chars().all(|character| {
+            let codepoint = character as u32;
+            !(codepoint <= 0x1f
+                || (0x7f..=0x9f).contains(&codepoint)
+                || (0x202a..=0x202e).contains(&codepoint)
+                || (0x2066..=0x2069).contains(&codepoint))
+        })
+    }
+
+    /// metadata.project: 1-100 characters, no controls or bidi controls.
+    pub(super) fn project(value: &str) -> bool {
+        (1..=100).contains(&value.chars().count()) && has_no_controls(value)
+    }
+
+    /// metadata.slug (Assistant/Workflow): 1-100 characters, same exclusions.
+    pub(super) fn slug(value: &str) -> bool {
+        (1..=100).contains(&value.chars().count()) && has_no_controls(value)
+    }
+
+    /// metadata.name (Skill): 3-64 bytes, pattern [a-z0-9][a-z0-9-]{1,62}[a-z0-9].
+    pub(super) fn skill_name(value: &str) -> bool {
+        let bytes = value.as_bytes();
+        let len = bytes.len();
+        (3..=64).contains(&len)
+            && bytes
+                .first()
+                .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+            && bytes
+                .last()
+                .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+            && bytes
+                .iter()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == 45)
+    }
+
+    /// metadata.repo_name (Datasource): 4-50 bytes, starts alphanumeric,
+    /// then alphanumeric, underscore, or hyphen.
+    pub(super) fn repository_name(value: &str) -> bool {
+        let bytes = value.as_bytes();
+        let len = bytes.len();
+        (4..=50).contains(&len)
+            && bytes
+                .first()
+                .is_some_and(|byte| byte.is_ascii_alphanumeric())
+            && bytes
+                .iter()
+                .all(|byte| byte.is_ascii_alphanumeric() || *byte == 95 || *byte == 45)
+    }
+}
+
+macro_rules! identity_newtype {
+    ($name:ident, $label:literal, $validate:expr) => {
         #[derive(Debug, Clone, PartialEq, Eq, Hash)]
         struct $name(String);
 
@@ -98,10 +165,10 @@ macro_rules! non_empty_identity {
             type Error = InvalidIdentityField;
 
             fn try_from(value: String) -> Result<Self, Self::Error> {
-                if value.is_empty() {
-                    Err(InvalidIdentityField { field: $label })
-                } else {
+                if $validate(&value) {
                     Ok(Self(value))
+                } else {
+                    Err(InvalidIdentityField { field: $label })
                 }
             }
         }
@@ -114,13 +181,17 @@ macro_rules! non_empty_identity {
     };
 }
 
-non_empty_identity!(ProjectName, "project");
-non_empty_identity!(Slug, "slug");
-non_empty_identity!(SkillName, "skill name");
-non_empty_identity!(RepositoryName, "repository name");
+identity_newtype!(ProjectName, "project", constraints::project);
+identity_newtype!(Slug, "slug", constraints::slug);
+identity_newtype!(SkillName, "skill name", constraints::skill_name);
+identity_newtype!(
+    RepositoryName,
+    "repository name",
+    constraints::repository_name
+);
 
 #[derive(Debug, thiserror::Error)]
-#[error("{field} is empty")]
+#[error("{field} is invalid")]
 struct InvalidIdentityField {
     field: &'static str,
 }
@@ -242,6 +313,39 @@ impl NaturalIdentity {
             _ => None,
         }
     }
+
+    /// Map a completed apply action to the closed per-kind success outcome.
+    pub(crate) fn success_outcome(
+        &self,
+        action: crate::adapters::ApplyAction,
+    ) -> crate::output::Outcome {
+        let action = match action {
+            crate::adapters::ApplyAction::Created => crate::output::Action::Created,
+            crate::adapters::ApplyAction::Updated => crate::output::Action::Updated,
+        };
+        match self.kind() {
+            EntityKind::Assistant => crate::output::Outcome::assistant(
+                action,
+                self.project().to_owned(),
+                self.selector().to_owned(),
+            ),
+            EntityKind::Workflow => crate::output::Outcome::workflow(
+                action,
+                self.project().to_owned(),
+                self.selector().to_owned(),
+            ),
+            EntityKind::Skill => crate::output::Outcome::new_skill(
+                action,
+                self.project().to_owned(),
+                self.selector().to_owned(),
+            ),
+            EntityKind::Datasource => crate::output::Outcome::new_datasource(
+                action,
+                self.project().to_owned(),
+                self.selector().to_owned(),
+            ),
+        }
+    }
 }
 
 impl TryFrom<&ParsedDeclaration> for NaturalIdentity {
@@ -293,6 +397,64 @@ mod tests {
                 .is_ok()
         );
         assert!("workflow-id".parse::<WorkflowId>().is_err());
+    }
+
+    #[test]
+    fn workflow_id_rejects_non_canonical_spellings() {
+        // Simple, braced, URN, and uppercase forms are not canonical.
+        assert!(
+            "123e4567e89b12d3a456426614174000"
+                .parse::<WorkflowId>()
+                .is_err()
+        );
+        assert!(
+            "{123e4567-e89b-12d3-a456-426614174000}"
+                .parse::<WorkflowId>()
+                .is_err()
+        );
+        assert!(
+            "urn:uuid:123e4567-e89b-12d3-a456-426614174000"
+                .parse::<WorkflowId>()
+                .is_err()
+        );
+        assert!(
+            "123E4567-E89B-12D3-A456-426614174000"
+                .parse::<WorkflowId>()
+                .is_err()
+        );
+        // Round-trip keeps the canonical spelling.
+        let id: WorkflowId = "123e4567-e89b-12d3-a456-426614174000".parse().unwrap();
+        assert_eq!(id.as_str(), "123e4567-e89b-12d3-a456-426614174000");
+    }
+
+    #[test]
+    fn identity_newtypes_enforce_schema_constraints() {
+        // project: 1-100 chars, no controls/bidi.
+        assert!(ProjectName::try_from("demo".to_owned()).is_ok());
+        assert!(ProjectName::try_from(String::new()).is_err());
+        let bidi = format!("a{}b", '\u{202e}');
+        assert!(ProjectName::try_from(bidi).is_err());
+        assert!(ProjectName::try_from("x".repeat(101)).is_err());
+        // slug: 1-100 chars, no controls/bidi (spaces permitted by the schema).
+        assert!(Slug::try_from("my assistant".to_owned()).is_ok());
+        assert!(
+            Slug::try_from(
+                "bad
+slug"
+                    .to_owned()
+            )
+            .is_err()
+        );
+        assert!(Slug::try_from("x".repeat(101)).is_err());
+        // skill name: 3-64, [a-z0-9][a-z0-9-]{1,62}[a-z0-9].
+        assert!(SkillName::try_from("triage-skill".to_owned()).is_ok());
+        assert!(SkillName::try_from("ab".to_owned()).is_err());
+        assert!(SkillName::try_from("UPPER".to_owned()).is_err());
+        assert!(SkillName::try_from("ends-with-dash-".to_owned()).is_err());
+        // repo_name: 4-50, starts alphanumeric, then alnum/_/-.
+        assert!(RepositoryName::try_from("product-docs".to_owned()).is_ok());
+        assert!(RepositoryName::try_from("abc".to_owned()).is_err());
+        assert!(RepositoryName::try_from("bad name".to_owned()).is_err());
     }
 
     #[test]

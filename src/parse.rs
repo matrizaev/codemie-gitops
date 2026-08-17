@@ -951,11 +951,11 @@ fn extract_entity_kind(value: &JsonValue, file_path: &Path) -> Result<EntityKind
 ///
 /// If the declaration is a Skill and `spec.contentFrom` is present:
 /// 1. Resolves the relative path against the declaring YAML's directory
-///    (enforcing symlink and containment policy via the discovery module).
-/// 2. Loads the sidecar file (enforcing the per-file byte limit via
-///    `load_sidecar_file`).
-/// 3. Enforces the aggregate upload budget (`MAX_AGGREGATE_UPLOAD_BYTES`).
-/// 4. Replaces `spec.contentFrom` with `spec.content` (UTF-8 file contents).
+///    (enforcing symlink and containment policy; see `src/input.rs`).
+/// 2. Loads the sidecar file (per-file byte limit enforced by the caller's
+///    bounded reader at `src/input.rs`).
+/// 3. Replaces `spec.contentFrom` with `spec.content` (UTF-8 file
+///    contents); the result is re-validated against the closed schema.
 ///
 /// Returns the (possibly mutated) `value` unchanged for non-Skill kinds or
 /// when `spec.content` is used directly.
@@ -1336,19 +1336,9 @@ spec:
         let (root, _g) = temp_dir("cf_budget");
         init_git(&root);
 
-        // Write a sidecar that is valid per-file but exceeds the aggregate limit
-        // by using a tiny value and a mocked-out constant check via a large byte count.
-        // Since MAX_AGGREGATE_UPLOAD_BYTES is 128 MiB and MAX_SIDECAR_FILE_BYTES is 32 MiB,
-        // we cannot actually write a file exceeding the aggregate limit in a unit test.
-        // Instead, we test that a sidecar exceeding MAX_SIDECAR_FILE_BYTES is rejected.
-        // The load_sidecar_file helper enforces MAX_SIDECAR_FILE_BYTES first.
-        //
-        // To test aggregate budget: the aggregate check in expand_content_from catches
-        // files > MAX_AGGREGATE_UPLOAD_BYTES. Since per-file limit (32 MiB) < aggregate
-        // (128 MiB), the per-file limit fires first for a single oversized sidecar.
-        //
-        // We verify the budget path by creating a small file and artificially triggering
-        // the aggregate check using a direct call.
+        // The Skill sidecar byte limit (128 KiB) is enforced by the bounded
+        // reader in src/input.rs before expansion; expand_content_from itself
+        // performs no budget check.
         let small_content = "x".repeat(200); // 200 bytes — well within limits
         let sidecar_file = root.join("content.md");
         fs::write(&sidecar_file, &small_content).unwrap();
