@@ -331,7 +331,7 @@
         "hintOnly": "GET /v1/index/find_id",
         "pageSize": 100,
         "paginationConsumedFields": ["data", "pagination.page", "pagination.per_page", "pagination.total", "pagination.pages"],
-        "consumedFields": ["id", "repo_name", "project_name", "index_type", "user_abilities"],
+        "consumedFields": ["id", "repo_name", "project_name", "index_type", "vcs_type", "user_abilities"],
         "sourceEvidence": "rest_api/routers/index.py:188-219; service/index/index_service.py:162-229"
       },
       "ordinaryCrudOnly": true,
@@ -418,7 +418,7 @@
           "update": "PUT /v1/index/knowledge_base/file (multipart/form-data files plus query parameters)",
           "createRequestFields": ["name", "project_name", "description", "project_space_visible", "files", "csv_separator", "csv_start_row", "csv_rows_per_document", "embedding_model", "guardrail_assignments", "include_email_attachments"],
           "updateRequestFields": ["name", "project_name", "description", "project_space_visible", "uploaded_files", "files", "csv_separator", "csv_start_row", "csv_rows_per_document", "embedding_model", "guardrail_assignments", "include_email_attachments"],
-          "identityReadFields": ["repo_name", "project_name", "index_type", "user_abilities"],
+          "identityReadFields": ["repo_name", "project_name", "index_type", "vcs_type", "user_abilities"],
           "transportTransform": {
             "files": "resolve each of 1-10 explicit relative paths from the selected declaration parent; reject escape/symlink/non-regular/duplicate targets; bounded-read exact bytes and emit repeated multipart files parts using safe basenames; no directory walk or temporary/staging copy",
             "uploaded_files": "update-only JSON-encoded UTF-8 compact array in the uploaded_files query parameter",

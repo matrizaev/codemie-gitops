@@ -1,16 +1,28 @@
 /// Datasource entity adapter — D-001.
 ///
-/// Visibility preflight (`GET /v1/user`) required before any write.
-/// Exhaustive `(project, repo_name, index_type)` identity resolution via
-/// paginated `GET /v1/index?full_response=true&page={page}&per_page=100&filters={json}`.
-/// The persisted `index_type` participates in identity matching: a visible row
-/// selects update only when its kind equals the declaration's kind; a miss
-/// (including a same-name row of a different kind) permits one create.
-/// Pagination is zero-indexed. Cap: 1,000 pages / 100,000 items → `E_API_INCOMPATIBLE`.
+/// Visibility preflight (GET /v1/user) required before any write.
+/// Exhaustive (project, repo_name, index_type) identity resolution via
+/// paginated GET /v1/index?full_response=true&page={page}&per_page=100&filters={json}.
+/// The persisted kind participates in identity matching: a visible row selects
+/// update only when its kind equals the declaration's kind; a miss (including
+/// a same-name row of a different kind) permits one create. The kind is read
+/// from the server's index_type/vcs_type fields (see server_kind_matches).
+/// Pagination is zero-indexed. Cap: 1,000 pages / 100,000 items → E_API_INCOMPATIBLE.
 /// File Datasource: multipart transport with parts cap (10) and basename safety.
 use serde::Deserialize;
 
 use crate::error::AppError;
+
+/// Extra re-polls after a create response before declaring the write uncertain.
+///
+/// The server acknowledges datasource creates before the index row is
+/// committed by its background indexing task; a single immediate re-read can
+/// still observe an empty page. Bounded, short re-polls make the create path
+/// deterministic without unbounded waiting.
+const POST_WRITE_REPOLL_ATTEMPTS: u32 = 4;
+
+/// Delay between post-write re-polls in milliseconds.
+const POST_WRITE_REPOLL_INTERVAL_MS: u64 = 400;
 use crate::http::{ApiClient, encode_query_value, preflight_visibility};
 
 use crate::parse::ParsedDeclaration;
@@ -46,6 +58,8 @@ struct DatasourceItem {
     project_name: String,
     #[serde(rename = "index_type")]
     index_type: String,
+    #[serde(rename = "vcs_type", default)]
+    vcs_type: Option<String>,
     user_abilities: Vec<String>,
 }
 
@@ -188,16 +202,35 @@ pub async fn apply(client: &ApiClient, request: ApplyRequest<'_>) -> Result<Appl
     let server_id = if let Some(server_id) = dispatched.server_id {
         server_id
     } else {
-        let post_write = enumerate(
-            client,
-            request.project_name,
-            request.repo_name,
-            request.index_type,
-        )
-        .await?;
-        match post_write.matches.as_slice() {
-            [single] => single.id.clone(),
-            _ => {
+        // The create response is acknowledged before the index row is
+        // committed (background indexing task); re-poll briefly instead of
+        // declaring the write uncertain on the first, still-empty page.
+        let mut post_write = None;
+        for attempt in 0..=POST_WRITE_REPOLL_ATTEMPTS {
+            let current = enumerate(
+                client,
+                request.project_name,
+                request.repo_name,
+                request.index_type,
+            )
+            .await?;
+            match current.matches.as_slice() {
+                [single] => {
+                    post_write = Some(single.id.clone());
+                    break;
+                }
+                [] if attempt < POST_WRITE_REPOLL_ATTEMPTS => {
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        POST_WRITE_REPOLL_INTERVAL_MS,
+                    ))
+                    .await;
+                }
+                _ => break,
+            }
+        }
+        match post_write {
+            Some(id) => id,
+            None => {
                 return Err(AppError::WriteUncertain(
                     "Datasource write succeeded but its exact server identity could not be re-resolved"
                         .into(),
@@ -275,11 +308,37 @@ async fn enumerate(
             .filter(|item| {
                 item.repo_name == repo_name
                     && item.project_name == project_name
-                    && item.index_type == index_type
+                    && server_kind_matches(item, index_type)
             })
             .collect(),
         evidence: project.evidence,
     })
+}
+
+/// Whether a server index row carries the declaration's Datasource kind.
+///
+/// Servers historically reported the kind directly in the index_type field;
+/// current servers store the index granularity (code/summary/chunk-summary)
+/// there for VCS kinds and move the kind to vcs_type, while knowledge-base
+/// kinds remain prefixed in index_type (knowledge_base_*,
+/// llm_routing_google). This mirrors the server-to-declaration mapping in
+/// src/save/reverse.rs and keeps identity resolution exact across both
+/// shapes without ever treating a different kind as a match.
+fn server_kind_matches(item: &DatasourceItem, kind: &str) -> bool {
+    match item.index_type.as_str() {
+        "code" | "summary" | "chunk-summary" => {
+            item.vcs_type.as_deref() == Some(kind) && matches!(kind, "git" | "svn")
+        }
+        "knowledge_base_confluence" => kind == "confluence",
+        "knowledge_base_jira" => kind == "jira",
+        "knowledge_base_xray" => kind == "xray",
+        "knowledge_base_azure_devops_wiki" => kind == "azure_devops_wiki",
+        "knowledge_base_azure_devops_work_item" => kind == "azure_devops_work_item",
+        "knowledge_base_sharepoint" => kind == "sharepoint",
+        "llm_routing_google" => kind == "google",
+        "knowledge_base_file" => kind == "file",
+        other => other == kind,
+    }
 }
 
 async fn enumerate_project(
@@ -363,3 +422,84 @@ async fn dispatch(prepared: PreparedWrite<'_>) -> Result<DispatchResult, AppErro
 // ---------------------------------------------------------------------------
 // File Datasource basename safety is enforced by the explicit-input loader.
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(index_type: &str, vcs_type: Option<&str>) -> DatasourceItem {
+        DatasourceItem {
+            id: "id".to_owned(),
+            repo_name: "repo".to_owned(),
+            project_name: "project".to_owned(),
+            index_type: index_type.to_owned(),
+            vcs_type: vcs_type.map(str::to_owned),
+            user_abilities: vec![],
+        }
+    }
+
+    #[test]
+    fn legacy_server_reports_kind_directly_in_index_type() {
+        // Historical shape: the declaration kind was the persisted value.
+        assert!(server_kind_matches(&item("git", None), "git"));
+        assert!(server_kind_matches(&item("svn", None), "svn"));
+        assert!(server_kind_matches(&item("google", None), "google"));
+        assert!(!server_kind_matches(&item("git", None), "svn"));
+    }
+
+    #[test]
+    fn vcs_kinds_read_kind_from_vcs_type_when_index_type_is_granularity() {
+        // Current shape: VCS rows carry the granularity in index_type and the
+        // kind in vcs_type.
+        assert!(server_kind_matches(&item("code", Some("git")), "git"));
+        assert!(server_kind_matches(&item("summary", Some("svn")), "svn"));
+        assert!(!server_kind_matches(&item("code", Some("git")), "svn"));
+        // A granularity without a matching VCS kind is never a match.
+        assert!(!server_kind_matches(
+            &item("code", Some("git")),
+            "confluence"
+        ));
+        assert!(!server_kind_matches(&item("code", None), "git"));
+    }
+
+    #[test]
+    fn knowledge_base_kinds_keep_prefixed_index_type() {
+        assert!(server_kind_matches(
+            &item("knowledge_base_confluence", None),
+            "confluence"
+        ));
+        assert!(server_kind_matches(
+            &item("knowledge_base_jira", None),
+            "jira"
+        ));
+        assert!(server_kind_matches(
+            &item("knowledge_base_xray", None),
+            "xray"
+        ));
+        assert!(server_kind_matches(
+            &item("knowledge_base_azure_devops_wiki", None),
+            "azure_devops_wiki"
+        ));
+        assert!(server_kind_matches(
+            &item("knowledge_base_azure_devops_work_item", None),
+            "azure_devops_work_item"
+        ));
+        assert!(server_kind_matches(
+            &item("knowledge_base_sharepoint", None),
+            "sharepoint"
+        ));
+        assert!(server_kind_matches(
+            &item("llm_routing_google", None),
+            "google"
+        ));
+        assert!(server_kind_matches(
+            &item("knowledge_base_file", None),
+            "file"
+        ));
+        // A different prefixed kind never matches.
+        assert!(!server_kind_matches(
+            &item("knowledge_base_jira", None),
+            "confluence"
+        ));
+    }
+}

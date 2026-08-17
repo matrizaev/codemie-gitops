@@ -5,7 +5,7 @@ metadata:
   slug: example-workflow
 spec:
   name: Portable Example Workflow
-  description: A non-production empty graph used for offline validation.
+  description: A minimal single-state graph used for offline validation and live end-to-end smoke tests.
   mode: Sequential
   shared: false
   execution_config:
@@ -17,10 +17,35 @@ spec:
     max_concurrency: 1
     verbose: false
     max_iteration_key_output_limit: 100
-    assistants: []
+    assistants:
+      - id: wf-actor
+        name: Portable Example Actor
+        model: replace-with-approved-model
+        system_prompt: You are a minimal example actor for the end-to-end smoke test.
+        limit_tool_output_tokens: 1000
+        tools: []
+        exclude_extra_context_tools: false
+        mcp_servers: []
+        skillRefs: []
+        datasourceRefs: []
     tools: []
     custom_nodes: []
-    states: []
+    states:
+      - id: start
+        assistant_id: wf-actor
+        task: Say hello.
+        finish_iteration: false
+        next:
+          override_task: false
+          store_in_context: false
+          include_in_llm_history: true
+          clear_prior_messages: false
+          clear_context_store: false
+          include_in_iterator_context: []
+          append_to_context: false
+        interrupt_before: false
+        resolve_dynamic_values_in_prompt: true
+        result_as_human_message: false
     retry_policy:
       initial_interval: 1000
       backoff_factor: 2
