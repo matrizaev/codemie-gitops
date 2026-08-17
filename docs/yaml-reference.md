@@ -163,6 +163,12 @@ A Workflow assistant tool requires non-empty `name`; optional `integration_alias
 
 Transition exclusions: `condition` and `switch` cannot coexist; `state_id` and `state_ids` cannot coexist; `state_ids` cannot coexist with `iter_key`, `condition`, or `switch`; `iter_key` cannot coexist with `condition` or `switch`, and requires `state_id`.
 
+The literal `end` is a reserved terminal-state marker accepted wherever a
+transition target is written — `next.state_id`, `next.state_ids` entries,
+Condition `then`/`otherwise`, and Switch `cases[].state_id`/`default` —
+matching the CodeMie server (which validates transition targets against
+`states + ["end"]`). Every other target must name a declared `states[].id`.
+
 ```yaml
 apiVersion: codemie.epam.com/v1alpha1
 kind: Workflow
